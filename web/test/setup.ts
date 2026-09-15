@@ -1,0 +1,20 @@
+import { beforeAll } from "vitest";
+import { testDatabaseUrl } from "./database-url";
+
+// Must be set before anything imports env.ts, which reads it at module load.
+process.env.DATABASE_URL = testDatabaseUrl;
+process.env.APP_SECRET ??= "test-secret-not-used-in-production-0123456789";
+(process.env as Record<string, string>).NODE_ENV = "test";
+// The suite must never reach OpenRouter. A developer's real key in .env would
+// otherwise make model-backed paths hit the network: slow, billable, and
+// non-deterministic. Tests that want the model path set this back and stub
+// `fetch` themselves. Cleared on the parsed object rather than on
+// `process.env`, because env.ts loads dotenv and would read the file again.
+const { env } = await import("@/server/env");
+env.OPENROUTER_API_KEY = undefined;
+
+beforeAll(() => {
+  if (!process.env.DATABASE_URL?.includes("lipi_test")) {
+    throw new Error("Refusing to run tests against a database that is not lipi_test");
+  }
+});

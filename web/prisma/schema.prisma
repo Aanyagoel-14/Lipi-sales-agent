@@ -1,0 +1,873 @@
+// Lipi AI — the twins, persisted.
+//
+// Shapes mirror what the dashboard already consumes, so the API can answer
+// from Postgres without the frontend changing. Money is stored in paise
+// (integer minor units) rather than floats: currency arithmetic that has to
+// reconcile must never round.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7 takes the connection URL from prisma.config.ts for migrate, and
+// from the driver adapter passed to PrismaClient at runtime.
+datasource db {
+  provider = "postgresql"
+}
+
+enum Channel {
+  whatsapp
+  instagram
+  telegram
+  email
+  webchat
+}
+
+enum Segment {
+  Retail
+  Wholesale
+  Corporate
+}
+
+enum Sensitivity {
+  Low
+  Medium
+  High
+}
+
+enum OrderStage {
+  Quoted
+  Paid
+  Packed
+  Shipped
+  Delivered
+  Returned
+}
+
+enum RunStatus {
+  done
+  needs_approval
+  scheduled
+  failed
+}
+
+enum Severity {
+  routine
+  attention
+  policy
+}
+
+enum InvoiceSource {
+  quickbooks
+  zoho
+  manual
+}
+
+enum PaymentMethod {
+  bank_transfer
+  card
+  upi
+  cash
+}
+
+model Customer {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id               String      @id
+  name             String
+  handle           String
+  channel          Channel
+  segment          Segment
+  lifetimeValue    Int
+  orderCount       Int
+  avgOrderValue    Int
+  returnRatePct    Float
+  priceSensitivity Sensitivity
+  negotiationStyle String
+  sizeProfile      String[]
+  predictedNext    String
+  riskScore        Int
+  lastSeenAt       DateTime
+
+  /// Where this business relationship started, in the ad platform's own
+  /// vocabulary: UTM parameters and a click id (gclid/fbclid/msclkid),
+  /// captured once at the visitor's first touch and never overwritten by a
+  /// later visit — a returning customer who clicks a retargeting ad a month
+  /// later does not get re-attributed to that ad. Null for a customer who
+  /// never arrived via a tracked link (a channel with no URL, or a direct
+  /// visit with no query string).
+  utmSource    String?
+  utmMedium    String?
+  utmCampaign  String?
+  utmTerm      String?
+  utmContent   String?
+  adClickId    String?
+  landingPage  String?
+  referrer     String?
+  firstTouchAt DateTime?
+
+  /// A running estimate of purchase intent, recomputed after every inbound
+  /// message (see `services/leads.ts`). Not a prediction of lifetime value —
+  /// `riskScore` and `predictedNext` already speak to that — this is
+  /// specifically "how close is this conversation to becoming an order",
+  /// which is what a growth or sales operator triaging a lead list needs.
+  leadScore Int       @default(0)
+  leadStage LeadStage @default(visitor)
+
+  orders            Order[]
+  conversations     Conversation[]
+  invoices          Invoice[]
+  payments          Payment[]
+  growthSuggestions GrowthSuggestion[]
+
+  @@index([segment])
+  @@index([workspaceId])
+  @@index([workspaceId, leadStage])
+  @@index([workspaceId, utmCampaign])
+  @@map("customers")
+}
+
+/**
+ * Where a lead sits on the way to being a customer. Ordered, but not a
+ * strict pipeline a lead must step through one stage at a time — `orders`
+ * already exists as ground truth, so a customer who orders on their very
+ * first message goes straight to `customer` without pausing at `qualified`.
+ */
+enum LeadStage {
+  visitor
+  engaged
+  qualified
+  customer
+}
+
+model Supplier {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id            String    @id
+  name          String
+  onTimePct     Int
+  avgLeadDays   Int
+  defectRatePct Float
+  moq           Int
+  responseHours Int
+  products      Product[]
+
+  @@index([workspaceId])
+  @@map("suppliers")
+}
+
+model Product {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id           String   @id
+  name         String
+  category     String
+  /// What the two variant axes are called for this vertical: apparel sells by
+  /// Size and Colour, auto parts by Fitment and Grade. The twin is only
+  /// variant-native if the axes come from the business, not from a guess.
+  axes         String[]
+  /// Vertical-specific attributes (fabric and season for apparel, OEM ref and
+  /// warranty for parts). Kept as JSON so a new vertical needs no migration.
+  attributes   Json     @default("{}")
+  price        Int
+  marginPct    Int
+  leadTimeDays Int
+  crossSell    String[]
+
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+
+  variants Variant[]
+  orders   Order[]
+
+  @@index([supplierId])
+  @@index([workspaceId])
+  @@map("products")
+}
+
+model Variant {
+  id       String @id @default(cuid())
+  /// Values on the product's two axes, in the same order as Product.axes.
+  optionA  String
+  optionB  String
+  stock    Int
+  reserved Int
+  /// Generated once at creation from the product name and options then
+  /// stored (L-1d fix). Previously rebuilt on every read from the *current*
+  /// name/options, so renaming a product silently changed every variant's
+  /// SKU and broke anything that had written the old one down — an
+  /// inventory connector's mapping, a past event payload. Backfilled for
+  /// rows that predate this column; a rename after that point never touches
+  /// it again.
+  sku      String
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  inventoryMappings InventoryMapping[]
+  orders            Order[]
+
+  // One row per size/colour per product: the twin is variant-native.
+  @@unique([productId, optionA, optionB])
+  @@unique([productId, sku])
+  @@index([stock])
+  @@map("variants")
+}
+
+model Order {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id        String     @id
+  /// Display label, `${optionA} / ${optionB}` at the time of order. Kept
+  /// verbatim even if the variant is later renamed, so history reads true.
+  variant   String
+  qty       Int
+  value     Int
+  stage     OrderStage
+  channel   Channel
+  createdAt DateTime
+  blocked   String?
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  /// The actual variant row, so fulfilment can settle stock and reservations
+  /// without re-parsing the display label.
+  variantId  String
+  variantRef Variant  @relation(fields: [variantId], references: [id])
+
+  invoices Invoice[]
+
+  @@index([stage])
+  @@index([customerId])
+  @@index([workspaceId])
+  @@index([variantId])
+  @@map("orders")
+}
+
+model Conversation {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id      String   @id
+  channel Channel
+  subject String
+  unread  Boolean
+  lastAt  DateTime
+  intent  String
+  signals Json
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  messages Message[]
+  runs     AgentRun[]
+
+  @@index([lastAt])
+  @@index([workspaceId])
+  @@map("conversations")
+}
+
+model Message {
+  id     String   @id @default(cuid())
+  from   String
+  text   String
+  sentAt DateTime
+  quote  Json?
+
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, sentAt])
+  @@map("messages")
+}
+
+model AgentRun {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id         String    @id
+  agent      String
+  action     String
+  status     RunStatus
+  durationMs Int
+  ranAt      DateTime
+
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id])
+
+  approval Approval?
+
+  @@index([status])
+  @@index([ranAt])
+  @@index([workspaceId])
+  @@map("agent_runs")
+}
+
+model Approval {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id       String   @id
+  agent    String
+  summary  String
+  detail   String
+  impact   String
+  raisedAt DateTime
+  severity Severity
+
+  runId String   @unique
+  run   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("approvals")
+}
+
+model TwinEvent {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id         String   @id
+  occurredAt DateTime
+  type       String
+  twin       String
+  payload    String
+
+  // Append only. Nothing in the app updates or deletes these.
+  @@index([occurredAt])
+  @@index([twin])
+  @@index([workspaceId])
+  @@map("twin_events")
+}
+
+model Invoice {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  number   String        @id
+  source   InvoiceSource
+  issuedOn DateTime      @db.Date
+  dueOn    DateTime      @db.Date
+  amount   Int
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  orderId    String?
+  order      Order?   @relation(fields: [orderId], references: [id])
+
+  payments Payment[]
+
+  @@index([dueOn])
+  @@index([workspaceId])
+  @@map("invoices")
+}
+
+model Payment {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id         String        @id
+  receivedAt DateTime
+  method     PaymentMethod
+  reference  String?
+  loggedBy   String
+  amount     Int
+
+  invoiceNumber String
+  invoice       Invoice  @relation(fields: [invoiceNumber], references: [number], onDelete: Cascade)
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id])
+
+  @@index([invoiceNumber, receivedAt])
+  @@index([workspaceId])
+  @@map("payments")
+}
+
+model WaitlistEntry {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  company   String?
+  createdAt DateTime @default(now())
+
+  @@map("waitlist_entries")
+}
+
+enum Vertical {
+  apparel
+  auto_parts
+  marine
+  wholesale
+}
+
+/**
+ * How much an agent may do before a human sees it.
+ */
+enum ApprovalPolicy {
+  everything
+  money_only
+  nothing
+}
+
+enum Role {
+  owner
+  member
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  memberships Membership[]
+  sessions    Session[]
+
+  @@map("users")
+}
+
+model Membership {
+  id   String @id @default(cuid())
+  role Role   @default(owner)
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+  @@map("memberships")
+}
+
+/**
+ * Opaque server-side sessions. The cookie carries an id, never a claim.
+ */
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model Workspace {
+  id              String         @id @default(cuid())
+  name            String
+  vertical        Vertical
+  channels        Channel[]
+  approvalPolicy  ApprovalPolicy @default(money_only)
+  catalogueSeeded Boolean        @default(false)
+  onboardedAt     DateTime?
+  createdAt       DateTime       @default(now())
+
+  voice               TwinVoice?
+  knowledge           KnowledgeEntry[]
+  examples            VoiceExample[]
+  memberships         Membership[]
+  connections         ChannelConnection[]
+  inventoryConnectors InventoryConnector[]
+
+  customers         Customer[]
+  suppliers         Supplier[]
+  products          Product[]
+  orders            Order[]
+  conversations     Conversation[]
+  agentRuns         AgentRun[]
+  approvals         Approval[]
+  twinEvents        TwinEvent[]
+  invoices          Invoice[]
+  payments          Payment[]
+  visitorSessions   VisitorSession[]
+  growthSuggestions GrowthSuggestion[]
+
+  @@map("workspaces")
+}
+
+enum Formality {
+  formal
+  neutral
+  friendly
+}
+
+enum Length {
+  terse
+  balanced
+  detailed
+}
+
+/**
+ * How the agents sound. Separate from what they know: voice governs phrasing,
+ * knowledge governs claims, and mixing the two is how you get an assistant
+ * that sounds right while saying something false.
+ */
+model TwinVoice {
+  id        String    @id @default(cuid())
+  formality Formality @default(friendly)
+  length    Length    @default(balanced)
+  useEmoji  Boolean   @default(false)
+  signOff   String?
+  languages String[]  @default(["English"])
+  greeting  String?
+  neverSay  String[]  @default([])
+  alwaysSay String[]  @default([])
+  updatedAt DateTime  @updatedAt
+
+  workspaceId String    @unique
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("twin_voice")
+}
+
+enum KnowledgeKind {
+  policy
+  faq
+  sizing
+  shipping
+  warranty
+  pricing
+}
+
+/**
+ * What the twin is allowed to assert. Agents answer from these, not guesswork.
+ */
+model KnowledgeEntry {
+  id        String        @id @default(cuid())
+  kind      KnowledgeKind
+  title     String
+  body      String
+  createdAt DateTime      @default(now())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, kind])
+  @@map("knowledge_entries")
+}
+
+/**
+ * Few-shot pairs: this is how we would answer that. Trains tone, not facts.
+ */
+model VoiceExample {
+  id           String   @id @default(cuid())
+  customerSays String
+  twinReplies  String
+  createdAt    DateTime @default(now())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("voice_examples")
+}
+
+enum ConnectionStatus {
+  disconnected
+  connected
+  error
+}
+
+/**
+ * A channel the workspace has actually connected, with the credentials needed
+ * to receive and send on it. Secrets are encrypted at rest; the webhook secret
+ * is what proves an inbound request really came from the provider.
+ */
+model ChannelConnection {
+  id                  String           @id @default(cuid())
+  channel             Channel
+  status              ConnectionStatus @default(disconnected)
+  /// Provider identity: phone number id, bot username, mailbox address.
+  externalId          String?
+  displayName         String?
+  /// AES-256-GCM ciphertext. Never returned to a client.
+  secretCipher        String?
+  /// Non-secret settings, safe to show back to the operator.
+  config              Json             @default("{}")
+  /// Proves an inbound webhook came from the provider. For Telegram this is
+  /// the secret token header. For Meta channels it is ALSO the value the
+  /// operator enters as the callback's `hub.verify_token` for GET
+  /// verification -- but it is never the HMAC signing key. That is a
+  /// separate, Meta-issued App Secret (H-3 fix), kept below.
+  webhookSecret       String
+  /// AES-256-GCM ciphertext of the Meta App Secret. WhatsApp/Instagram sign
+  /// every webhook POST body with this key, distinct from `webhookSecret`
+  /// above (an operator-chosen verify token) and from `secretCipher` (the
+  /// access token used to send). Null until the operator supplies it, in
+  /// which case an inbound POST cannot authenticate (H-3).
+  metaAppSecretCipher String?
+  lastEventAt         DateTime?
+  lastError           String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  processedMessages ProcessedMessage[]
+
+  @@unique([workspaceId, channel])
+  @@index([workspaceId])
+  @@map("channel_connections")
+}
+
+/**
+ * H-3 fix: inbound provider message-id idempotency.
+ * Channel adapters already parse a provider's own message id
+ * (`InboundMessage.externalId`); the webhook route used to discard it, so a
+ * provider retry (the same webhook POST, resent because our 200 was slow or
+ * dropped) ran the full ingest loop a second time -- duplicating orders and
+ * reservations for one real customer message. Recording the id here, and
+ * checking it before calling `ingest()`, makes a retry a no-op.
+ * Scoped to the connection rather than the workspace: two different channels
+ * could coincidentally reuse the same provider-assigned id, and a connection
+ * is already workspace-scoped.
+ */
+model ProcessedMessage {
+  id         String   @id @default(cuid())
+  externalId String
+  receivedAt DateTime @default(now())
+
+  connectionId String
+  connection   ChannelConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, externalId])
+  @@index([connectionId, receivedAt])
+  @@map("processed_messages")
+}
+
+/**
+ * ------------------------------- webchat + growth ---------------------------
+ */
+
+/**
+ * An anonymous visitor to the workspace's own website, from the moment the
+ * webchat widget loads until they say something (or leave without ever
+ * messaging).
+ * This exists separately from `Customer` because a visitor is not yet a
+ * lead: most page loads never open the chat, and creating a customer row for
+ * every one of them would make the customer list mean nothing. A session
+ * only gains a `customerId` once the visitor actually sends a message —
+ * that is the moment `ingest()` creates or resolves their customer twin.
+ * Attribution is captured here, at the *first* page the widget ever loaded
+ * on, because that is the only moment the ad platform's own query
+ * parameters are present in the URL. By the time a visitor replies to a
+ * proactive engagement message three page views later, `gclid` is long
+ * gone from the address bar — the widget cannot fetch what the browser no
+ * longer has. So the widget sends what it sees once, on load, and this row
+ * is engagement/attribution's own source of truth. This first-touch record
+ * is copied onto the `Customer` row when one is created, and never
+ * overwritten by a later session (see `services/attribution.ts`).
+ */
+model VisitorSession {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  /// Opaque id the widget itself mints and keeps in localStorage. Not a
+  /// customer id — the same visitor may open the widget several times
+  /// before ever messaging, and all of those loads share this row.
+  visitorId   String
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmTerm     String?
+  utmContent  String?
+  adClickId   String?
+  landingPage String?
+  referrer    String?
+  /// Set the moment this visitor sends their first message and a customer
+  /// twin exists for them. Null for a session that never engaged.
+  customerId  String?
+  engagedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  lastSeenAt  DateTime  @default(now())
+
+  @@unique([workspaceId, visitorId])
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, customerId])
+  @@map("visitor_sessions")
+}
+
+/**
+ * A drafted next step for a lead that has gone quiet, surfaced to the
+ * operator rather than sent automatically — the same caution as a purchase
+ * order (C-1): a nudge is a real message to a real prospect, so a human
+ * approves the wording before it goes out. `dismissedAt` lets an operator
+ * clear a suggestion without acting on it, so the list only ever shows
+ * live work.
+ */
+model GrowthSuggestion {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  kind        String
+  headline    String
+  detail      String
+  draftReply  String
+  createdAt   DateTime  @default(now())
+  dismissedAt DateTime?
+  actedAt     DateTime?
+
+  @@unique([workspaceId, customerId, kind])
+  @@index([workspaceId, dismissedAt, actedAt])
+  @@map("growth_suggestions")
+}
+
+/**
+ * --------------------------- inventory connectors --------------------------
+ */
+
+enum InventorySource {
+  shopify
+  woocommerce
+  zoho
+  erp
+  pos
+  custom
+}
+
+enum SyncStatus {
+  applied
+  partial
+  failed
+}
+
+enum ExceptionKind {
+  unmapped_sku
+  ambiguous_sku
+  unknown_variant
+  invalid_quantity
+  below_reserved
+}
+
+/**
+ * A live inventory feed.
+ * CSV import is a snapshot: correct the moment it is taken and wrong the
+ * moment anything sells. A connector is what keeps the inventory twin current,
+ * so the twin can refuse to promise stock it does not have.
+ * The source pushes batches to /v1/inventory/sync authenticated by this row's
+ * own secret, because an ERP has no user session. Corrections land through the
+ * same path as a manual one and append the same events.
+ */
+model InventoryConnector {
+  id     String           @id @default(cuid())
+  source InventorySource
+  name   String
+  status ConnectionStatus @default(disconnected)
+
+  /// Bearer token hash. The plaintext is shown once at creation and never again.
+  secretHash String
+  /// Opaque position in the source's change feed, echoed back on each batch:
+  /// an updated_at watermark, a page token, a Shopify `since_id`. The source
+  /// owns its meaning; we only hand back what it last gave us so a resumed
+  /// sync does not restart from the beginning.
+  cursor     String?
+
+  lastSyncAt   DateTime?
+  lastError    String?
+  /// Counters since the connector was created, for the operator's health view.
+  appliedCount Int       @default(0)
+  failedCount  Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  mappings   InventoryMapping[]
+  runs       InventorySyncRun[]
+  exceptions InventoryException[]
+
+  // One connector per source per workspace: two feeds for the same system
+  // would fight over the same variants.
+  @@unique([workspaceId, source])
+  @@index([workspaceId])
+  @@map("inventory_connectors")
+}
+
+/**
+ * External SKU to variant. The source knows its own SKUs and nothing about our
+ * two-axis variants, so the mapping is explicit rather than inferred — a wrong
+ * guess here corrects the stock of the wrong sellable thing.
+ */
+model InventoryMapping {
+  id          String   @id @default(cuid())
+  externalSku String
+  createdAt   DateTime @default(now())
+
+  connectorId String
+  connector   InventoryConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  variantId   String
+  variant     Variant            @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([connectorId, externalSku])
+  @@index([variantId])
+  @@map("inventory_mappings")
+}
+
+/**
+ * One pushed batch.
+ * `idempotencyKey` is the contract with the source: a network timeout means it
+ * must be able to retry, and a retry must not apply the same corrections
+ * twice. Replaying a key returns the original outcome instead of re-running.
+ */
+model InventorySyncRun {
+  id             String     @id @default(cuid())
+  idempotencyKey String
+  status         SyncStatus
+  /// Rows received, applied, and rejected into the exception queue.
+  received       Int
+  applied        Int
+  rejected       Int
+  /// The cursor the source sent with this batch, kept for reconciliation.
+  cursor         String?
+  startedAt      DateTime   @default(now())
+  durationMs     Int        @default(0)
+  error          String?
+  /// The applied corrections, for replay and for answering "why did this move".
+  changes        Json       @default("[]")
+
+  connectorId String
+  connector   InventoryConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@unique([connectorId, idempotencyKey])
+  @@index([connectorId, startedAt])
+  @@map("inventory_sync_runs")
+}
+
+/**
+ * A row the connector could not apply.
+ * Silently dropping it would let the twin drift while the dashboard claimed a
+ * healthy sync, so it becomes operator-visible work: map the SKU, or dismiss
+ * the row. Unresolved exceptions are the honest answer to "is my stock right".
+ */
+model InventoryException {
+  id          String        @id @default(cuid())
+  kind        ExceptionKind
+  externalSku String
+  /// What the source claimed, kept verbatim so the operator can judge it.
+  payload     Json
+  detail      String
+  raisedAt    DateTime      @default(now())
+  resolvedAt  DateTime?
+  resolvedBy  String?
+
+  connectorId String
+  connector   InventoryConnector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@index([connectorId, resolvedAt])
+  @@map("inventory_exceptions")
+}

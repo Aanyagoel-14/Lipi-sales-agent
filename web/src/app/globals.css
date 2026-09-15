@@ -1,0 +1,234 @@
+@import "tailwindcss";
+
+/*
+ * Theme derived from mixpanel.com: off-white ground, near-black ink,
+ * medium-weight display type with tight tracking, pill buttons,
+ * violet as the only saturated colour.
+ */
+@theme {
+  --color-ground: #fafafa;
+  --color-surface: #ffffff;
+  --color-ink: #1f2023;
+  --color-ink-muted: #55565a;
+  --color-ink-subtle: #6e6e72;
+  --color-line: rgba(0, 0, 0, 0.08);
+  --color-line-strong: rgba(0, 0, 0, 0.14);
+  --color-chip: rgba(0, 0, 0, 0.05);
+  --color-chip-hover: rgba(0, 0, 0, 0.09);
+
+  --color-violet: #7856ff;
+  --color-violet-ink: #4c2fd6;
+  --color-violet-soft: #ede8ff;
+  /* Accent inks below are darkened from the reference palette to clear WCAG AA
+   * 4.5:1 at the small sizes they are actually used at. */
+  --color-magenta: #b02258;
+  --color-teal: #096c62;
+  --color-amber: #8a5500;
+  /* Light orange-yellow chip ground. Paired with --color-amber the label
+   * measures 5.75:1, so the warmer fill costs nothing in legibility. */
+  --color-amber-wash: #fff7cd;
+  /* Fourth severity step, above magenta, for 30+ day arrears.
+   * 8.86:1 on white, 7.42:1 on its own 10% wash. */
+  --color-critical: #8e1846;
+
+  /* Mark colours for bars, dots and other non-text fills. The severity inks
+   * above are tuned for small text on a pale wash and read muddy as solid
+   * fills, so marks get their own steps. All clear the 3:1 mark floor on
+   * white: 3.80 / 4.06 / 4.87 / 7.04. */
+  --color-teal-mark: #0e9384;
+  --color-amber-mark: #b87a00;
+  --color-magenta-mark: #ce3468;
+  --color-critical-mark: #a81f52;
+
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-code), ui-monospace, monospace;
+
+  --text-display: 4.25rem;
+  --text-display--line-height: 1.05;
+  --text-display--letter-spacing: -0.025em;
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-ground);
+    -webkit-tap-highlight-color: rgba(120, 86, 255, 0.18);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-weight: 500;
+    letter-spacing: -0.022em;
+    line-height: 1.1;
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background-color: var(--color-violet);
+    color: #fff;
+  }
+}
+
+@utility eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-ink-subtle);
+}
+
+/* Hero backdrop: blurred vertical violet columns, as on the reference site. */
+@utility hero-columns {
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0px,
+    transparent 30px,
+    rgba(120, 86, 255, 0.78) 30px,
+    rgba(120, 86, 255, 0.78) 82px
+  );
+  mask-image: linear-gradient(to bottom, transparent, #000 45%, #000 76%, transparent),
+    linear-gradient(to left, #000 8%, transparent 78%);
+  mask-composite: intersect;
+  filter: blur(18px);
+}
+
+/*
+ * SHAPE LOCK — one documented radius rule, followed everywhere:
+ *   interactive (buttons, chips, pills) → full round
+ *   cards / panels                      → 1rem
+ *   nested panels inside a card         → 0.75rem
+ *   showcase shell                      → 1.5rem
+ */
+
+/* Shadows are tinted to the ground hue, never pure black. */
+@utility shadow-lift {
+  box-shadow:
+    0 1px 2px rgba(31, 32, 35, 0.04),
+    0 18px 40px -28px rgba(31, 32, 35, 0.22);
+}
+
+@utility shadow-lift-violet {
+  box-shadow:
+    0 1px 2px rgba(76, 47, 214, 0.05),
+    0 20px 46px -28px rgba(76, 47, 214, 0.28);
+}
+
+/*
+ * Scroll reveal, CSS scroll-driven. No JS and no observer, so it fails open:
+ * where `animation-timeline` is unsupported the content is simply visible.
+ * Animates transform and opacity only.
+ */
+@keyframes reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@layer base {
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+
+    @supports (animation-timeline: view()) {
+      [data-reveal] {
+        animation: reveal-in linear both;
+        animation-timeline: view();
+        animation-range: entry calc(var(--reveal-i, 0) * 4%) cover 24%;
+      }
+    }
+  }
+}
+
+/* Marquee for the channel strip: breadth without demanding attention. */
+@keyframes marquee-drift {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@utility marquee-track {
+  animation: marquee-drift 42s linear infinite;
+}
+
+.marquee-track:hover,
+.marquee-track:focus-within {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track {
+    animation: none;
+  }
+}
+
+/* Faint violet wash to break section monotony without inverting the theme. */
+@utility violet-wash {
+  background-image: radial-gradient(
+    120% 80% at 85% 0%,
+    rgba(120, 86, 255, 0.09),
+    transparent 62%
+  );
+}
+
+/*
+ * Data labels inside cards are NOT section eyebrows. Distinct, quieter device
+ * so the uppercase-eyebrow signature stays reserved for section headers.
+ */
+@utility stat-label {
+  font-size: 0.75rem;
+  color: var(--color-ink-subtle);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Numbers that sit in columns must not jitter between values. */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Chart palette. Both ramps were run through the dataviz validator against the
+ * white card surface and pass every check: lightness band, chroma floor, CVD
+ * separation, normal-vision floor and contrast.
+ *
+ *   categorical  node validate_palette.js "#6742E8,#00A48F,#B87A00,#C42A6B,#2A78D6" --surface "#ffffff"
+ *   sequential   node validate_palette.js "#B8A7F4,#9A80EE,#7A5AE4,#5233CC" --surface "#ffffff" --ordinal
+ *
+ * Slots are assigned to channels in fixed order and never cycled.
+ *
+ * `static` matters: these are referenced through var() inside inline SVG
+ * attributes, which Tailwind cannot see, so without it every slot the chart
+ * does not also use as a utility class gets tree-shaken out of the output.
+ */
+@theme static {
+  --color-series-1: #6742e8;
+  --color-series-2: #00a48f;
+  --color-series-3: #b87a00;
+  --color-series-4: #c42a6b;
+  --color-series-5: #2a78d6;
+
+  --color-ramp-1: #b8a7f4;
+  --color-ramp-2: #9a80ee;
+  --color-ramp-3: #7a5ae4;
+  --color-ramp-4: #5233cc;
+
+  --color-grid: rgba(0, 0, 0, 0.07);
+}

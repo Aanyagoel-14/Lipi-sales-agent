@@ -1,0 +1,10 @@
+web/node_modules/
+web/.next/
+web/.env
+web/.env.*
+!web/.env.example
+web/src/generated/
+*.tsbuildinfo
+web/next-env.d.ts
+web/.wrangler/
+*.log
