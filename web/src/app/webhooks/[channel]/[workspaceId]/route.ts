@@ -45,7 +45,7 @@ export async function GET(req: Request, ctx: Params) {
     where: { workspaceId_channel: { workspaceId, channel: "whatsapp" } },
   });
 
-  if (mode === "subscribe" && connection && secretsMatch(token, connection.webhookSecret)) {
+  if (mode === "subscribe" && connection?.webhookSecret && secretsMatch(token, connection.webhookSecret)) {
     return new Response(challenge, { headers: { "Content-Type": "text/plain" } });
   }
 
@@ -80,7 +80,9 @@ export async function POST(req: Request, ctx: Params) {
   // cannot authenticate — surfaced as 401, not silently accepted.
   let authentic: boolean;
   if (channel === "telegram") {
-    authentic = secretsMatch(req.headers.get("x-telegram-bot-api-secret-token") ?? "", connection.webhookSecret);
+    // Nullable since the Composio track; a row without one cannot authenticate.
+    authentic = connection.webhookSecret !== null
+      && secretsMatch(req.headers.get("x-telegram-bot-api-secret-token") ?? "", connection.webhookSecret);
   } else {
     const appSecret = connection.metaAppSecretCipher ? decrypt(connection.metaAppSecretCipher) : null;
     authentic = Boolean(appSecret) &&
