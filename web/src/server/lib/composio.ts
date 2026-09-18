@@ -70,11 +70,16 @@ export interface ComposioClient {
     authConfigId: string,
     options: { callbackUrl: string; alias?: string },
   ): Promise<{ redirectUrl: string; connectedAccountId: string }>;
-  /** API-key toolkits only (Telegram). The key goes straight to Composio and is never stored here. */
+  /**
+   * API-key toolkits only (Telegram). The key goes straight to Composio and is
+   * never stored here. `field` is the name that toolkit's auth schema requires
+   * — `generic_api_key` for Telegram — and comes from the channel spec.
+   */
   initiateApiKey(
     userId: string,
     authConfigId: string,
     apiKey: string,
+    field?: string,
   ): Promise<{ connectedAccountId: string; status: AccountStatus }>;
   getAccount(id: string): Promise<ComposioAccount>;
   deleteAccount(id: string): Promise<void>;
@@ -237,11 +242,11 @@ class RealComposio implements ComposioClient {
     return { redirectUrl: request.redirectUrl, connectedAccountId: request.id };
   }
 
-  async initiateApiKey(userId: string, authConfigId: string, apiKey: string) {
+  async initiateApiKey(userId: string, authConfigId: string, apiKey: string, field = "generic_api_key") {
     const sdk = await this.client();
     const { AuthScheme } = await import("@composio/core");
     const request = await sdk.connectedAccounts.initiate(userId, authConfigId, {
-      config: AuthScheme.APIKey({ api_key: apiKey }),
+      config: AuthScheme.APIKey({ [field]: apiKey }),
     });
     return { connectedAccountId: request.id, status: (request.status ?? "INITIALIZING") as AccountStatus };
   }

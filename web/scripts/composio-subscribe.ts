@@ -12,6 +12,11 @@ import "dotenv/config";
  *                                              issue one Connect Link against an auth
  *                                              config and print the URL, to see what
  *                                              the hosted page asks for
+ *   npm run composio:subscribe -- --auth-configs
+ *                                              create the four channel auth configs this
+ *                                              project does not have yet, and print their
+ *                                              ids for web/.env. Safe to re-run: it skips
+ *                                              a toolkit that already has one.
  *
  * Refuses to run without COMPOSIO_API_KEY. Talks to the REST API with `fetch`
  * rather than the SDK, so `src/server/lib/composio.ts` stays the SDK's only
@@ -132,6 +137,82 @@ async function versions() {
   }
 }
 
+/**
+ * The four auth configs, in the form each toolkit actually accepts (read from
+ * `GET /toolkits/{slug}` on 2026-09-19).
+ *
+ * Telegram is API_KEY: the bot token is supplied per connection, so the config
+ * itself carries no credentials. The other three are OAuth2. Gmail on
+ * Composio-managed auth is fine for production. **WhatsApp and Instagram on
+ * managed auth are development only** — Meta signs inbound webhooks with the
+ * subscribing app's secret, so a managed config can never produce inbound Lipi
+ * can verify. Replace both with custom configs on Lipi's own Meta app before
+ * those channels go live (see docs/runbooks/meta-app.md).
+ */
+const AUTH_CONFIGS = [
+  { toolkit: "telegram", env: "COMPOSIO_AUTH_CONFIG_TELEGRAM", body: { type: "use_custom_auth", authScheme: "API_KEY", credentials: {}, name: "lipi-telegram" } },
+  { toolkit: "gmail", env: "COMPOSIO_AUTH_CONFIG_GMAIL", body: { type: "use_composio_managed_auth", name: "lipi-gmail" } },
+  { toolkit: "whatsapp", env: "COMPOSIO_AUTH_CONFIG_WHATSAPP", body: { type: "use_composio_managed_auth", name: "lipi-whatsapp-DEV-ONLY" } },
+  { toolkit: "instagram", env: "COMPOSIO_AUTH_CONFIG_INSTAGRAM", body: { type: "use_composio_managed_auth", name: "lipi-instagram-DEV-ONLY" } },
+] as const;
+
+type AuthConfig = { id?: string; name?: string; toolkit?: { slug?: string }; auth_scheme?: string; is_composio_managed?: boolean };
+
+/** Every auth config in the project, keyed by toolkit slug. */
+async function existingAuthConfigs(): Promise<Map<string, AuthConfig>> {
+  const res = await api<{ items?: AuthConfig[] }>("GET", "/auth_configs");
+  const have = new Map<string, AuthConfig>();
+  for (const item of res.json?.items ?? []) {
+    const slug = item.toolkit?.slug?.toLowerCase();
+    if (slug && !have.has(slug)) have.set(slug, item);
+  }
+  return have;
+}
+
+async function authConfigs() {
+  let have = await existingAuthConfigs();
+
+  for (const spec of AUTH_CONFIGS) {
+    if (have.has(spec.toolkit)) continue;
+    const created = await api<unknown>("POST", "/auth_configs", {
+      toolkit: { slug: spec.toolkit },
+      auth_config: spec.body,
+    });
+    if (created.status >= 300) {
+      console.error(`${spec.toolkit.padEnd(10)} FAILED (${created.status}): ${JSON.stringify(created.json).slice(0, 300)}`);
+    }
+  }
+
+  // The create response's shape varies; the list is the source of truth.
+  have = await existingAuthConfigs();
+
+  const lines: string[] = [];
+  for (const spec of AUTH_CONFIGS) {
+    const config = have.get(spec.toolkit);
+    if (!config?.id) {
+      console.log(`${spec.toolkit.padEnd(10)} missing — create it in the dashboard`);
+      continue;
+    }
+    const managed = config.is_composio_managed ? "composio-managed" : "custom";
+    console.log(`${spec.toolkit.padEnd(10)} ${config.id}  ${config.auth_scheme ?? ""}  ${managed}  ${config.name ?? ""}`);
+    lines.push(`${spec.env}=${config.id}`);
+  }
+
+  if (lines.length) {
+    console.log("");
+    console.log("Put these in web/.env:");
+    for (const line of lines) console.log(`  ${line}`);
+  }
+  const meta = AUTH_CONFIGS.filter((s) => s.toolkit === "whatsapp" || s.toolkit === "instagram")
+    .filter((s) => have.get(s.toolkit)?.is_composio_managed);
+  if (meta.length) {
+    console.log("");
+    console.log(`DEVELOPMENT ONLY: ${meta.map((m) => m.toolkit).join(" and ")} are Composio-managed.`);
+    console.log("Inbound Meta webhooks cannot be verified through a managed app — replace with custom");
+    console.log("configs on Lipi's own Meta app before going live. See docs/runbooks/meta-app.md.");
+  }
+}
+
 async function link(authConfigId: string) {
   const res = await api<{ redirect_url?: string; connected_account_id?: string; expires_at?: string }>(
     "POST",
@@ -150,6 +231,7 @@ async function link(authConfigId: string) {
 async function main() {
   const linkTarget = flagValue("--link");
   if (flag("--versions")) await versions();
+  else if (flag("--auth-configs")) await authConfigs();
   else if (flag("--rotate")) await rotate();
   else if (linkTarget) await link(linkTarget);
   else await subscribe();

@@ -65,7 +65,15 @@ export type ChannelSpec = {
     | "COMPOSIO_AUTH_CONFIG_INSTAGRAM"
     | "COMPOSIO_AUTH_CONFIG_TELEGRAM"
     | "COMPOSIO_AUTH_CONFIG_GMAIL";
-  connect: { kind: "link" } | { kind: "api_key"; field: string; hint: string };
+  connect:
+    | { kind: "link" }
+    /**
+     * `field` is what the operator's form calls it; `composioField` is the
+     * name Composio's own auth schema requires, which is not the same thing
+     * (Telegram's is `generic_api_key`). Getting the second wrong fails the
+     * connection with a validation error, so it is declared, not assumed.
+     */
+    | { kind: "api_key"; field: string; composioField: string; hint: string };
   inbound:
     | { kind: "meta"; object: "whatsapp_business_account" | "instagram" | "page" }
     | { kind: "telegram" }
@@ -83,22 +91,21 @@ export type ChannelSpec = {
 };
 
 /**
- * Pinned toolkit versions.
+ * Pinned toolkit versions, read from `GET /toolkits/{slug}` on 2026-09-19 and
+ * verified against every tool slug and argument name the specs below use.
  *
  * Composio rejects an execute that names no version, and Lipi never sets
  * `dangerouslySkipVersionCheck`, so a stale or wrong pin fails loudly instead
- * of silently running whatever "latest" has become. These are placeholders in
- * the documented format: the foundation phase had no live API key to read the
- * current values from. `npm run composio:subscribe -- --versions` prints the
- * live version next to each pin; confirm them before the first real execute,
- * and bump deliberately, one toolkit at a time, with the send builders
- * re-tested.
+ * of silently running whatever "latest" has become. `npm run composio:subscribe
+ * -- --versions` prints the live version next to each pin. Bump deliberately,
+ * one toolkit at a time, with the send builders re-tested — a toolkit release
+ * can rename an argument, and these arguments are what reaches a customer.
  */
 const PINS = {
-  whatsapp: "20260902_00",
-  telegram: "20260902_00",
-  instagram: "20260902_00",
-  gmail: "20260902_00",
+  whatsapp: "20260915_00",
+  telegram: "20260821_00",
+  instagram: "20260915_00",
+  gmail: "20260915_00",
 } as const;
 
 const str = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
@@ -211,7 +218,7 @@ const telegram: ChannelSpec = {
   toolkit: "telegram",
   toolkitVersion: PINS.telegram,
   authConfigEnv: "COMPOSIO_AUTH_CONFIG_TELEGRAM",
-  connect: { kind: "api_key", field: "token", hint: "Bot token from @BotFather" },
+  connect: { kind: "api_key", field: "token", composioField: "generic_api_key", hint: "Bot token from @BotFather" },
   inbound: { kind: "telegram" },
 
   parse(body) {

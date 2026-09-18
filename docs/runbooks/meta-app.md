@@ -22,11 +22,13 @@ Add **WhatsApp**, **Instagram** and **Messenger** from the product list.
 Under Facebook Login for Business → Settings → Valid OAuth Redirect URIs add:
 
 ```
-https://backend.composio.dev/api/v3/toolkits/auth/callback
+https://backend.composio.dev/api/v1/auth-apps/add
 ```
 
 That is where Composio finishes the OAuth dance for both the WhatsApp and the Instagram
-auth configs. Nothing points at Lipi here.
+auth configs. Nothing points at Lipi here. Confirmed against `GET /toolkits/whatsapp` on
+2026-09-19 as the default `oauth_redirect_uri`; the older `/api/v3/toolkits/auth/callback`
+seen in some tutorials is wrong.
 
 ## 4. Webhooks
 
@@ -50,6 +52,19 @@ Subscribe the **`messages`** field on each product:
 Per-tenant subscription happens at connect time through Composio
 (`WHATSAPP_SUBSCRIBE_APP`, `INSTAGRAM_ENABLE_WEBHOOK_SUBSCRIPTIONS`, Page
 `subscribed_apps`); the app-level callback above is what those subscriptions deliver to.
+
+## 4a. What the operator is asked for at connect time
+
+Composio's hosted Connect Link asks the operator for their **WhatsApp Business Account ID**
+(the auth schema's `generic_id`, a 15–16 digit number from Meta Business Suite → Settings →
+Accounts → WhatsApp accounts) before the OAuth redirect. Instagram asks for nothing extra.
+Tell tenants where to find the WABA ID, or the connect step stalls on a field they cannot fill.
+
+Default scopes on a WhatsApp auth config are `whatsapp_business_management`,
+`whatsapp_business_messaging` and `business_management`; Instagram's are
+`instagram_business_basic`, `instagram_business_manage_messages`,
+`instagram_business_manage_comments`, `instagram_business_content_publish` and
+`instagram_business_manage_insights`.
 
 ## 5. Permissions and App Review
 

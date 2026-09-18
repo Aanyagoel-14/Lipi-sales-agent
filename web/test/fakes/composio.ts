@@ -36,7 +36,7 @@ export class FakeComposio implements ComposioClient {
   triggers = new Set<string>();
   calls = {
     link: [] as { userId: string; authConfigId: string; callbackUrl: string; alias?: string }[],
-    initiateApiKey: [] as { userId: string; authConfigId: string; apiKey: string }[],
+    initiateApiKey: [] as { userId: string; authConfigId: string; apiKey: string; field: string }[],
     getAccount: [] as string[],
     deleteAccount: [] as string[],
     execute: [] as ({ slug: string } & ExecuteArgs)[],
@@ -77,8 +77,8 @@ export class FakeComposio implements ComposioClient {
     return { redirectUrl: `https://connect.composio.test/link/${connectedAccountId}`, connectedAccountId };
   }
 
-  async initiateApiKey(userId: string, authConfigId: string, apiKey: string) {
-    this.calls.initiateApiKey.push({ userId, authConfigId, apiKey });
+  async initiateApiKey(userId: string, authConfigId: string, apiKey: string, field = "generic_api_key") {
+    this.calls.initiateApiKey.push({ userId, authConfigId, apiKey, field });
     const connectedAccountId = this.nextId("ca");
     const status: AccountStatus = "ACTIVE";
     this.accounts.set(connectedAccountId, {

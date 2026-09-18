@@ -39,12 +39,20 @@ go in `web/.env`.
 
 | Channel | Toolkit | Type | Env key |
 | --- | --- | --- | --- |
-| Telegram | `telegram` | API_KEY (bot token) | `COMPOSIO_AUTH_CONFIG_TELEGRAM` |
+| Telegram | `telegram` | API_KEY (bot token, field `generic_api_key`) | `COMPOSIO_AUTH_CONFIG_TELEGRAM` |
 | WhatsApp | `whatsapp` | OAuth2, **custom** on Lipi's Meta app for anything live | `COMPOSIO_AUTH_CONFIG_WHATSAPP` |
 | Instagram | `instagram` | OAuth2, **custom** on Lipi's Meta app for anything live | `COMPOSIO_AUTH_CONFIG_INSTAGRAM` |
 | Email | `gmail` | OAuth2, Composio-managed is fine to start | `COMPOSIO_AUTH_CONFIG_GMAIL` |
 
-Create them in the dashboard (Auth Configs → Create) or programmatically:
+The fastest path is the setup script, which creates whichever of the four the project does
+not have yet and prints the ids to paste into `web/.env`:
+
+```
+npm run composio:subscribe -- --auth-configs
+```
+
+It is safe to re-run: a toolkit that already has a config is left alone. To create them by
+hand instead, use the dashboard (Auth Configs → Create) or:
 
 ```ts
 // custom OAuth on Lipi's own Meta app
@@ -54,14 +62,18 @@ composio.authConfigs.create("whatsapp", {
   credentials: {
     client_id: META_APP_ID,
     client_secret: META_APP_SECRET,
-    oauth_redirect_uri: "https://backend.composio.dev/api/v3/toolkits/auth/callback",
+    oauth_redirect_uri: "https://backend.composio.dev/api/v1/auth-apps/add",
   },
 });
 // Telegram
 composio.authConfigs.create("telegram", { type: "use_custom_auth", authScheme: "API_KEY", credentials: {} });
+// note: over REST the field is camelCase `authScheme`, inside `auth_config`
 ```
 
-The redirect URI above is the one to register in the Meta app (see `meta-app.md`).
+The redirect URI above is the one to register in the Meta app (see `meta-app.md`). It is the
+default Composio returns in the toolkit's `auth_config_creation` fields, confirmed against
+`GET /toolkits/whatsapp` on 2026-09-19 — an older value, `/api/v3/toolkits/auth/callback`,
+appears in some tutorials and does not work.
 
 **Composio-managed Meta configs are for development only.** Meta signs inbound webhooks
 with the subscribing app's secret, so inbound WhatsApp and Instagram through a managed

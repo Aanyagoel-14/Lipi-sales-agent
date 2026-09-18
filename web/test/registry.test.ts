@@ -12,6 +12,23 @@ describe("the registry", () => {
     expect(new Set(channelSpecs.map((s) => s.toolkit)).size).toBe(channelSpecs.length);
   });
 
+  it("pins the toolkit versions that were live when the slugs were verified", () => {
+    // Read from GET /toolkits/{slug} on 2026-09-19, when every send and identity
+    // slug below was confirmed to exist with these argument names. Bumping a pin
+    // without re-checking the arguments is how a rename reaches a customer.
+    expect(Object.fromEntries(channelSpecs.map((s) => [s.toolkit, s.toolkitVersion]))).toEqual({
+      whatsapp: "20260915_00", telegram: "20260821_00", instagram: "20260915_00", gmail: "20260915_00",
+    });
+  });
+
+  it("names the Composio auth field for every api_key channel", () => {
+    // Telegram's schema requires `generic_api_key`, not `api_key`; sending the
+    // wrong name fails the connection with a validation error.
+    for (const spec of channelSpecs) {
+      if (spec.connect.kind === "api_key") expect(spec.connect.composioField).toBe("generic_api_key");
+    }
+  });
+
   it("hands the SDK one version per toolkit", () => {
     expect(Object.keys(toolkitVersions()).sort()).toEqual(["gmail", "instagram", "telegram", "whatsapp"]);
   });
@@ -145,7 +162,9 @@ describe("catalog()", () => {
     expect(entries.map((e) => e.channel)).toEqual(["whatsapp", "telegram", "instagram", "email"]);
     expect(entries.find((e) => e.channel === "email")?.inbound).toEqual({ kind: "composio_trigger", slug: "GMAIL_NEW_GMAIL_MESSAGE" });
     expect(entries.find((e) => e.channel === "whatsapp")?.inbound).toEqual({ kind: "meta" });
-    expect(entries.find((e) => e.channel === "telegram")?.connect).toEqual({ kind: "api_key", field: "token", hint: "Bot token from @BotFather" });
+    expect(entries.find((e) => e.channel === "telegram")?.connect).toEqual({
+      kind: "api_key", field: "token", composioField: "generic_api_key", hint: "Bot token from @BotFather",
+    });
   });
 
   it("marks a channel unavailable until its auth config id is set, naming the key", () => {
