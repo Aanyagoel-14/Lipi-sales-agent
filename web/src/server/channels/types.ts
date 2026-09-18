@@ -10,14 +10,16 @@ export type InboundMessage = {
   externalId: string;
 };
 
+/**
+ * All that is left of the old adapters: parsing.
+ *
+ * Sending, credential testing and webhook registration moved to the channel
+ * registry and `outbound.ts`, which go through Composio — nothing here holds a
+ * provider token any more. The parsers stay only until the per-workspace
+ * webhook route that calls them is replaced by the single Meta route.
+ */
 export type ChannelAdapter = {
   channel: Channel;
-  /** Human-readable label for what the operator must paste in. */
-  credentialLabel: string;
   /** Turns a provider payload into zero or more canonical messages. */
   parse(body: unknown): InboundMessage[];
-  /** Sends a reply. Throws with a useful message when the provider refuses. */
-  send(args: { secret: string; config: Record<string, unknown>; to: string; text: string }): Promise<void>;
-  /** Confirms the credentials actually work, and returns who we are. */
-  test(args: { secret: string; config: Record<string, unknown> }): Promise<{ displayName: string; externalId: string }>;
 };

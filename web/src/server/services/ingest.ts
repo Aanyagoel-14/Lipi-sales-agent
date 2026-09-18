@@ -406,14 +406,20 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       }
     }
 
-    // Under a strict policy the drafted reply is recorded but not sent.
-    if (!held) {
-      await tx.message.create({
-        data: { from: "agent", text: reply, sentAt: new Date(now.getTime() + 1000), conversationId: conversation.id },
-      });
-    } else {
-      record("reply.held", "conversation", "policy=everything awaiting approval");
-    }
+    // Under a strict policy the drafted reply is recorded but not sent. It is
+    // written either way, and marked `held` when it is: the approval queue
+    // releases a message by sending it, and until now the held branch wrote
+    // no message at all, so there was nothing for an approval to release.
+    // Still one write on either branch, so the transaction is unchanged in
+    // shape — only the held path stopped losing the reply it drafted.
+    await tx.message.create({
+      data: {
+        from: "agent", text: reply, sentAt: new Date(now.getTime() + 1000),
+        conversationId: conversation.id,
+        ...(held ? { deliveryStatus: "held" as const } : {}),
+      },
+    });
+    if (held) record("reply.held", "conversation", "policy=everything awaiting approval");
 
     /* --------------------------------------------------- the event trail */
     await tx.twinEvent.createMany({

@@ -17,8 +17,17 @@ export const customerOut = (c: {
   lastSeenIso: c.lastSeenAt.toISOString(),
 });
 
-export const messageOut = (m: { from: string; text: string; sentAt: Date; quote: unknown }) => ({
+export const messageOut = (m: {
+  from: string; text: string; sentAt: Date; quote: unknown;
+  deliveryStatus: string; deliveryError: string | null;
+}) => ({
   from: m.from, text: m.text, atIso: m.sentAt.toISOString(), quote: m.quote ?? undefined,
+  // Only agent messages carry a delivery state; a customer's message was
+  // never ours to deliver, so the field is left off rather than sent as a
+  // status the inbox would have to know to ignore.
+  ...(m.deliveryStatus === "not_applicable"
+    ? {}
+    : { delivery: m.deliveryStatus, deliveryError: m.deliveryError ?? undefined }),
 });
 
 export const eventOut = (e: { id: string; occurredAt: Date; type: string; twin: string; payload: string }) => ({

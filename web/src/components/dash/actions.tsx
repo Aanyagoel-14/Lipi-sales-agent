@@ -15,7 +15,8 @@ function useAction() {
     setError(null);
     try {
       const res = await apiFetch(path, init);
-      const body = (await res.json().catch(() => null)) as { error?: string; delivered?: boolean } | null;
+      const body = (await res.json().catch(() => null)) as
+        { error?: string; delivered?: boolean; reason?: string } | null;
       if (!res.ok) throw new Error(body?.error ?? "That did not work");
       router.refresh();
       return body;
@@ -80,8 +81,11 @@ export function ReplyBox({ conversationId }: { conversationId: string }) {
     });
     if (body) {
       setText("");
-      // Whether it actually left the building depends on the channel being connected.
-      setNote(body.delivered ? "Sent." : "Saved to the thread. Connect the channel to deliver it.");
+      // Whether it actually left the building depends on the channel, and the
+      // provider's own reason is more use than a guess about why.
+      setNote(body.delivered
+        ? "Sent."
+        : `Saved to the thread, not delivered${body.reason ? `: ${body.reason}` : "."}`);
     }
   }
 

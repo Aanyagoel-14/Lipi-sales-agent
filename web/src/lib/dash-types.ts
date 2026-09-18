@@ -30,7 +30,13 @@ export type QuoteCard = {
   product: string; variant: string; qty: number;
   unitInr: number; totalInr: number; dispatch: string; eta: string;
 };
-export type Message = { from: "customer" | "agent"; text: string; atIso: string; quote?: QuoteCard };
+/** Absent on customer messages, and on agent messages older than delivery tracking. */
+export type DeliveryState = "pending" | "sent" | "failed" | "held";
+
+export type Message = {
+  from: "customer" | "agent"; text: string; atIso: string; quote?: QuoteCard;
+  delivery?: DeliveryState; deliveryError?: string;
+};
 
 /** A row in the thread list: one preview line, never the whole thread. */
 export type ConversationSummary = {

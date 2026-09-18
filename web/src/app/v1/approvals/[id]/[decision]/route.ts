@@ -1,5 +1,4 @@
-import { adapterFor } from "@/server/channels/index";
-import { decrypt } from "@/server/lib/crypto";
+import { sendReply } from "@/server/channels/outbound";
 import { HttpError, json, route } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
 import { requireUser } from "@/server/lib/session";
@@ -45,31 +44,26 @@ export const POST = route<{ id: string; decision: string }>(async (_req, { id, d
 
   // Approving a held reply is what finally sends it.
   const conversation = approval.run.conversation;
-  if (approved && conversation) {
-    const held = await prisma.message.findFirst({
+  if (conversation) {
+    const draft = await prisma.message.findFirst({
       where: { conversationId: conversation.id, from: "agent" },
       orderBy: { sentAt: "desc" },
     });
 
-    const connection = await prisma.channelConnection.findUnique({
-      where: { workspaceId_channel: { workspaceId, channel: conversation.channel } },
-    });
-    const adapter = adapterFor(conversation.channel);
-    const customer = await prisma.customer.findUnique({ where: { id: conversation.customerId } });
-
-    if (held && connection?.secretCipher && adapter && customer) {
-      const secret = decrypt(connection.secretCipher);
-      if (secret) {
-        try {
-          await adapter.send({
-            secret, config: connection.config as Record<string, unknown>,
-            to: customer.handle, text: held.text,
-          });
-          delivered = true;
-          await recordEvent(workspaceId, "reply.sent", "conversation", `${conversation.id} via ${conversation.channel}`);
-        } catch (error) {
-          await recordEvent(workspaceId, "reply.failed", "conversation", (error as Error).message.slice(0, 200));
-        }
+    // A message the provider already accepted is history, not a draft. Without
+    // this guard a second decision on the same thread would re-send it.
+    if (draft && draft.deliveryStatus !== "sent") {
+      if (approved) {
+        ({ delivered } = await sendReply({
+          workspaceId, conversationId: conversation.id, messageId: draft.id, by: user.email,
+        }));
+      } else {
+        // A rejected reply is never sent. Saying so on the message is what
+        // stops the inbox implying it went out.
+        await prisma.message.update({
+          where: { id: draft.id },
+          data: { deliveryStatus: "held", deliveryError: null },
+        });
       }
     }
   }
