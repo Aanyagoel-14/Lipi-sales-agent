@@ -1,54 +1,70 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/client";
 
+type PhoneNumber = { id: string; display?: string; verifiedName?: string };
+
 type ChannelRow = {
   channel: string;
-  supported: boolean;
-  credentialLabel: string | null;
-  status: string;
+  label: string;
+  connectKind: "link" | "api_key" | "none";
+  inbound: { kind: string; reason?: string };
+  available: boolean;
+  unavailableReason: string | null;
+  status: "disconnected" | "pending" | "connected" | "needs_reconnect" | "error";
   displayName: string | null;
-  hasCredentials: boolean;
+  externalId: string | null;
+  config: { phoneNumbers?: PhoneNumber[]; phoneNumberId?: string } | null;
+  lastError: string | null;
   installSnippet: string | null;
-};
-
-const LABELS: Record<string, string> = {
-  whatsapp: "WhatsApp", telegram: "Telegram", email: "Email",
-  webchat: "Website chat", instagram: "Instagram DM",
 };
 
 const field =
   "h-10 w-full rounded-full border border-line-strong bg-surface px-4 text-[0.8125rem] placeholder:text-ink-subtle focus-visible:border-violet focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-violet";
 
+const CHIPS: Record<string, { label: string; tone: string; mark: string }> = {
+  connected: { label: "Live", tone: "text-teal", mark: "bg-teal-mark" },
+  pending: { label: "Finishing on the provider", tone: "text-ink-muted", mark: "bg-ink-subtle" },
+  needs_reconnect: { label: "Needs reconnecting", tone: "text-amber", mark: "bg-amber-mark" },
+  error: { label: "Not working", tone: "text-magenta", mark: "bg-magenta-mark" },
+};
+
+/** What this channel will actually do once it is connected. */
+function capability(row: ChannelRow): string {
+  if (!row.available) return row.unavailableReason ?? "Not configured for this deployment";
+  switch (row.inbound.kind) {
+    case "webchat":
+      return "A chat bubble for your own website. Paste one script tag, nothing to authenticate.";
+    case "none":
+      return row.inbound.reason ?? "Replies only";
+    case "composio_trigger":
+      return "New mail becomes a conversation, checked every few minutes";
+    default:
+      return "Customer messages become conversations, and the twin answers in the same thread";
+  }
+}
+
 /**
- * Connecting for real, during setup.
+ * Connecting a channel.
  *
- * Credentials are checked against the provider before they are stored, so the
- * operator finds out here that a token is wrong rather than when a customer
- * messages and nothing happens.
+ * There is nothing to paste here for most channels, and that is the point:
+ * the operator presses Connect, finishes on the provider's own consent
+ * screen, and comes back to a status that was checked rather than assumed.
+ * Lipi stores no provider credential, so there is no token field, no webhook
+ * URL to copy and no verify token to keep — the three things this step used
+ * to ask for and could never show again afterwards.
  */
 export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
   const [rows, setRows] = useState<ChannelRow[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const [secret, setSecret] = useState("");
-  const [phoneNumberId, setPhoneNumberId] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-
-  async function copySnippet(snippet: string) {
-    try {
-      await navigator.clipboard.writeText(snippet);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard permission denied or unavailable (e.g. non-HTTPS local
-      // testing) — the snippet is still visible and selectable by hand.
-    }
-  }
+  const scrolled = useRef(false);
 
   const load = () =>
     apiFetch("channels")
@@ -58,33 +74,85 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
 
   useEffect(() => { void load(); }, []);
 
-  async function connect(channel: string) {
-    setBusy(true);
+  // The callback route returns the browser to `?channel=…`. Bring that card
+  // into view, once, so a connection that failed is not missed below the fold.
+  useEffect(() => {
+    if (scrolled.current || !rows.length) return;
+    const wanted = new URLSearchParams(window.location.search).get("channel");
+    if (!wanted) return;
+    scrolled.current = true;
+    document.getElementById(`channel-${wanted}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [rows]);
+
+  async function act<T>(channel: string, work: () => Promise<T>) {
+    setBusy(channel);
     setError(null);
     setNote(null);
-
     try {
-      const res = await apiFetch(`channels/${channel}/connect`, {
-        method: "POST",
-        body: JSON.stringify({
-          secret,
-          config: channel === "whatsapp" ? { phoneNumberId } : {},
-        }),
-      });
-      const body = (await res.json().catch(() => null)) as { error?: string; webhookNote?: string } | null;
-      if (!res.ok) throw new Error(body?.error ?? "Could not connect");
-
-      setSecret("");
-      setPhoneNumberId("");
-      setOpen(null);
-      setNote(body?.webhookNote ?? null);
-      await load();
-      onConnected?.();
+      return await work();
     } catch (e) {
       setError((e as Error).message);
+      return undefined;
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
+  }
+
+  const failed = async (res: Response, fallback: string) => {
+    const payload = (await res.json().catch(() => null)) as { error?: string } | null;
+    return new Error(payload?.error ?? fallback);
+  };
+
+  async function connect(row: ChannelRow) {
+    await act(row.channel, async () => {
+      const res = await apiFetch(`channels/${row.channel}/connect`, {
+        method: "POST",
+        ...(row.connectKind === "api_key" ? { body: JSON.stringify({ token }) } : {}),
+      });
+      if (!res.ok) throw await failed(res, "Could not start the connection");
+      const data = (await res.json()) as { redirectUrl: string | null };
+
+      // The provider's consent screen is the next step, and it is a full page
+      // navigation: the operator comes back through /v1/channels/callback.
+      if (data.redirectUrl) {
+        window.location.href = data.redirectUrl;
+        return;
+      }
+      setToken("");
+      setOpen(null);
+      await load();
+      onConnected?.();
+    });
+  }
+
+  async function disconnect(channel: string) {
+    await act(channel, async () => {
+      const res = await apiFetch(`channels/${channel}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw await failed(res, "Could not disconnect");
+      await load();
+    });
+  }
+
+  async function check(channel: string) {
+    await act(channel, async () => {
+      const res = await apiFetch(`channels/${channel}/test`, { method: "POST" });
+      const data = (await res.json().catch(() => null)) as
+        { ok?: boolean; displayName?: string; error?: string } | null;
+      if (!data?.ok) throw new Error(data?.error ?? "That connection did not answer");
+      setNote(`Answered as ${data.displayName}`);
+      await load();
+    });
+  }
+
+  async function pickNumber(channel: string, phoneNumberId: string) {
+    await act(channel, async () => {
+      const res = await apiFetch(`channels/${channel}`, {
+        method: "PATCH",
+        body: JSON.stringify({ phoneNumberId }),
+      });
+      if (!res.ok) throw await failed(res, "Could not save that number");
+      await load();
+    });
   }
 
   return (
@@ -96,26 +164,72 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
 
       <ul className="mt-8 space-y-2.5">
         {rows.map((row) => {
-          // Webchat needs no secret and is never "disconnected" — the widget
-          // IS the transport, so it works the instant the workspace exists.
-          // What the operator needs here is the install snippet, not a
-          // credential form, so this channel gets its own card body below
-          // instead of falling into the connect/secret flow the rest use.
-          if (row.channel === "webchat") {
-            return (
-              <li key={row.channel} className="rounded-2xl border border-line bg-surface">
-                <div className="flex flex-wrap items-center gap-3 p-5">
-                  <div className="min-w-0">
-                    <p className="text-[0.9375rem] font-medium">{LABELS.webchat}</p>
-                    <p className="mt-0.5 text-[0.8125rem] text-ink-muted">
-                      A chat bubble for your own website. Paste one script tag, nothing to authenticate.
-                    </p>
-                  </div>
-                  <span className="ml-auto inline-flex items-center gap-2 text-[0.75rem] text-teal">
-                    <span className="size-1.5 rounded-full bg-teal-mark" aria-hidden />
-                    Ready
-                  </span>
+          const chip = CHIPS[row.status];
+          const numbers = row.config?.phoneNumbers ?? [];
+          const mustPickNumber = row.status === "connected" && numbers.length > 1;
+          const working = busy === row.channel;
+
+          return (
+            <li key={row.channel} id={`channel-${row.channel}`} className="rounded-2xl border border-line bg-surface">
+              <div className="flex flex-wrap items-center gap-3 p-5">
+                <div className="min-w-0">
+                  <p className="text-[0.9375rem] font-medium">{row.label}</p>
+                  <p className="mt-0.5 text-[0.8125rem] text-ink-muted">
+                    {row.status === "connected" && row.displayName
+                      ? `Connected as ${row.displayName}`
+                      : capability(row)}
+                  </p>
+                  {row.lastError ? (
+                    <p className="mt-1 text-[0.75rem] text-magenta">{row.lastError}</p>
+                  ) : null}
                 </div>
+
+                <span className="ml-auto flex items-center gap-2">
+                  {chip ? (
+                    <span className={`inline-flex items-center gap-2 text-[0.75rem] ${chip.tone}`}>
+                      <span className={`size-1.5 rounded-full ${chip.mark}`} aria-hidden />
+                      {chip.label}
+                    </span>
+                  ) : null}
+
+                  {row.connectKind === "none" || !row.available ? null : row.status === "connected" ? (
+                    <>
+                      <Button size="sm" variant="ghost" chevron={false} disabled={working}
+                        onClick={() => check(row.channel)}>
+                        Test
+                      </Button>
+                      <Button size="sm" variant="ghost" chevron={false} disabled={working}
+                        onClick={() => disconnect(row.channel)}>
+                        Disconnect
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button size="sm" variant="secondary" chevron={false} disabled={working}
+                        onClick={() => {
+                          if (row.connectKind === "api_key") {
+                            setOpen(open === row.channel ? null : row.channel);
+                            setError(null);
+                          } else {
+                            void connect(row);
+                          }
+                        }}>
+                        {working ? "Working…"
+                          : open === row.channel ? "Cancel"
+                            : row.status === "disconnected" ? "Connect" : "Reconnect"}
+                      </Button>
+                      {row.status === "disconnected" ? null : (
+                        <Button size="sm" variant="ghost" chevron={false} disabled={working}
+                          onClick={() => disconnect(row.channel)}>
+                          Disconnect
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </span>
+              </div>
+
+              {row.installSnippet ? (
                 <div className="space-y-2.5 border-t border-line p-5">
                   <label htmlFor="webchat-snippet" className="text-[0.75rem] text-ink-subtle">
                     Paste this before <code>&lt;/body&gt;</code> on your site:
@@ -123,17 +237,13 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
                   <textarea
                     id="webchat-snippet"
                     readOnly
-                    value={row.installSnippet ?? ""}
+                    value={row.installSnippet}
                     rows={2}
                     onFocus={(e) => e.currentTarget.select()}
                     className={`${field} h-auto resize-none rounded-2xl py-3 font-mono text-[0.75rem] leading-relaxed`}
                   />
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    chevron={false}
-                    onClick={() => row.installSnippet && copySnippet(row.installSnippet)}
-                  >
+                  <Button size="sm" variant="secondary" chevron={false}
+                    onClick={() => copy(row.installSnippet!, setCopied)}>
                     {copied ? "Copied" : "Copy snippet"}
                   </Button>
                   <p className="text-[0.75rem] text-ink-subtle">
@@ -141,68 +251,47 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
                     twin to talk to, the same way a Stripe publishable key works.
                   </p>
                 </div>
-              </li>
-            );
-          }
+              ) : null}
 
-          const connected = row.status === "connected";
-          return (
-            <li key={row.channel} className="rounded-2xl border border-line bg-surface">
-              <div className="flex flex-wrap items-center gap-3 p-5">
-                <div className="min-w-0">
-                  <p className="text-[0.9375rem] font-medium">{LABELS[row.channel] ?? row.channel}</p>
-                  <p className="mt-0.5 text-[0.8125rem] text-ink-muted">
-                    {connected
-                      ? `Connected as ${row.displayName ?? "…"}`
-                      : row.supported
-                        ? row.credentialLabel
-                        : "No integration yet. You can still pick it later."}
-                  </p>
-                </div>
-
-                <span className="ml-auto">
-                  {connected ? (
-                    <span className="inline-flex items-center gap-2 text-[0.75rem] text-teal">
-                      <span className="size-1.5 rounded-full bg-teal-mark" aria-hidden />
-                      Live
-                    </span>
-                  ) : row.supported ? (
-                    <Button size="sm" variant="secondary" chevron={false}
-                      onClick={() => { setOpen(open === row.channel ? null : row.channel); setError(null); }}>
-                      {open === row.channel ? "Cancel" : "Connect"}
-                    </Button>
-                  ) : (
-                    <span className="text-[0.6875rem] uppercase tracking-wide text-ink-subtle">soon</span>
-                  )}
-                </span>
-              </div>
-
-              {open === row.channel ? (
+              {open === row.channel && row.connectKind === "api_key" ? (
                 <div className="space-y-2.5 border-t border-line p-5">
                   <input
-                    value={secret}
-                    onChange={(e) => setSecret(e.target.value)}
-                    placeholder={row.credentialLabel ?? "Token"}
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    placeholder="Bot token from @BotFather"
                     autoComplete="off"
                     spellCheck={false}
                     className={field}
                   />
-                  {row.channel === "whatsapp" ? (
-                    <input
-                      value={phoneNumberId}
-                      onChange={(e) => setPhoneNumberId(e.target.value)}
-                      placeholder="Phone number ID"
-                      autoComplete="off"
-                      spellCheck={false}
-                      className={field}
-                    />
-                  ) : null}
-                  <Button size="sm" disabled={busy || secret.trim().length < 8} onClick={() => connect(row.channel)}>
-                    {busy ? "Checking…" : "Check and connect"}
+                  <Button size="sm" disabled={working || token.trim().length < 20}
+                    onClick={() => connect(row)}>
+                    {working ? "Checking…" : "Check and connect"}
                   </Button>
                   <p className="text-[0.75rem] text-ink-subtle">
-                    We verify this with {LABELS[row.channel]} before saving it, and store it encrypted.
+                    The token goes straight to our connection provider. Lipi does not keep a copy.
                   </p>
+                </div>
+              ) : null}
+
+              {mustPickNumber ? (
+                <div className="space-y-2.5 border-t border-line p-5">
+                  <label htmlFor={`number-${row.channel}`} className="text-[0.75rem] text-ink-subtle">
+                    This account has more than one number. Which one do customers message?
+                  </label>
+                  <select
+                    id={`number-${row.channel}`}
+                    value={row.config?.phoneNumberId ?? ""}
+                    disabled={working}
+                    onChange={(e) => pickNumber(row.channel, e.target.value)}
+                    className={field}
+                  >
+                    <option value="" disabled>Choose a number</option>
+                    {numbers.map((number) => (
+                      <option key={number.id} value={number.id}>
+                        {number.display || number.id}{number.verifiedName ? ` — ${number.verifiedName}` : ""}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               ) : null}
             </li>
@@ -216,4 +305,15 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
       </p>
     </section>
   );
+}
+
+async function copy(snippet: string, setCopied: (value: boolean) => void) {
+  try {
+    await navigator.clipboard.writeText(snippet);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  } catch {
+    // Clipboard permission denied or unavailable (e.g. non-HTTPS local
+    // testing) — the snippet is still visible and selectable by hand.
+  }
 }
