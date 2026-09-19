@@ -18,7 +18,7 @@ an agent working a phase and the loop edit the same files at the same time.
 | --- | --- | --- | --- |
 | **Plan** | 1 | 1 | Reads every open `sandcastle` issue plus GitHub's own blocking graph, and emits a `<plan>` JSON of the issues that are unblocked right now, each with a deterministic branch `sandcastle/issue-N`. |
 | **Execute + Review** | 2 per issue, all issues in parallel | 100 / 1 | One Docker sandbox per issue. The implementer works the issue red-green-refactor and commits; if it produced commits, a reviewer runs in the same sandbox on the same branch and tidies. |
-| **Merge** | 1 | 1 | Merges every branch that produced commits into the host's current branch, resolves conflicts, runs the checks, and closes the issues it merged. |
+| **Merge** | 1 | 1 | In a worktree on a temporary branch, merges every branch that produced commits, resolves conflicts, runs the checks, and closes the issues it merged; Sandcastle then fast-forwards the host's current branch to the result. |
 
 Because the branch name is derived from the issue number, an issue that is not finished in one
 cycle resumes on the same branch in the next one with its work intact.
@@ -28,7 +28,7 @@ cycle resumes on the same branch in the next one with its work intact.
 | | Check | State as of 2026-09-19 |
 | --- | --- | --- |
 | Docker daemon | `docker info` | up, v29.8.0 |
-| Sandbox image | `docker images sandcastle:lipi-sales-agent` | built, 2.4 GB |
+| Sandbox image | `docker images sandcastle:lipi-sales-agent` | built, 4.4 GB — includes the app's dependency tree |
 | `gh` authenticated | `gh auth status` | logged in as `Aanyagoel-14` |
 | Fork remote | `git remote -v` | `fork` → `Aanyagoel-14/Lipi-sales-agent` |
 | Tokens | `.sandcastle/.env` | `CLAUDE_CODE_OAUTH_TOKEN` and `GH_TOKEN` both set |
@@ -36,11 +36,18 @@ cycle resumes on the same branch in the next one with its work intact.
 
 `.sandcastle/.env` is gitignored and holds live credentials. Never commit it, never echo it.
 
-Rebuild the image after any change to `.sandcastle/Dockerfile`:
+Rebuild the image after any change to `.sandcastle/Dockerfile`, and after `web/package-lock.json`
+changes on the integration branch:
 
 ```
 ./node_modules/.bin/sandcastle docker build-image --dockerfile .sandcastle/Dockerfile
 ```
+
+Use that command, not `docker build` directly: it passes the host UID/GID as build args so the
+bind-mounted worktree and the image's files share an owner, and it uses the repo root as the build
+context, which the Dockerfile's `COPY web/...` lines depend on. A stale image is not fatal — a
+sandbox whose lockfile differs from the image's installs its own tree from the image's npm cache —
+it is just slower to start (about 80 s instead of 6 s).
 
 ## 3. Run it
 
@@ -135,8 +142,24 @@ if you regenerate the template, you will have to redo them.
 - **Wrong `node_modules`.** The template copies the host's `node_modules` into each worktree to
   skip a cold install. This host is macOS and the sandbox is linux: Prisma's query engine and
   vitest's esbuild binary are platform-specific, and a later `npm install` will not repair a
-  copied darwin tree because `package.json` is already satisfied. `copyToWorktree` is now empty
-  and the hook runs `npm ci` in `web/`.
+  copied darwin tree because `package.json` is already satisfied. `copyToWorktree` is now empty.
+  The first replacement — a hook running `npm ci` in every sandbox — was its own failure: one
+  full registry download per sandbox, several in parallel per iteration, and the run died on
+  the first `ECONNRESET`. The dependency tree is now baked into the image at
+  `/opt/lipi/web/node_modules`, and `.sandcastle/sandbox-setup.sh` symlinks each worktree's
+  `web/node_modules` to it, so a sandbox needs no registry access to start. If a branch's
+  lockfile differs from the image's, the script installs that branch's tree with
+  `--prefer-offline` from the npm cache the image build left behind; only genuinely new packages
+  reach the network, and `~/.npmrc` in the image retries those five times.
+- **Hooks on a head-mode run touch the host.** `sandcastle.run()` without a `branchStrategy`
+  uses `head` mode, which bind-mounts this repo's own checkout into the container — not a
+  worktree. The planner's `npm ci` hook therefore ran against the developer's machine and
+  replaced the macOS `web/node_modules` with a Linux one, then with nothing when the download
+  failed. Three changes make that unrepeatable: the planner has no hooks at all (it only reads
+  issues); the merger runs with `branchStrategy: { type: "merge-to-head" }`, so it works in a
+  worktree on a temporary branch that Sandcastle fast-forwards into the current branch when it
+  finishes; and `sandbox-setup.sh` refuses to run anywhere `.git` is a directory rather than a
+  worktree's pointer file.
 
 **The prompts' `` !`...` `` interpolations run inside the container, not on the host.** So the
 image must carry every tool a prompt shells out to. Four are load-bearing, and dropping any one
@@ -151,7 +174,10 @@ of them fails the run before an agent starts:
 
 Verified end to end inside the built image: both of the plan prompt's queries return (25 issues,
 5 unblocked), `psql postgresql://agent@127.0.0.1:5432/lipi_test` connects as `agent`,
-passwordless sudo works, `gh` authenticates from `GH_TOKEN`.
+passwordless sudo works, `gh` authenticates from `GH_TOKEN`. Verified with the container's
+network disabled (`docker run --network none`): a fresh worktree bootstraps in 6 s and then
+passes lint, typecheck and all 383 tests; a worktree whose lockfile differs from the image's
+bootstraps in 81 s from the cache alone.
 
 ## 7. Known risks
 

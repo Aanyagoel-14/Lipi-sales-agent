@@ -11,7 +11,8 @@
 //                               branch (1 iteration). All issue pipelines run
 //                               concurrently via Promise.allSettled().
 //   Phase 3 (Merge):            A single agent merges all completed branches
-//                               into the current branch.
+//                               into the current branch, from a worktree
+//                               (merge-to-head) so it can run the suite.
 //
 // The outer loop repeats up to MAX_ITERATIONS times so that newly unblocked
 // issues are picked up after each round of merges.
@@ -63,18 +64,23 @@ const sandboxEnv = { GH_REPO: ISSUE_REPO, TEST_DATABASE_URL };
 // to run a cheaper planner or to pin a known-good version.
 const MODEL = process.env.SANDCASTLE_MODEL ?? "claude-opus-5";
 
-// Hooks run inside the sandbox once it is ready.
+// Hooks run inside the sandbox once it is ready — for the sandboxes that run
+// code, which is the implementer/reviewer pairs and the merger. The script
+// starts Postgres, links `web/node_modules` to the tree baked into the image,
+// and generates the Prisma client from the worktree's own schema. It never
+// downloads the dependency tree; see the script and the Dockerfile for why.
 //
-// Postgres has to be started (the cluster is initialised at image build time,
-// but nothing starts it — the entrypoint is `sleep infinity`). `npm ci` runs
-// in web/, which is where the app's package.json lives; its `postinstall`
-// regenerates the Prisma client, which is gitignored and therefore absent
-// from every fresh worktree.
-const hooks = {
+// The planner gets NO hooks, deliberately. `sandcastle.run()` defaults to the
+// `head` branch strategy, which bind-mounts this repo's own checkout into the
+// container rather than a worktree — so a hook there runs against the working
+// copy on the host machine. The first version of this file gave the planner
+// an `npm ci` hook, and it replaced the host's macOS `web/node_modules` with a
+// Linux one, then with nothing when the download failed. The planner only
+// reads issues; it needs neither Postgres nor node_modules.
+const workerHooks = {
   sandbox: {
     onSandboxReady: [
-      { command: "service postgresql start", sudo: true, timeoutMs: 60_000 },
-      { command: "cd web && npm ci", timeoutMs: 600_000 },
+      { command: "sh .sandcastle/sandbox-setup.sh", timeoutMs: 600_000 },
     ],
   },
 };
@@ -105,7 +111,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // It outputs a <plan> JSON block — Output.object parses and validates it.
   // -------------------------------------------------------------------------
   const plan = await sandcastle.run({
-    hooks,
+    // No hooks: head mode, host checkout, read-only work. See `workerHooks`.
     sandbox: docker({ env: sandboxEnv }),
     name: "planner",
     // One iteration is enough: the planner just needs to read and reason,
@@ -150,7 +156,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
         sandbox: docker({ env: sandboxEnv }),
-        hooks,
+        hooks: workerHooks,
         copyToWorktree,
       });
 
@@ -240,7 +246,15 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // uses to know which branches to merge and which issues to close.
   // -------------------------------------------------------------------------
   await sandcastle.run({
-    hooks,
+    hooks: workerHooks,
+    // Not head mode. The merger runs the suite, so it needs the sandbox's
+    // node_modules and Postgres — and it must not get them by writing into the
+    // host checkout. merge-to-head runs it in a worktree on a temporary
+    // branch; when it finishes, Sandcastle merges that branch into the host's
+    // current branch (a fast-forward, since nothing else moved it) and deletes
+    // it. If that merge fails the temporary branch is kept and the error names
+    // it.
+    branchStrategy: { type: "merge-to-head" },
     sandbox: docker({ env: sandboxEnv }),
     name: "merger",
     maxIterations: 1,

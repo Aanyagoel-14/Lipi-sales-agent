@@ -1,0 +1,10 @@
+# Build context is the repo root, not .sandcastle/ — `sandcastle docker
+# build-image --dockerfile` passes process.cwd() to `docker build`. BuildKit
+# reads this file because it sits next to the Dockerfile with the same name.
+# Ship only what the Dockerfile COPYs; the rest of the repo reaches the sandbox
+# as a bind-mounted worktree at run time, never through the image.
+*
+!web/package.json
+!web/package-lock.json
+!web/prisma.config.ts
+!web/prisma/

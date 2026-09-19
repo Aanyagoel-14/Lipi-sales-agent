@@ -54,6 +54,10 @@ RUN PGVER="$(ls /etc/postgresql)" \
   && su postgres -c "createdb -O agent lipi_test" \
   && service postgresql stop
 
+# Home for the baked dependency tree (below). Created as root, owned by the
+# agent, so `npm ci` can write it after the USER switch.
+RUN mkdir -p /opt/lipi/web && chown -R ${AGENT_UID}:${AGENT_GID} /opt/lipi
+
 USER ${AGENT_UID}:${AGENT_GID}
 
 # Install Claude Code CLI
@@ -61,6 +65,32 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Add Claude to PATH
 ENV PATH="/home/agent/.local/bin:$PATH"
+
+# Bake the app's dependency tree into the image.
+#
+# Every sandbox used to run `npm ci` from scratch: one full registry download
+# per sandbox, N of them in parallel per iteration, and the whole run died on
+# the first transient ECONNRESET. Now the download happens once, here, and
+# `sandbox-setup.sh` links each worktree to this tree — a sandbox needs no
+# registry access to start.
+#
+# Two things make the residual network path (a branch that adds a dependency)
+# survive a flaky connection: the npm cache this `npm ci` leaves in ~/.npm,
+# which `--prefer-offline` reuses, and the retry settings in ~/.npmrc, which
+# every later npm call in the sandbox inherits.
+#
+# `web/prisma` is copied only so `postinstall` (prisma generate) can run at
+# build time; the sandbox regenerates the client from its own branch's schema.
+# The build context is the repo root — `sandcastle docker build-image
+# --dockerfile` passes process.cwd() — and `Dockerfile.dockerignore` next to
+# this file trims it to these paths.
+#
+# Rebuild after `web/package-lock.json` changes to keep the fast path. A stale
+# image still works; the setup script just installs that branch's tree.
+RUN npm config set fetch-retries=5 fetch-retry-mintimeout=20000 fetch-retry-maxtimeout=120000
+COPY --chown=${AGENT_UID}:${AGENT_GID} web/package.json web/package-lock.json web/prisma.config.ts /opt/lipi/web/
+COPY --chown=${AGENT_UID}:${AGENT_GID} web/prisma /opt/lipi/web/prisma
+RUN cd /opt/lipi/web && npm ci --no-audit --no-fund
 
 WORKDIR /home/agent
 
