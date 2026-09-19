@@ -76,3 +76,41 @@ Once complete, output <promise>COMPLETE</promise>.
 # FINAL RULES
 
 ONLY WORK ON A SINGLE TASK.
+
+# WHEN A HUMAN HAS TO DECIDE
+
+Some issues cannot be finished by an agent alone. Stop and hand the question
+back when — and only when — one of these is true:
+
+- The issue turns on a **product or business call** that the repo does not
+  already answer: pricing, discount policy, what a customer is promised, which
+  of two incompatible UX flows to ship, what counts as a conversion.
+- It needs a **credential, account or external resource** you do not have: an
+  API key, an OAuth app, a paid plan, a DNS record, a provider sandbox.
+- The issue **contradicts** one of the seven invariants in `CLAUDE.md`, or
+  contradicts another open issue, and satisfying it means overturning a
+  recorded decision.
+- Delivering it requires an **irreversible or outward-facing action**: sending
+  real messages, charging real money, writing to a production system.
+- The issue's spec is **ambiguous in a way that changes the work**, and both
+  readings are plausible — not merely underspecified detail you can settle with
+  a sensible default.
+
+Do not use this to escape a hard bug, a flaky test, or a task that is merely
+large. Those you work. A missing default that a careful engineer would just
+choose is not a human decision.
+
+When one of the above is genuinely true:
+
+1. Commit whatever is already green — partial work is kept, not thrown away.
+2. Comment on the issue with, in this order: what you built, the exact question,
+   the options with their consequences, and your recommendation.
+   `gh issue comment <ID> -R Aanyagoel-14/Lipi-sales-agent --body "..."`
+3. Label it: `gh issue edit <ID> -R Aanyagoel-14/Lipi-sales-agent --add-label needs-human-decision`
+4. Output, on its own line:
+
+   `<decision>NEEDS-HUMAN</decision>`
+
+That signal stops the whole loop, not just this issue — the other agents
+finish their round and no new round starts. Use it when the answer really is
+the human's to give, and never as a substitute for finishing the work.

@@ -4,7 +4,7 @@ Here are the open issues in the repo:
 
 <issues-json>
 
-!`gh issue list -R Aanyagoel-14/Lipi-sales-agent --state open --label sandcastle --limit 100 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`
+!`gh issue list -R Aanyagoel-14/Lipi-sales-agent --state open --label sandcastle --limit 100 --json number,title,body,labels,comments --jq '[.[] | select([.labels[].name] | index("needs-human-decision") | not) | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`
 
 </issues-json>
 
@@ -12,11 +12,16 @@ Here is the blocking graph GitHub itself holds, as open-blocker counts per issue
 
 <blockers-json>
 
-!`gh issue list -R Aanyagoel-14/Lipi-sales-agent --state open --label sandcastle --limit 100 --json number --jq '.[].number' | while read n; do gh api repos/Aanyagoel-14/Lipi-sales-agent/issues/$n --jq '{number: .number, openBlockers: .issue_dependencies_summary.blocked_by}'; done | jq -s .`
+!`gh issue list -R Aanyagoel-14/Lipi-sales-agent --state open --label sandcastle --limit 100 --json number,labels --jq '.[] | select([.labels[].name] | index("needs-human-decision") | not) | .number' | while read n; do gh api repos/Aanyagoel-14/Lipi-sales-agent/issues/$n --jq '{number: .number, openBlockers: .issue_dependencies_summary.blocked_by}'; done | jq -s .`
 
 </blockers-json>
 
 The list above has already been filtered to issues carrying the `sandcastle` label.
+Issues labelled `needs-human-decision` have been removed: they are parked on a
+question only the repo's owner can answer, and an agent picking one up would
+guess. Do not plan them, and do not treat them as blockers for anything else —
+if an issue's only remaining dependency is a parked one, say so in your
+reasoning and leave it out of the plan too.
 
 Each issue body also ends with an explicit `Blocked by: #N` line where it has
 dependencies. **Treat `openBlockers > 0` as authoritative: that issue is blocked,

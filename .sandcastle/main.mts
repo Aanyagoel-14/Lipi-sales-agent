@@ -24,6 +24,8 @@
 
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { z } from "zod";
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
@@ -60,6 +62,27 @@ const TEST_DATABASE_URL = "postgresql://agent@127.0.0.1:5432/lipi_test";
 
 const sandboxEnv = { GH_REPO: ISSUE_REPO, TEST_DATABASE_URL };
 
+// The escape hatch. An agent that hits a question only the repo's owner can
+// answer — a pricing policy, a missing credential, two incompatible readings of
+// a spec — comments the question on its issue, labels the issue, and emits
+// DECISION_SIGNAL instead of grinding out a guess. Because the signal is passed
+// as a completion signal, it also ends that agent's own run immediately rather
+// than burning the remaining iterations.
+//
+// The loop then finishes the round it is in (the other agents are already
+// mid-flight, and their work is worth keeping), merges whatever is green, and
+// stops. It does not start another round: the planner's next plan would be
+// drawn from a backlog whose shape the pending answer may change.
+const COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
+const DECISION_SIGNAL = "<decision>NEEDS-HUMAN</decision>";
+const DECISION_LABEL = "needs-human-decision";
+const AGENT_SIGNALS = [COMPLETION_SIGNAL, DECISION_SIGNAL];
+
+// Where the loop writes the questions it stopped on, so they survive the
+// scrollback. Regenerated from GitHub on every stop — the issues are the
+// record, this file is a convenience.
+const DECISION_REPORT = ".sandcastle/DECISIONS.md";
+
 // Which model every agent in the loop runs on. Override with SANDCASTLE_MODEL
 // to run a cheaper planner or to pin a known-good version.
 const MODEL = process.env.SANDCASTLE_MODEL ?? "claude-opus-5";
@@ -95,8 +118,99 @@ const workerHooks = {
 const copyToWorktree: string[] = [];
 
 // ---------------------------------------------------------------------------
+// Pending decisions
+// ---------------------------------------------------------------------------
+
+type ParkedIssue = {
+  number: number;
+  title: string;
+  url: string;
+  question: string;
+};
+
+// Read back the issues the agents parked. The signal tells us to stop; this
+// tells the human what to answer. Reading it from GitHub rather than from agent
+// stdout means a question parked by a run that later crashed is still reported,
+// and that re-running the loop after answering is a label removal away.
+function fetchParkedIssues(): ParkedIssue[] {
+  try {
+    const raw = execFileSync(
+      "gh",
+      [
+        "issue",
+        "list",
+        "-R",
+        ISSUE_REPO,
+        "--state",
+        "open",
+        "--label",
+        DECISION_LABEL,
+        "--limit",
+        "100",
+        "--json",
+        "number,title,url,comments",
+      ],
+      { encoding: "utf8" },
+    );
+    const issues = JSON.parse(raw) as {
+      number: number;
+      title: string;
+      url: string;
+      comments: { body: string }[];
+    }[];
+    return issues.map((issue) => ({
+      number: issue.number,
+      title: issue.title,
+      url: issue.url,
+      // The parking comment is the last one the agent left.
+      question: issue.comments.at(-1)?.body.trim() ?? "(no comment left)",
+    }));
+  } catch (error) {
+    console.error(`  ! could not read parked issues: ${error}`);
+    return [];
+  }
+}
+
+function reportDecisions(parked: ParkedIssue[]): void {
+  const lines = [
+    "# Sandcastle stopped — decisions waiting on a human",
+    "",
+    `Generated ${new Date().toISOString()} by \`.sandcastle/main.mts\`.`,
+    "",
+    "The loop will not start another round until these are answered. To resume:",
+    "answer the question in the issue thread, then remove the label —",
+    `\`gh issue edit <ID> -R ${ISSUE_REPO} --remove-label ${DECISION_LABEL}\` —`,
+    "and run `npm run sandcastle` again.",
+    "",
+  ];
+  for (const issue of parked) {
+    lines.push(`## #${issue.number}: ${issue.title}`, "", issue.url, "", issue.question, "");
+  }
+  writeFileSync(DECISION_REPORT, lines.join("\n"));
+
+  console.log("\n=== Stopped: a human has to decide ===\n");
+  for (const issue of parked) {
+    console.log(`  #${issue.number}: ${issue.title}`);
+    console.log(`    ${issue.url}`);
+  }
+  console.log(`\nQuestions written to ${DECISION_REPORT}.`);
+  console.log(
+    `Answer them, then \`gh issue edit <ID> -R ${ISSUE_REPO} --remove-label ${DECISION_LABEL}\` and re-run.`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
+
+// A question parked by an earlier run is still a question. Starting a round on
+// the rest of the backlog would bury it, so the loop refuses to start until the
+// label is gone — answering it is one `gh issue edit --remove-label` away.
+const alreadyParked = fetchParkedIssues();
+if (alreadyParked.length > 0) {
+  reportDecisions(alreadyParked);
+  process.exit(0);
+}
 
 for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
@@ -129,8 +243,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const issues = plan.output.issues;
 
   if (issues.length === 0) {
-    // No unblocked work — either everything is done or everything is blocked.
+    // No unblocked work — everything is done, blocked, or parked on a human.
     console.log("No unblocked issues to work on. Exiting.");
+    const parked = fetchParkedIssues();
+    if (parked.length > 0) reportDecisions(parked);
     break;
   }
 
@@ -166,6 +282,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           name: "implementer",
           maxIterations: 100,
           agent: sandcastle.claudeCode(MODEL),
+          // Either signal ends the run. `completionSignal` on the result says
+          // which one fired, and DECISION_SIGNAL is what stops the loop.
+          completionSignal: AGENT_SIGNALS,
           promptFile: "./.sandcastle/implement-prompt.md",
           promptArgs: {
             TASK_ID: issue.id,
@@ -174,8 +293,18 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           },
         });
 
-        // Only review if the implementer produced commits
-        if (implement.commits.length > 0) {
+        const needsDecision = implement.completionSignal === DECISION_SIGNAL;
+
+        if (needsDecision) {
+          console.log(
+            `  ⏸ ${issue.id} (${issue.branch}) parked: needs a human decision`,
+          );
+        }
+
+        // Only review if the implementer produced commits — and not when it
+        // parked, because polishing half a feature whose shape the pending
+        // answer may change is work thrown away twice.
+        if (implement.commits.length > 0 && !needsDecision) {
           const review = await sandbox.run({
             name: "reviewer",
             maxIterations: 1,
@@ -191,10 +320,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           return {
             ...review,
             commits: [...implement.commits, ...review.commits],
+            needsDecision,
           };
         }
 
-        return implement;
+        return { ...implement, needsDecision };
       } finally {
         await sandbox.close();
       }
@@ -223,6 +353,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   const completedBranches = completedIssues.map((i) => i.branch);
 
+  // Did anyone park a question this round? A rejected pipeline cannot tell us,
+  // so the label query at the stop is the backstop for those.
+  const parkedThisRound = settled.some(
+    (outcome) => outcome.status === "fulfilled" && outcome.value.needsDecision,
+  );
+
   console.log(
     `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
   );
@@ -233,6 +369,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   if (completedBranches.length === 0) {
     // All agents ran but none made commits — nothing to merge this cycle.
     console.log("No commits produced. Nothing to merge.");
+    if (parkedThisRound) {
+      reportDecisions(fetchParkedIssues());
+      break;
+    }
     continue;
   }
 
@@ -245,7 +385,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
   // uses to know which branches to merge and which issues to close.
   // -------------------------------------------------------------------------
-  await sandcastle.run({
+  const merge = await sandcastle.run({
     hooks: workerHooks,
     // Not head mode. The merger runs the suite, so it needs the sandbox's
     // node_modules and Postgres — and it must not get them by writing into the
@@ -259,6 +399,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     name: "merger",
     maxIterations: 1,
     agent: sandcastle.claudeCode(MODEL),
+    completionSignal: AGENT_SIGNALS,
     promptFile: "./.sandcastle/merge-prompt.md",
     promptArgs: {
       // A markdown list of branch names, one per line.
@@ -269,6 +410,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   });
 
   console.log("\nBranches merged.");
+
+  if (parkedThisRound || merge.completionSignal === DECISION_SIGNAL) {
+    reportDecisions(fetchParkedIssues());
+    break;
+  }
 }
 
 console.log("\nAll done.");

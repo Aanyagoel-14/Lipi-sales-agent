@@ -33,3 +33,14 @@ Here are all the issues:
 {{ISSUES}}
 
 Once you've merged everything you can, output <promise>COMPLETE</promise>.
+
+# WHEN A HUMAN HAS TO DECIDE
+
+If resolving a conflict means choosing between two behaviours that a human
+should pick — not two spellings of the same behaviour — do not guess. Leave
+that branch unmerged, comment on its issue with both sides and your
+recommendation, label it
+`gh issue edit <ID> -R Aanyagoel-14/Lipi-sales-agent --add-label needs-human-decision`,
+merge everything else that is green, and output `<decision>NEEDS-HUMAN</decision>`
+after the merge commit. That stops the loop so the question gets answered
+before another round starts.
