@@ -1,7 +1,7 @@
 import { apiFetch } from "./client";
 
 export type Vertical = "apparel" | "auto_parts" | "marine" | "wholesale";
-export type ChannelKey = "whatsapp" | "telegram" | "email" | "webchat" | "instagram";
+export type ChannelKey = "whatsapp" | "telegram" | "email" | "webchat" | "instagram" | "facebook";
 export type Policy = "everything" | "money_only" | "nothing";
 
 export type WorkspaceDraft = {

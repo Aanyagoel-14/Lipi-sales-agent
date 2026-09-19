@@ -44,7 +44,16 @@ const fail = (row: ChannelConnection, status: "disconnected" | "error", lastErro
  * Throws only when the account belongs to another workspace — that is not a
  * failed connection, it is a request for someone else's.
  */
-export async function finishConnection(row: ChannelConnection): Promise<ChannelConnection> {
+export async function finishConnection(
+  row: ChannelConnection,
+  /**
+   * The API key the operator just typed, on the api-key path only. It exists
+   * for one hook — Telegram's `setWebhook`, which Composio cannot make on
+   * Lipi's behalf — and is passed by value into `afterConnect` and dropped.
+   * Nothing here stores it, and no other path supplies it.
+   */
+  opts: { apiKey?: string } = {},
+): Promise<ChannelConnection> {
   const spec = specFor(row.channel);
   const accountId = row.composioAccountId;
   if (!spec) throw new HttpError(400, `${row.channel} cannot be connected`);
@@ -77,6 +86,7 @@ export async function finishConnection(row: ChannelConnection): Promise<ChannelC
     let externalId: string | null = identity.externalId;
     let config = (row.config ?? {}) as Json;
     let triggerIds = row.composioTriggerIds;
+    let webhookSecret = row.webhookSecret;
 
     if (spec.afterConnect) {
       const extra = await spec.afterConnect({
@@ -88,12 +98,15 @@ export async function finishConnection(row: ChannelConnection): Promise<ChannelC
         config,
         identityData: identity.data,
         publicUrl: env.PUBLIC_URL,
+        accountParams: account.params ?? {},
+        apiKey: opts.apiKey,
       });
       // `externalId: null` is a decision ("the operator still has to pick"),
       // so presence of the key matters, not truthiness.
       if ("externalId" in extra) externalId = extra.externalId ?? null;
       if (extra.config) config = { ...config, ...extra.config };
       if (extra.triggerIds) triggerIds = [...new Set([...triggerIds, ...extra.triggerIds])];
+      if (extra.webhookSecret) webhookSecret = extra.webhookSecret;
     }
 
     const connected = await prisma.channelConnection.update({
@@ -104,6 +117,7 @@ export async function finishConnection(row: ChannelConnection): Promise<ChannelC
         displayName: identity.displayName,
         config: config as Prisma.InputJsonObject,
         composioTriggerIds: triggerIds,
+        webhookSecret,
         connectedAt: new Date(),
         lastError: null,
       },

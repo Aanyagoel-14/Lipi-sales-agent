@@ -4,6 +4,11 @@ import { testDatabaseUrl } from "./database-url";
 // Must be set before anything imports env.ts, which reads it at module load.
 process.env.DATABASE_URL = testDatabaseUrl;
 process.env.APP_SECRET ??= "test-secret-not-used-in-production-0123456789";
+// Lipi's Meta app, for the suite. The inbound route verifies every body
+// against these two and nothing else, so the webhook tests sign with the
+// first and answer Meta's challenge with the second.
+process.env.META_APP_SECRET ??= "test-meta-app-secret";
+process.env.META_VERIFY_TOKEN ??= "test-meta-verify-token";
 (process.env as Record<string, string>).NODE_ENV = "test";
 // The suite must never reach OpenRouter. A developer's real key in .env would
 // otherwise make model-backed paths hit the network: slow, billable, and

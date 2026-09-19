@@ -3,11 +3,11 @@ import { env } from "@/server/env";
 import { catalog, channelSpecs, parseAddress, specFor, toolkitVersions } from "@/server/channels/registry";
 
 const connection = { id: "cc_1", workspaceId: "ws_1", channel: "whatsapp" as const, externalId: null, config: {} };
-const spec = (channel: "whatsapp" | "telegram" | "instagram" | "email") => specFor(channel)!;
+const spec = (channel: "whatsapp" | "telegram" | "instagram" | "facebook" | "email") => specFor(channel)!;
 
 describe("the registry", () => {
-  it("has four specs, each with a pinned version and its own toolkit", () => {
-    expect(channelSpecs.map((s) => s.channel)).toEqual(["whatsapp", "telegram", "instagram", "email"]);
+  it("has one spec per connectable channel, each with a pinned version and its own toolkit", () => {
+    expect(channelSpecs.map((s) => s.channel)).toEqual(["whatsapp", "telegram", "instagram", "facebook", "email"]);
     for (const s of channelSpecs) expect(s.toolkitVersion).toMatch(/^\d{8}_\d{2}$/);
     expect(new Set(channelSpecs.map((s) => s.toolkit)).size).toBe(channelSpecs.length);
   });
@@ -17,7 +17,8 @@ describe("the registry", () => {
     // slug below was confirmed to exist with these argument names. Bumping a pin
     // without re-checking the arguments is how a rename reaches a customer.
     expect(Object.fromEntries(channelSpecs.map((s) => [s.toolkit, s.toolkitVersion]))).toEqual({
-      whatsapp: "20260915_00", telegram: "20260821_00", instagram: "20260915_00", gmail: "20260915_00",
+      whatsapp: "20260915_00", telegram: "20260821_00", instagram: "20260915_00",
+      facebook: "20260902_00", gmail: "20260915_00",
     });
   });
 
@@ -30,7 +31,7 @@ describe("the registry", () => {
   });
 
   it("hands the SDK one version per toolkit", () => {
-    expect(Object.keys(toolkitVersions()).sort()).toEqual(["gmail", "instagram", "telegram", "whatsapp"]);
+    expect(Object.keys(toolkitVersions()).sort()).toEqual(["facebook", "gmail", "instagram", "telegram", "whatsapp"]);
   });
 
   it("has no spec for webchat", () => {
@@ -135,7 +136,8 @@ describe("send builders", () => {
 describe("identity tools", () => {
   it("name the documented read tool per channel", () => {
     expect(channelSpecs.map((s) => s.identity.slug)).toEqual([
-      "WHATSAPP_GET_PHONE_NUMBERS", "TELEGRAM_GET_ME", "INSTAGRAM_GET_USER_INFO", "GMAIL_GET_PROFILE",
+      "WHATSAPP_GET_PHONE_NUMBERS", "TELEGRAM_GET_ME", "INSTAGRAM_GET_USER_INFO",
+      "FACEBOOK_GET_USER_PAGES", "GMAIL_GET_PROFILE",
     ]);
   });
 
@@ -157,9 +159,9 @@ describe("identity tools", () => {
 });
 
 describe("catalog()", () => {
-  it("lists exactly the four specs with their inbound kind", () => {
+  it("lists exactly the specs with their inbound kind", () => {
     const entries = catalog();
-    expect(entries.map((e) => e.channel)).toEqual(["whatsapp", "telegram", "instagram", "email"]);
+    expect(entries.map((e) => e.channel)).toEqual(["whatsapp", "telegram", "instagram", "facebook", "email"]);
     expect(entries.find((e) => e.channel === "email")?.inbound).toEqual({ kind: "composio_trigger", slug: "GMAIL_NEW_GMAIL_MESSAGE" });
     expect(entries.find((e) => e.channel === "whatsapp")?.inbound).toEqual({ kind: "meta" });
     expect(entries.find((e) => e.channel === "telegram")?.connect).toEqual({

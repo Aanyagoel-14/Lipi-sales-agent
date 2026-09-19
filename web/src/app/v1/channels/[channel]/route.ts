@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Channel } from "@/generated/prisma/client";
+import type { Channel, Prisma } from "@/generated/prisma/client";
 import { specFor, type Json } from "@/server/channels/registry";
 import { env } from "@/server/env";
 import { composio } from "@/server/lib/composio";
@@ -9,9 +9,9 @@ import { prisma } from "@/server/lib/prisma";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
 import { publicView } from "../view";
 
-const settingsSchema = z.object({ phoneNumberId: z.string().trim().min(1).max(64) });
+const idSchema = z.string().trim().min(1).max(64);
 
-type PhoneNumber = { id: string; display?: string; verifiedName?: string };
+type Identity = { id: string };
 
 const isUniqueViolation = (error: unknown) =>
   typeof error === "object" && error !== null && (error as { code?: string }).code === "P2002";
@@ -26,39 +26,45 @@ const load = async (channel: Channel) => {
 };
 
 /**
- * Chooses which of a WhatsApp Business Account's numbers this workspace sends
- * from.
+ * Settles which of a connected account's identities this workspace uses: a
+ * WhatsApp Business Account's numbers, a Facebook account's Pages.
  *
- * A WABA can hold several and only the operator knows which is theirs, so
+ * An account can hold several and only the operator knows which is theirs, so
  * connect records the list and leaves `externalId` empty rather than guessing.
  * The id is validated against that stored list, not accepted on trust: it
  * becomes the key inbound routing matches on, and a number belonging to
  * someone else's account would quietly steer their customers here.
+ *
+ * Which field the body carries is the channel spec's to declare, so this
+ * route names no channel and adding one needs nothing here.
  */
 export const PATCH = route<{ channel: string }>(async (req, params) => {
   const channel = params.channel as Channel;
-  const { connection } = await load(channel);
+  const choice = specFor(channel)?.choice;
+  if (!choice) throw new HttpError(400, `${params.channel} has nothing to choose`);
 
-  const { phoneNumberId } = await body(req, settingsSchema, "Pick one of this account's numbers");
+  const { connection } = await load(channel);
+  const picked = (await body(req, z.object({ [choice.field]: idSchema }),
+    `Pick one of this account's ${choice.noun}s`))[choice.field]!;
 
   const config = (connection.config ?? {}) as Json;
-  const numbers = (config.phoneNumbers ?? []) as PhoneNumber[];
-  if (!numbers.some((number) => number.id === phoneNumberId)) {
-    throw new HttpError(422, "That number is not on this account",
-      { phoneNumberId: ["Unknown number"] });
+  const candidates = (config[choice.list] ?? []) as Identity[];
+  if (!candidates.some((candidate) => candidate.id === picked)) {
+    throw new HttpError(422, `That ${choice.noun} is not on this account`,
+      { [choice.field]: [`Unknown ${choice.noun}`] });
   }
 
   try {
     const updated = await prisma.channelConnection.update({
       where: { id: connection.id },
-      data: { externalId: phoneNumberId, config: { ...config, phoneNumberId } },
+      data: { externalId: picked, config: { ...config, [choice.field]: picked } as Prisma.InputJsonObject },
     });
     return json({ channel: publicView(updated) });
   } catch (error) {
     // `@@unique([channel, externalId])`: two workspaces cannot both claim one
     // number, because inbound for it could then be delivered to either.
     if (isUniqueViolation(error)) {
-      throw new HttpError(409, "That number is already connected to another workspace");
+      throw new HttpError(409, `That ${choice.noun} is already connected to another workspace`);
     }
     throw error;
   }
@@ -92,6 +98,7 @@ export const DELETE = route<{ channel: string }>(async (_req, params) => {
       config: (connection.config ?? {}) as Json,
       identityData: null,
       publicUrl: env.PUBLIC_URL,
+      accountParams: {},
     }).catch((error: unknown) => console.error(`composio: ${channel} beforeDisconnect failed`, error));
   }
 
@@ -109,6 +116,11 @@ export const DELETE = route<{ channel: string }>(async (_req, params) => {
     data: {
       status: "disconnected",
       externalId: null, displayName: null, config: {},
+      // Telegram's webhook cannot be withdrawn — Composio does not hand the
+      // bot token back — so the secret that authenticates it is destroyed
+      // instead. Deliveries from the stale webhook now fail the header check
+      // and write nothing.
+      webhookSecret: null,
       composioAccountId: null, composioAuthConfigId: null, composioTriggerIds: [],
       connectedAt: null, lastError: null,
     },

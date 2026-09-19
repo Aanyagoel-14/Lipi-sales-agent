@@ -7,7 +7,7 @@ const sellSchema = z.object({
   text: z.string().trim().min(1).max(2000),
   handle: z.string().trim().min(1).max(120),
   name: z.string().trim().max(120).optional(),
-  channel: z.enum(["whatsapp", "instagram", "telegram", "email", "webchat"]).default("webchat"),
+  channel: z.enum(["whatsapp", "instagram", "facebook", "telegram", "email", "webchat"]).default("webchat"),
   history: z
     .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().trim().min(1).max(2000) }))
     .max(20)

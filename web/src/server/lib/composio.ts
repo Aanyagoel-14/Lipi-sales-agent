@@ -39,6 +39,17 @@ export type ComposioAccount = {
   userId: string;
   /** Toolkit slug, lower-case: "whatsapp", "gmail". */
   toolkit: string;
+  /**
+   * The non-secret values the operator gave Composio when the account was
+   * created, as its `state.val`. WhatsApp's WABA id lives here and nowhere
+   * else: Composio templates it into every WhatsApp tool call but never
+   * returns it, and `POST /{waba_id}/subscribed_apps` cannot be addressed
+   * without it. Fields whose name reads as a credential are dropped before
+   * they get this far — Composio already replaces their values with a
+   * placeholder, and a type that could carry a token invites a log line
+   * that prints one.
+   */
+  params?: Record<string, string>;
 };
 
 export type ExecuteResult = {
@@ -51,6 +62,9 @@ export type ExecuteResult = {
 export type ProxyMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 
 export type ProxyResult = { status: number; data: unknown };
+
+/** Query or header values a proxied request carries alongside its body. */
+export type ProxyQuery = Record<string, string | number>;
 
 /** A verified V3 webhook event. `data` is whatever the event type carries. */
 export type ComposioEvent = {
@@ -88,8 +102,23 @@ export interface ComposioClient {
     slug: string,
     args: { userId: string; connectedAccountId: string; arguments: Record<string, unknown> },
   ): Promise<ExecuteResult>;
-  /** A raw provider request through Composio's credentials, for endpoints no tool covers (Telegram setWebhook). */
-  proxy(args: { connectedAccountId: string; method: ProxyMethod; endpoint: string; body?: unknown }): Promise<ProxyResult>;
+  /**
+   * A raw provider request through Composio's credentials, for endpoints no
+   * tool covers — every Meta `subscribed_apps` call. `query` becomes real
+   * query parameters, which is how the Graph API takes `subscribed_fields`.
+   *
+   * It only works where the toolkit's credential travels in a header. A
+   * toolkit that templates its credential into the path (Telegram puts the
+   * bot token in `/bot{token}/…`) gets the endpoint through verbatim and the
+   * provider answers 404 — verified against the live API on 2026-09-19.
+   */
+  proxy(args: {
+    connectedAccountId: string;
+    method: ProxyMethod;
+    endpoint: string;
+    body?: unknown;
+    query?: ProxyQuery;
+  }): Promise<ProxyResult>;
   /** Creates or re-enables a trigger instance; returns its `ti_…` id. */
   upsertTrigger(
     slug: string,
@@ -223,6 +252,25 @@ export function versionForTool(slug: string): string {
   return version;
 }
 
+/**
+ * A connected account's initiation state, minus anything named like a
+ * credential. Composio hands back `state.val` with secret fields replaced by
+ * a placeholder rather than the real value, so this is belt as well as
+ * braces: the one field Lipi reads (WhatsApp's `generic_id`) is declared
+ * non-secret in the toolkit's own auth schema, and nothing else is passed on.
+ */
+const SECRET_LOOKING = /key|token|secret|password|credential/i;
+
+function nonSecretParams(val: unknown): Record<string, string> {
+  if (!val || typeof val !== "object" || Array.isArray(val)) return {};
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(val as Record<string, unknown>)) {
+    if (SECRET_LOOKING.test(name)) continue;
+    if (typeof value === "string" || typeof value === "number") out[name] = String(value);
+  }
+  return out;
+}
+
 class RealComposio implements ComposioClient {
   private sdk: Promise<Composio> | null = null;
 
@@ -263,6 +311,7 @@ class RealComposio implements ComposioClient {
       statusReason: account.status_reason,
       userId: account.user_id,
       toolkit: account.toolkit.slug.toLowerCase(),
+      params: nonSecretParams((account as { state?: { val?: unknown } }).state?.val),
     };
   }
 
@@ -283,13 +332,20 @@ class RealComposio implements ComposioClient {
     return { successful: result.successful, data: result.data, error: result.error, logId: result.logId };
   }
 
-  async proxy(args: { connectedAccountId: string; method: ProxyMethod; endpoint: string; body?: unknown }) {
+  async proxy(args: {
+    connectedAccountId: string;
+    method: ProxyMethod;
+    endpoint: string;
+    body?: unknown;
+    query?: ProxyQuery;
+  }) {
     const sdk = await this.client();
     const result = await sdk.tools.proxyExecute({
       connectedAccountId: args.connectedAccountId,
       endpoint: args.endpoint,
       method: args.method,
       body: args.body,
+      parameters: Object.entries(args.query ?? {}).map(([name, value]) => ({ in: "query" as const, name, value })),
     });
     return { status: result.status, data: result.data };
   }

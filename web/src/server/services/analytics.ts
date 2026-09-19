@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma";
 import { toRupees } from "../lib/money";
+import { channelSpecs } from "@/server/channels/registry";
 import type { Channel } from "@/generated/prisma/client";
 
 /**
@@ -11,7 +12,13 @@ import type { Channel } from "@/generated/prisma/client";
  */
 
 const DAY = 86_400_000;
-const CHANNELS: Channel[] = ["whatsapp", "instagram", "telegram", "email", "webchat"];
+/**
+ * Every connectable channel, plus webchat — which has no spec because the
+ * widget is served in-process and there is nothing to connect. Derived
+ * rather than listed so a channel added to the registry appears on the
+ * volume chart without anyone remembering to come here.
+ */
+const CHANNELS: Channel[] = [...channelSpecs.map((spec) => spec.channel), "webchat"];
 
 const change = (now: number, before: number): number | null => {
   if (before === 0) return null;
@@ -106,8 +113,8 @@ export async function intentMix(workspaceId: string) {
 /** Channels the workspace actually connected during onboarding. */
 export async function connectedChannels(workspaceId: string) {
   const labels: Record<Channel, string> = {
-    whatsapp: "WhatsApp", instagram: "Instagram", telegram: "Telegram",
-    email: "Email", webchat: "Website chat",
+    ...Object.fromEntries(channelSpecs.map((spec) => [spec.channel, spec.label])) as Record<Channel, string>,
+    webchat: "Website chat",
   };
   const rows = await prisma.channelConnection.findMany({ where: { workspaceId }, orderBy: { createdAt: "asc" } });
   return rows.map((row) => ({

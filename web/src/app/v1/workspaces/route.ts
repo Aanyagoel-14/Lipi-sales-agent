@@ -7,7 +7,7 @@ import { provisionCatalogue, provisionVoice } from "@/server/services/provision"
 const createSchema = z.object({
   name: z.string().trim().min(2).max(80),
   vertical: z.enum(["apparel", "auto_parts", "marine", "wholesale"]),
-  channels: z.array(z.enum(["whatsapp", "instagram", "telegram", "email", "webchat"])).min(1),
+  channels: z.array(z.enum(["whatsapp", "instagram", "facebook", "telegram", "email", "webchat"])).min(1),
   approvalPolicy: z.enum(["everything", "money_only", "nothing"]),
   seedCatalogue: z.boolean(),
 });

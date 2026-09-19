@@ -4,22 +4,40 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/client";
 
-type PhoneNumber = { id: string; display?: string; verifiedName?: string };
+/**
+ * One of the identities a connected account can own: a WhatsApp number, a
+ * Facebook Page. `display`/`verifiedName`/`name` are whatever that provider
+ * gives to tell one from another; only `id` is guaranteed.
+ */
+type Identity = { id: string; display?: string; verifiedName?: string; name?: string };
+
+/**
+ * What the operator picks between, when an account owns more than one
+ * identity. The channel spec decides the field names, so this component
+ * never mentions a channel — see `ChannelSpec.choice`.
+ */
+type Choice = { field: string; list: string; noun: string; prompt: string };
 
 type ChannelRow = {
   channel: string;
   label: string;
   connectKind: "link" | "api_key" | "none";
   inbound: { kind: string; reason?: string };
+  choice?: Choice | null;
   available: boolean;
   unavailableReason: string | null;
   status: "disconnected" | "pending" | "connected" | "needs_reconnect" | "error";
   displayName: string | null;
   externalId: string | null;
-  config: { phoneNumbers?: PhoneNumber[]; phoneNumberId?: string } | null;
+  config: Record<string, unknown> | null;
   lastError: string | null;
   installSnippet: string | null;
 };
+
+/** How an identity reads in the dropdown, from whichever names it carries. */
+const identityLabel = (identity: Identity) =>
+  [identity.display || identity.name || identity.id, identity.verifiedName]
+    .filter(Boolean).join(" — ");
 
 const field =
   "h-10 w-full rounded-full border border-line-strong bg-surface px-4 text-[0.8125rem] placeholder:text-ink-subtle focus-visible:border-violet focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-violet";
@@ -144,13 +162,15 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
     });
   }
 
-  async function pickNumber(channel: string, phoneNumberId: string) {
-    await act(channel, async () => {
-      const res = await apiFetch(`channels/${channel}`, {
+  async function pick(row: ChannelRow, id: string) {
+    const choice = row.choice;
+    if (!choice) return;
+    await act(row.channel, async () => {
+      const res = await apiFetch(`channels/${row.channel}`, {
         method: "PATCH",
-        body: JSON.stringify({ phoneNumberId }),
+        body: JSON.stringify({ [choice.field]: id }),
       });
-      if (!res.ok) throw await failed(res, "Could not save that number");
+      if (!res.ok) throw await failed(res, `Could not save that ${choice.noun}`);
       await load();
     });
   }
@@ -165,8 +185,9 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
       <ul className="mt-8 space-y-2.5">
         {rows.map((row) => {
           const chip = CHIPS[row.status];
-          const numbers = row.config?.phoneNumbers ?? [];
-          const mustPickNumber = row.status === "connected" && numbers.length > 1;
+          const choice = row.choice;
+          const candidates = (choice ? row.config?.[choice.list] as Identity[] | undefined : undefined) ?? [];
+          const mustPick = row.status === "connected" && candidates.length > 1;
           const working = busy === row.channel;
 
           return (
@@ -273,23 +294,21 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
                 </div>
               ) : null}
 
-              {mustPickNumber ? (
+              {mustPick && choice ? (
                 <div className="space-y-2.5 border-t border-line p-5">
-                  <label htmlFor={`number-${row.channel}`} className="text-[0.75rem] text-ink-subtle">
-                    This account has more than one number. Which one do customers message?
+                  <label htmlFor={`choice-${row.channel}`} className="text-[0.75rem] text-ink-subtle">
+                    {choice.prompt}
                   </label>
                   <select
-                    id={`number-${row.channel}`}
-                    value={row.config?.phoneNumberId ?? ""}
+                    id={`choice-${row.channel}`}
+                    value={(row.config?.[choice.field] as string | undefined) ?? ""}
                     disabled={working}
-                    onChange={(e) => pickNumber(row.channel, e.target.value)}
+                    onChange={(e) => pick(row, e.target.value)}
                     className={field}
                   >
-                    <option value="" disabled>Choose a number</option>
-                    {numbers.map((number) => (
-                      <option key={number.id} value={number.id}>
-                        {number.display || number.id}{number.verifiedName ? ` — ${number.verifiedName}` : ""}
-                      </option>
+                    <option value="" disabled>{`Choose a ${choice.noun}`}</option>
+                    {candidates.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>{identityLabel(candidate)}</option>
                     ))}
                   </select>
                 </div>
