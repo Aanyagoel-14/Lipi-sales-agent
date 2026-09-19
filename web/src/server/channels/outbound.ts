@@ -4,7 +4,7 @@ import { recordEvent } from "@/server/lib/events";
 import { HttpError } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
 import { short } from "./connect";
-import { specFor, type Json, type SendRequest } from "./registry";
+import { specFor, type ChannelSpec, type Json, type SendRequest } from "./registry";
 
 /**
  * The one way an agent message leaves the building.
@@ -21,11 +21,11 @@ import { specFor, type Json, type SendRequest } from "./registry";
  *   - A message is `sent` only when the provider accepted it. Anything else is
  *     `failed` with the provider's own reason attached, so the inbox can say
  *     what happened rather than implying it worked.
- *   - Only an authentication failure changes the connection, and only after
- *     Composio confirms the account really is dead. A provider 401 is just as
- *     often a bad argument, and taking a working channel offline for every
- *     workspace conversation because one send was malformed is worse than the
- *     failure it reports.
+ *   - Only an authentication failure changes the connection, and only after a
+ *     second call, carrying no message of its own, confirms the credential
+ *     really is dead. A provider 401 is just as often a bad argument, and
+ *     taking a working channel offline for every workspace conversation
+ *     because one send was malformed is worse than the failure it reports.
  */
 
 /** Longest a single failure reason is kept; `deliveryError` is shown in the inbox. */
@@ -147,6 +147,77 @@ export function splitText(text: string, limit: number | null): string[] {
   return chunks.length ? chunks : [text.slice(0, limit)];
 }
 
+/**
+ * Keys a provider's JSON envelope puts its human sentence under, in the order
+ * worth trying. `error` is last because it is as often an object or a slug as
+ * a sentence, and the keys above it are never anything else.
+ */
+const MESSAGE_KEYS = ["description", "message", "error_description", "error_user_msg", "detail", "title", "error"];
+const CODE_KEYS = ["error_code", "code", "status_code", "status"];
+
+/** The sentence and the number inside one level of a provider's error object. */
+function unwrap(value: unknown, depth = 0): { message?: string; code?: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 3) return {};
+  const record = value as Record<string, unknown>;
+  const found: { message?: string; code?: string } = {};
+
+  for (const key of CODE_KEYS) {
+    const code = record[key];
+    if (typeof code === "number" || (typeof code === "string" && /^\d+$/.test(code))) {
+      found.code = String(code);
+      break;
+    }
+  }
+
+  for (const key of MESSAGE_KEYS) {
+    const held = record[key];
+    if (typeof held === "string" && held.trim()) {
+      found.message = held.trim();
+      break;
+    }
+    const nested = unwrap(held, depth + 1);
+    if (nested.message) {
+      found.message = nested.message;
+      found.code ??= nested.code;
+      break;
+    }
+  }
+
+  return found;
+}
+
+/**
+ * A provider refusal, as an operator should read it.
+ *
+ * Meta answers in prose — `(#131047) Message failed to send because more than
+ * 24 hours have passed` — and that is already the best version of itself.
+ * Telegram answers `{"ok":false,"error_code":401,"description":"Unauthorized"}`,
+ * and the inbox showed exactly that, braces and all, under a message the
+ * operator was trying to send. The envelope is unwrapped to the sentence
+ * inside it, keeping the code in front, because the code is what makes one
+ * failure searchable against a provider's error reference.
+ *
+ * Only for display. Classification always runs on the provider's original
+ * string: the codes it turns on can live in fields this never reaches.
+ */
+export function readable(error: string): string {
+  const start = error.indexOf("{");
+  const end = error.lastIndexOf("}");
+  if (start === -1 || end <= start) return error;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(error.slice(start, end + 1));
+  } catch {
+    // Not JSON after all, or a fragment of it. The original said more.
+    return error;
+  }
+
+  const { message, code } = unwrap(parsed);
+  if (!message) return error;
+  return code && !message.includes(code) ? `${code}: ${message}` : message;
+}
+
 const markFailed = (messageId: string, reason: string) =>
   prisma.message.update({
     where: { id: messageId },
@@ -154,13 +225,44 @@ const markFailed = (messageId: string, reason: string) =>
   });
 
 /**
- * Is the account itself finished, or was this one bad send? Only Composio can
- * say, and if it cannot be reached the answer is "assume not" — an unreachable
- * Composio must not disconnect a channel that is probably fine.
+ * Is the credential itself finished, or was this one bad send?
+ *
+ * Two questions, asked in that order, because they are not the same question.
+ * Composio's account status answers "has the grant been withdrawn" — it turns
+ * non-ACTIVE when an OAuth refresh fails, which is authoritative and costs no
+ * provider round-trip. But Composio only knows what it can observe, and for
+ * an API-key toolkit there is nothing to observe: a Telegram token revoked in
+ * @BotFather leaves the account ACTIVE forever, so a channel whose every send
+ * now 401s would keep reading "Live" if the status were the only evidence.
+ *
+ * So a still-ACTIVE account is asked the second question directly — the
+ * spec's own identity call, the same cheap read the Test button makes. An
+ * auth failure on a read that carries no message arguments cannot be blamed
+ * on the message, which is what makes it evidence about the credential.
+ *
+ * Either way an unreachable Composio means "assume not": the send failure is
+ * already recorded on the message, and taking a probably-fine channel offline
+ * for every conversation in the workspace is the worse mistake.
  */
-async function accountIsDead(client: ComposioClient, connectedAccountId: string): Promise<boolean> {
+async function credentialIsDead(
+  client: ComposioClient,
+  spec: ChannelSpec,
+  workspaceId: string,
+  connectedAccountId: string,
+): Promise<boolean> {
   try {
-    return (await client.getAccount(connectedAccountId)).status !== "ACTIVE";
+    if ((await client.getAccount(connectedAccountId)).status !== "ACTIVE") return true;
+  } catch {
+    return false;
+  }
+
+  try {
+    const probe = await client.execute(spec.identity.slug, {
+      userId: workspaceId,
+      connectedAccountId,
+      arguments: spec.identity.arguments ?? {},
+    });
+    return !probe.successful && classify(spec.channel, probe.error ?? "") === "auth";
   } catch {
     return false;
   }
@@ -262,11 +364,11 @@ export async function sendReply(args: {
       // A retried transient failure has had its chance; treat it as final
       // unless the second answer says the credential is the problem.
       if (error) {
-        failure = { kind: classify(channel, error) === "auth" ? "auth" : "policy", error };
+        failure = { kind: classify(channel, error) === "auth" ? "auth" : "policy", error: readable(error) };
         break;
       }
     } else if (error) {
-      failure = { kind: classify(channel, error), error };
+      failure = { kind: classify(channel, error), error: readable(error) };
       break;
     }
   }
@@ -281,7 +383,7 @@ export async function sendReply(args: {
     return { delivered: true };
   }
 
-  if (failure.kind === "auth" && await accountIsDead(client, connectedAccountId)) {
+  if (failure.kind === "auth" && await credentialIsDead(client, spec, args.workspaceId, connectedAccountId)) {
     await prisma.channelConnection.update({
       where: { id: connection.id },
       data: { status: "needs_reconnect", lastError: failure.error.slice(0, REASON_LIMIT) },

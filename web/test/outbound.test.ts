@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
 import { fakeComposio } from "./fakes/composio";
-import { classify, sendReply, splitText } from "@/server/channels/outbound";
+import { classify, readable, sendReply, splitText } from "@/server/channels/outbound";
 import { prisma } from "@/server/lib/prisma";
 import { ingest } from "@/server/services/ingest";
 import type { Channel, Prisma } from "@/generated/prisma/client";
@@ -278,6 +278,103 @@ describe("classifying a refusal", () => {
     expect(classify("telegram", "400 Bad Request: chat not found")).toBe("policy");
     expect(classify("instagram", "code 10 subcode 2534022")).toBe("policy");
     expect(classify("telegram", "something nobody has seen before")).toBe("transient");
+  });
+});
+
+describe("confirming a dead credential", () => {
+  it("takes Telegram offline when the token was revoked and Composio still says ACTIVE", async () => {
+    await setup();
+    const row = await connect("telegram");
+    const refusal = '{"ok":false,"error_code":401,"description":"Unauthorized"}';
+    refuse("TELEGRAM_SEND_MESSAGE", refusal);
+    refuse("TELEGRAM_GET_ME", refusal);
+    const { conversationId, message } = await conversationWith("telegram", "555");
+
+    await sendReply({ workspaceId, conversationId, messageId: message.id });
+
+    // The case the account status cannot see: an API key revoked at the
+    // provider leaves Composio's record untouched, so the identity call is
+    // the only thing that can answer.
+    expect(fakeComposio.accounts.get(`${ACCOUNT}_telegram`)!.status).toBe("ACTIVE");
+    expect(fakeComposio.calls.execute.map((call) => call.slug))
+      .toEqual(["TELEGRAM_SEND_MESSAGE", "TELEGRAM_GET_ME"]);
+
+    const connection = await prisma.channelConnection.findUniqueOrThrow({ where: { id: row.id } });
+    expect(connection.status).toBe("needs_reconnect");
+    expect(connection.lastError).toBe("401: Unauthorized");
+    // Classified from the provider's original envelope, stored as the
+    // sentence inside it.
+    expect((await messageRow(message.id)).deliveryError).toBe("401: Unauthorized");
+    expect(await events("channel.expired")).toHaveLength(1);
+    expect(await events("reply.failed")).toHaveLength(0);
+  });
+
+  it("keeps the channel when the credential still answers a read", async () => {
+    await setup();
+    const row = await connect("telegram");
+    refuse("TELEGRAM_SEND_MESSAGE", "401 Unauthorized: chat_id is empty");
+    const { conversationId, message } = await conversationWith("telegram", "555");
+
+    await sendReply({ workspaceId, conversationId, messageId: message.id });
+
+    // A 401 the message itself caused. The probe carries no message, so its
+    // success is what separates the two.
+    expect(fakeComposio.calls.execute.map((call) => call.slug))
+      .toEqual(["TELEGRAM_SEND_MESSAGE", "TELEGRAM_GET_ME"]);
+    expect((await prisma.channelConnection.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("connected");
+    expect(await events("reply.failed")).toHaveLength(1);
+    expect(await events("channel.expired")).toHaveLength(0);
+  });
+
+  it("leaves the channel alone when the probe itself cannot be made", async () => {
+    await setup();
+    const row = await connect("telegram");
+    refuse("TELEGRAM_SEND_MESSAGE", "401 Unauthorized");
+    fakeComposio.execute.respond("TELEGRAM_GET_ME", () => { throw new Error("connect ECONNREFUSED"); });
+    const { conversationId, message } = await conversationWith("telegram", "555");
+
+    await sendReply({ workspaceId, conversationId, messageId: message.id });
+
+    expect((await prisma.channelConnection.findUniqueOrThrow({ where: { id: row.id } })).status).toBe("connected");
+    expect(await events("channel.expired")).toHaveLength(0);
+    expect(await events("reply.failed")).toHaveLength(1);
+  });
+
+  it("does not probe at all when the refusal was not about auth", async () => {
+    await setup();
+    await connect("telegram");
+    refuse("TELEGRAM_SEND_MESSAGE", "403 Forbidden: bot was blocked by the user");
+    const { conversationId, message } = await conversationWith("telegram", "555");
+
+    await sendReply({ workspaceId, conversationId, messageId: message.id });
+
+    expect(fakeComposio.calls.execute.map((call) => call.slug)).toEqual(["TELEGRAM_SEND_MESSAGE"]);
+    expect(fakeComposio.calls.getAccount).toEqual([]);
+  });
+});
+
+describe("an error an operator can read", () => {
+  it("unwraps a provider's JSON envelope and keeps the code in front", () => {
+    expect(readable('{"ok":false,"error_code":401,"description":"Unauthorized"}')).toBe("401: Unauthorized");
+  });
+
+  it("reaches the sentence inside a nested error object", () => {
+    expect(readable('{"error":{"message":"Error validating access token","code":190,"type":"OAuthException"}}'))
+      .toBe("190: Error validating access token");
+  });
+
+  it("leaves prose alone", () => {
+    const meta = "(#131047) Message failed to send because more than 24 hours have passed";
+    expect(readable(meta)).toBe(meta);
+  });
+
+  it("keeps the original when the braces are not JSON, or hold no sentence", () => {
+    expect(readable("Request failed {not json")).toBe("Request failed {not json");
+    expect(readable('{"ok":false}')).toBe('{"ok":false}');
+  });
+
+  it("does not repeat a code the sentence already carries", () => {
+    expect(readable('{"code":190,"message":"OAuthException code 190"}')).toBe("OAuthException code 190");
   });
 });
 
