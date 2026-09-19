@@ -8,3 +8,10 @@ web/src/generated/
 web/next-env.d.ts
 web/.wrangler/
 *.log
+
+# Root workspace: the Sandcastle harness lives here, the app lives in web/
+node_modules/
+.env
+.sandcastle/.env
+.sandcastle/logs/
+.sandcastle/worktrees/
