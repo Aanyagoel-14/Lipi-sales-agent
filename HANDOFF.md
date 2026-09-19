@@ -138,8 +138,20 @@ if you regenerate the template, you will have to redo them.
   copied darwin tree because `package.json` is already satisfied. `copyToWorktree` is now empty
   and the hook runs `npm ci` in `web/`.
 
-Verified end to end: the image builds, `psql postgresql://agent@127.0.0.1:5432/lipi_test`
-connects inside it, passwordless sudo works, and `jq` is present for the planner's blocker query.
+**The prompts' `` !`...` `` interpolations run inside the container, not on the host.** So the
+image must carry every tool a prompt shells out to. Four are load-bearing, and dropping any one
+of them fails the run before an agent starts:
+
+| Tool | Needed by |
+| --- | --- |
+| `gh` | every phase — the issue tracker is the loop's whole input and output |
+| `jq` | the planner's blocker-graph query |
+| `sudo` | Sandcastle implements `sudo: true` by prefixing the string |
+| `postgresql` | `npm test`, in every sandbox |
+
+Verified end to end inside the built image: both of the plan prompt's queries return (25 issues,
+5 unblocked), `psql postgresql://agent@127.0.0.1:5432/lipi_test` connects as `agent`,
+passwordless sudo works, `gh` authenticates from `GH_TOKEN`.
 
 ## 7. Known risks
 
