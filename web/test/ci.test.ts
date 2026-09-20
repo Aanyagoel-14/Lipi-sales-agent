@@ -15,13 +15,18 @@ import { testDatabaseUrl } from "./database-url";
  */
 const WORKFLOW = join(process.cwd(), "..", ".github", "workflows", "ci.yml");
 
+/** Read on every call so the `exists` assertion below reports the miss first. */
+const workflow = () => readFileSync(WORKFLOW, "utf8");
+
+type Step = { run: string; workingDirectory?: string };
+
 /**
  * The `run:` steps of the single job, each with the directory it runs in.
  * Enough structure to assert on without a YAML parser: steps are the only
  * list in the file whose items sit at this indent.
  */
-function steps(): { run: string; workingDirectory?: string }[] {
-  return readFileSync(WORKFLOW, "utf8")
+function steps(): Step[] {
+  return workflow()
     .split(/^ {6}- /m)
     .slice(1)
     .flatMap((block) => {
@@ -31,9 +36,14 @@ function steps(): { run: string; workingDirectory?: string }[] {
     });
 }
 
-describe("CI workflow", () => {
-  const workflow = () => readFileSync(WORKFLOW, "utf8");
+/** The step running `command`, failing by name rather than on a missing field. */
+function step(command: string): Step {
+  const found = steps().find((s) => s.run === command);
+  expect(found, `no step runs \`${command}\``).toBeDefined();
+  return found!;
+}
 
+describe("CI workflow", () => {
   it("exists", () => {
     expect(existsSync(WORKFLOW), `${WORKFLOW} is missing`).toBe(true);
   });
@@ -45,7 +55,7 @@ describe("CI workflow", () => {
   });
 
   it("runs all three checks", () => {
-    const runs = steps().map((step) => step.run);
+    const runs = steps().map((s) => s.run);
     expect(runs).toContain("npm run lint");
     expect(runs).toContain("npm run typecheck");
     expect(runs).toContain("npm test");
@@ -58,8 +68,7 @@ describe("CI workflow", () => {
     // three inside web/ would stay green while the documented entry point was
     // broken. So the checks run where a developer runs them: the root.
     for (const check of ["npm run lint", "npm run typecheck", "npm test"]) {
-      const step = steps().find((s) => s.run === check)!;
-      expect(step.workingDirectory, `${check} must run at the repo root`).toBeUndefined();
+      expect(step(check).workingDirectory, `${check} must run at the repo root`).toBeUndefined();
     }
 
     // A job-level default would move them without touching a step.
@@ -69,8 +78,7 @@ describe("CI workflow", () => {
   it("installs and prepares the database in web/", () => {
     // Those two are the only things the root has no script for.
     for (const command of ["npm ci", "npm run db:test:setup"]) {
-      const step = steps().find((s) => s.run === command)!;
-      expect(step?.workingDirectory, `${command} must run in web/`).toBe("web");
+      expect(step(command).workingDirectory, `${command} must run in web/`).toBe("web");
     }
   });
 
@@ -105,12 +113,12 @@ describe("CI workflow", () => {
         JSON.parse(readFileSync(join(process.cwd(), "..", directory, "package.json"), "utf8")).scripts ?? {},
       );
 
-    for (const step of steps()) {
+    for (const s of steps()) {
       // `npm ci` installs rather than running anything.
-      const name = step.run.match(/^npm (?:run )?([\w:-]+)$/)?.[1];
+      const name = s.run.match(/^npm (?:run )?([\w:-]+)$/)?.[1];
       if (!name || name === "ci") continue;
 
-      expect(scripts(step.workingDirectory ?? "."), `${step.run} has no script to run`).toContain(name);
+      expect(scripts(s.workingDirectory ?? "."), `${s.run} has no script to run`).toContain(name);
     }
   });
 });
@@ -119,24 +127,26 @@ describe("db:test:setup", () => {
   // A throwaway database, named so the suite's own `lipi_test` guard would
   // accept it — the script is meant to be run against exactly this shape of
   // name and nothing else.
+  const PROBE = "lipi_test_setup_probe";
+
   const probe = new URL(testDatabaseUrl);
-  probe.pathname = "/lipi_test_setup_probe";
+  probe.pathname = `/${PROBE}`;
 
   const maintenance = new URL(testDatabaseUrl);
   maintenance.pathname = "/postgres";
 
-  async function sql(statement: string) {
+  async function sql(statement: string, values: unknown[] = []) {
     const client = new Client({ connectionString: maintenance.toString() });
     await client.connect();
     try {
-      return await client.query(statement);
+      return await client.query(statement, values);
     } finally {
       await client.end();
     }
   }
 
   const exists = async () =>
-    (await sql(`SELECT 1 FROM pg_database WHERE datname = 'lipi_test_setup_probe'`)).rowCount === 1;
+    (await sql("SELECT 1 FROM pg_database WHERE datname = $1", [PROBE])).rowCount === 1;
 
   const run = (url: string) =>
     execFileSync("npx", ["tsx", "scripts/setup-test-db.ts"], {
@@ -145,7 +155,8 @@ describe("db:test:setup", () => {
       timeout: 60_000,
     }).toString();
 
-  const drop = () => sql(`DROP DATABASE IF EXISTS lipi_test_setup_probe`);
+  // DROP DATABASE takes no parameters, and PROBE is this file's own literal.
+  const drop = () => sql(`DROP DATABASE IF EXISTS ${PROBE}`);
 
   beforeAll(drop);
   afterAll(drop);
@@ -155,7 +166,7 @@ describe("db:test:setup", () => {
 
     const output = run(probe.toString());
 
-    expect(output).toContain("Created database lipi_test_setup_probe");
+    expect(output).toContain(`Created database ${PROBE}`);
     expect(await exists()).toBe(true);
 
     // The applied migrations, not just an empty database with a name.

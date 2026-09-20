@@ -33,14 +33,11 @@ if (!database.includes("lipi_test")) {
 }
 
 /** The same server, reached through the database every cluster has. */
-const maintenanceUrl = () => {
-  const maintenance = new URL(url);
-  maintenance.pathname = "/postgres";
-  return maintenance.toString();
-};
+const maintenanceUrl = new URL(url);
+maintenanceUrl.pathname = "/postgres";
 
 async function ensureDatabase(): Promise<"created" | "present"> {
-  const client = new Client({ connectionString: maintenanceUrl() });
+  const client = new Client({ connectionString: maintenanceUrl.toString() });
   await client.connect();
   try {
     const { rowCount } = await client.query("SELECT 1 FROM pg_database WHERE datname = $1", [database]);
