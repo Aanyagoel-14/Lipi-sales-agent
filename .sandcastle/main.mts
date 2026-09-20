@@ -43,8 +43,12 @@ const planSchema = z.object({
 // ---------------------------------------------------------------------------
 
 // Maximum number of plan→execute→merge cycles before stopping.
-// Raise this if your backlog is large; lower it for a quick smoke-test run.
-const MAX_ITERATIONS = 10;
+//
+// Twenty-five, one per open issue in the priority list, because a round lands
+// roughly three and the ceiling should not be what ends the run. It is a
+// backstop, not a target: the loop already exits the moment the planner finds
+// nothing unblocked, so a backlog that finishes in eight rounds costs eight.
+const MAX_ITERATIONS = 25;
 
 // Issues live on the fork, not on `origin` (which is the upstream
 // kritucapital repo and has no token here). `GH_REPO` makes every bare `gh`
