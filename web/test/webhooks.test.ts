@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase } from "./helpers";
+import { afterSettled } from "./next/server";
 import { fakeComposio } from "./fakes/composio";
 import { channelSpecs, specFor } from "@/server/channels/registry";
 import { INBOUND_LIMIT } from "@/server/channels/inbound";
@@ -128,16 +129,6 @@ const xActivity = (forUserId: string, text: string, id = "dm.1", senderId = "300
   users: { "3001969357": { id: "3001969357", name: "Deepa Rao", screen_name: "deepa_rao" } },
 });
 
-const xSign = (body: unknown, key = X_API_SECRET) =>
-  "sha256=" + createHmac("sha256", key).update(Buffer.from(JSON.stringify(body))).digest("base64");
-
-/** A signed X delivery, exactly as X would send it. */
-const deliverX = (body: unknown, signature = xSign(body)) =>
-  agent().post("/webhooks/x")
-    .set("x-twitter-webhooks-signature", signature)
-    .set("Content-Type", "application/json")
-    .send(body);
-
 const sign = (body: unknown, key = APP_SECRET) =>
   "sha256=" + createHmac("sha256", key).update(Buffer.from(JSON.stringify(body))).digest("hex");
 
@@ -148,8 +139,22 @@ const deliver = (body: unknown, signature = sign(body)) =>
     .set("Content-Type", "application/json")
     .send(body);
 
-/** `after()` is not awaited in production and is not awaited here either. */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 400));
+/** X's digest of the same bytes is base64 rather than Meta's hex. */
+const xSign = (body: unknown, key = X_API_SECRET) =>
+  "sha256=" + createHmac("sha256", key).update(Buffer.from(JSON.stringify(body))).digest("base64");
+
+/** A signed X delivery, exactly as X would send it. */
+const deliverX = (body: unknown, signature = xSign(body)) =>
+  agent().post("/webhooks/x")
+    .set("x-twitter-webhooks-signature", signature)
+    .set("Content-Type", "application/json")
+    .send(body);
+
+/**
+ * `after()` is not awaited in production, so the route answers before its
+ * work is done and a test that asserts on that work waits for it here.
+ */
+const settle = () => afterSettled();
 
 const conversationsIn = (workspaceId: string) =>
   prisma.conversation.findMany({ where: { workspaceId }, include: { messages: true } });
@@ -446,9 +451,9 @@ describe("X's signature", () => {
   });
 
   it("refuses a hex signature where X sends base64", async () => {
+    // The right key over the right bytes, in Meta's spelling of the digest.
     const body = xActivity(A.x, "hello");
-    await deliverX(body, "sha256=" + createHmac("sha256", X_API_SECRET)
-      .update(Buffer.from(JSON.stringify(body))).digest("hex")).expect(401);
+    await deliverX(body, sign(body, X_API_SECRET)).expect(401);
   });
 
   it("accepts a genuine signature", async () => {

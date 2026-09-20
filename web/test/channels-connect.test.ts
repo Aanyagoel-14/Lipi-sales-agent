@@ -475,8 +475,9 @@ describe("turning inbound on at connect time", () => {
     env.X_WEBHOOK_ID = undefined;
     try {
       await link("x", "twitter");
-      expect(await connection("x")).toMatchObject({ status: "error" });
-      expect((await connection("x"))?.lastError).toContain("X_WEBHOOK_ID");
+      const row = await connection("x");
+      expect(row).toMatchObject({ status: "error" });
+      expect(row?.lastError).toContain("X_WEBHOOK_ID");
     } finally {
       env.X_WEBHOOK_ID = before;
     }

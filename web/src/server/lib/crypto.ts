@@ -56,27 +56,34 @@ export function verifyShopifyWebhook(raw: Buffer, header: string | undefined, ap
 }
 
 /**
- * X signs an Account Activity delivery with the *app's* consumer secret —
- * Meta's story again, and the same rule about the raw bytes — but the digest
- * is base64 and the header is `x-twitter-webhooks-signature`. A verifier that
- * compared hex here would refuse every genuine delivery.
+ * X's one signing construction, which both halves of its webhook contract
+ * use: HMAC-SHA256 under the *app's* consumer secret, base64 where Meta's is
+ * hex, prefixed `sha256=`. Written once because a delivery we verified with
+ * one spelling and a challenge we answered with another would both look like
+ * a channel that simply receives nothing.
+ */
+const xDigest = (signed: Buffer | string, consumerSecret: string): string =>
+  `sha256=${createHmac("sha256", consumerSecret).update(signed).digest("base64")}`;
+
+/**
+ * X signs an Account Activity delivery with the consumer secret — Meta's
+ * story again, and the same rule about the raw bytes — and hands over the
+ * digest in `x-twitter-webhooks-signature`.
  */
 export function verifyXSignature(raw: Buffer, header: string | undefined, consumerSecret: string): boolean {
-  if (!header?.startsWith("sha256=")) return false;
-  const expected = createHmac("sha256", consumerSecret).update(raw).digest("base64");
-  return secretsMatch(expected, header.slice("sha256=".length));
+  return header !== undefined && secretsMatch(xDigest(raw, consumerSecret), header);
 }
 
 /**
- * The answer to X's Challenge-Response Check: the HMAC of the token X sent,
- * keyed by the same consumer secret, base64 and prefixed the same way.
+ * The answer to X's Challenge-Response Check: the token X sent, signed the
+ * way a delivery is.
  *
  * X makes this GET on registration, after every manual re-validation and
  * once an hour thereafter; a webhook that stops answering it is marked
  * invalid and stops receiving events, so this is not a one-off setup step.
  */
 export function crcResponseToken(crcToken: string, consumerSecret: string): string {
-  return `sha256=${createHmac("sha256", consumerSecret).update(crcToken).digest("base64")}`;
+  return xDigest(crcToken, consumerSecret);
 }
 
 /**

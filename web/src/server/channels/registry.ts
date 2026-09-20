@@ -766,7 +766,8 @@ const x: ChannelSpec = {
       const sender = event.message_create?.sender_id;
       const text = event.message_create?.message_data?.text?.trim();
       if (!sender || !text || !event.id) continue;
-      if (connection.externalId && sender === connection.externalId) continue;
+      // Our own reply, delivered back to us.
+      if (sender === connection.externalId) continue;
 
       const user = payload.users?.[sender];
       out.push({

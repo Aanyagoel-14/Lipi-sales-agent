@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach } from "vitest";
 import { testDatabaseUrl } from "./database-url";
+import { afterSettled } from "./next/server";
 
 // Must be set before anything imports env.ts, which reads it at module load.
 process.env.DATABASE_URL = testDatabaseUrl;
@@ -50,7 +51,12 @@ beforeAll(() => {
   }
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  // The test that just ended may have asserted on the response alone and left
+  // its `after()` work running. Letting that finish before anything is reset
+  // keeps its writes out of the next test's database and its sends out of the
+  // next test's call log.
+  await afterSettled();
   fakeComposio.reset();
   fakeShopify.reset();
   fakeEndpoint.reset();

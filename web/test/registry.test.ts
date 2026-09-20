@@ -22,10 +22,11 @@ const xActivity = ({ senderId = "3001969357", text = "do you ship to Pune?" } = 
       message_data: { text, entities: { hashtags: [], urls: [] } },
     },
   }],
+  // Widened so a test can replace a user with one X named no handle for.
   users: {
     "3001969357": { id: "3001969357", name: "Deepa Rao", screen_name: "deepa_rao" },
     "4337869213": { id: "4337869213", name: "Lipi Apparel", screen_name: "lipiapparel" },
-  } as Record<string, unknown>,
+  } as Record<string, { id: string; name: string; screen_name?: string }>,
 });
 
 describe("the registry", () => {
@@ -132,9 +133,9 @@ describe("parsing provider payloads", () => {
   });
 
   it("names an X sender by handle, falling back to their display name", () => {
-    const noScreenName = xActivity();
-    (noScreenName.users as Record<string, Record<string, string>>)["3001969357"] = { id: "3001969357", name: "Deepa Rao" };
-    expect(spec("x").parse(noScreenName, xConnection)[0]).toMatchObject({ name: "Deepa Rao" });
+    const delivery = xActivity();
+    delivery.users["3001969357"] = { id: "3001969357", name: "Deepa Rao" };
+    expect(spec("x").parse(delivery, xConnection)[0]).toMatchObject({ name: "Deepa Rao" });
   });
 
   it("turns Gmail trigger data into one message with the thread id", () => {
