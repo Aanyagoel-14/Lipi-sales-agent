@@ -47,7 +47,34 @@ const schema = z.object({
   // there is no per-tenant equivalent and never was.
   META_APP_SECRET: z.string().optional(),
   META_VERIFY_TOKEN: z.string().optional(),
+
+  // ------------------------------------------------------------- Shopify --
+  // Lipi's own Shopify app, one per deployment. The API key identifies it on
+  // the consent screen; the secret both signs the OAuth callback and every
+  // webhook body, the way META_APP_SECRET does for Meta. Optional, because a
+  // deployment that offers no Shopify install has no use for either — and
+  // absent means the install route refuses rather than half-works.
+  SHOPIFY_API_KEY: z.string().optional(),
+  SHOPIFY_API_SECRET: z.string().optional(),
+  // What the operator is asked to consent to. Kept in configuration rather
+  // than in code: adding a scope changes what the consent screen says, and
+  // that is a deployment's decision to make and to re-request.
+  SHOPIFY_SCOPES: z.string().default("read_products,read_inventory,read_orders"),
+  // Pinned, never "latest": a floating version means Shopify can change the
+  // shape of a payload the twin trusts without anything here changing.
+  SHOPIFY_API_VERSION: z.string().default("2025-01"),
 }).superRefine((value, ctx) => {
+  // Half a Shopify app is worse than none: an install that starts and cannot
+  // finish, or a webhook that can never be verified.
+  const shopify = ["SHOPIFY_API_KEY", "SHOPIFY_API_SECRET"] as const;
+  if (shopify.some((key) => value[key]) && !shopify.every((key) => value[key])) {
+    ctx.addIssue({
+      code: "custom",
+      path: [shopify.find((key) => !value[key])!],
+      message: "SHOPIFY_API_KEY and SHOPIFY_API_SECRET are only useful together",
+    });
+  }
+
   // A Meta channel that can be connected but whose webhooks can never be
   // verified is a channel that silently receives nothing. Rather than let a
   // deployment discover that from an empty inbox, it is a boot failure:

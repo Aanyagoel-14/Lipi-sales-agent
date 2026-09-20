@@ -8,6 +8,7 @@ import { timeOf } from "@/lib/dash-types";
 
 type Connector = {
   id: string; source: string; name: string; status: string; cursor: string | null;
+  shop: string | null;
   lastSyncIso: string | null; lastError: string | null;
   appliedCount: number; failedCount: number; mappings: number;
   openExceptions: number; stale: boolean; healthy: boolean;
@@ -22,8 +23,13 @@ type Exception = {
 
 type VariantChoice = { id: string; label: string };
 
+/**
+ * The systems that *push* to Lipi. Shopify is not among them: it is connected
+ * by consenting on Shopify's own screen, so it has its own affordance below
+ * rather than a line in a dropdown that would only mint a token no Shopify
+ * store knows how to use.
+ */
 const SOURCES = [
-  { id: "shopify", label: "Shopify" },
   { id: "woocommerce", label: "WooCommerce" },
   { id: "zoho", label: "Zoho Inventory" },
   { id: "erp", label: "ERP" },
@@ -56,6 +62,7 @@ export function ConnectorPanel({ variants }: { variants: VariantChoice[] }) {
   const [exceptions, setExceptions] = useState<Exception[]>([]);
   const [source, setSource] = useState<string>(SOURCES[0].id);
   const [name, setName] = useState("");
+  const [shop, setShop] = useState("");
   const [issued, setIssued] = useState<{ secret: string; pushUrl: string } | null>(null);
   const [choice, setChoice] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -108,6 +115,22 @@ export function ConnectorPanel({ variants }: { variants: VariantChoice[] }) {
         { method: "POST" },
       );
       setIssued({ secret: body.secret, pushUrl: body.connector.pushUrl });
+    });
+
+  /* The browser leaves for Shopify's consent screen and comes back through
+   * /v1/inventory/shopify/callback, so this never resolves on success. */
+  const install = () =>
+    act(async () => {
+      const body = await apiJson<{ redirectUrl: string }>("inventory/shopify/install", {
+        method: "POST",
+        body: JSON.stringify({ shop: shop.trim() }),
+      });
+      window.location.href = body.redirectUrl;
+    });
+
+  const syncShopify = () =>
+    act(async () => {
+      await apiJson("inventory/shopify/sync", { method: "POST" });
     });
 
   const disconnect = (id: string) =>
@@ -193,6 +216,28 @@ export function ConnectorPanel({ variants }: { variants: VariantChoice[] }) {
         </section>
       ) : null}
 
+      <section className="rounded-2xl border border-line bg-surface p-5">
+        <h2 className="text-[0.875rem] font-medium">Shopify</h2>
+        <p className="mt-1 text-[0.8125rem] text-ink-muted">
+          Shopify does not push. You consent on Shopify&rsquo;s own screen, and Lipi then imports
+          products and orders, follows stock, and keeps the twin current between polls with the
+          store&rsquo;s webhooks.
+        </p>
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <label htmlFor="shopify-shop" className="sr-only">Store address</label>
+          <input
+            id="shopify-shop"
+            value={shop}
+            onChange={(e) => setShop(e.target.value)}
+            placeholder="acme.myshopify.com"
+            className={field}
+          />
+          <Button size="sm" chevron={false} disabled={busy || shop.trim().length < 3} onClick={install}>
+            Connect Shopify
+          </Button>
+        </div>
+      </section>
+
       <section className="rounded-2xl border border-line bg-surface">
         <header className="border-b border-line px-5 py-3">
           <h2 className="text-[0.875rem] font-medium">Connectors</h2>
@@ -221,6 +266,7 @@ export function ConnectorPanel({ variants }: { variants: VariantChoice[] }) {
                 <dl className="mt-3 grid grid-cols-2 gap-y-2 sm:grid-cols-4">
                   {[
                     ["Last sync", c.lastSyncIso ? timeOf(c.lastSyncIso) : "never"],
+                    ...(c.shop ? [["Store", c.shop] as [string, string]] : []),
                     ["Cursor", c.cursor ?? "—"],
                     ["Corrections applied", String(c.appliedCount)],
                     ["Rows rejected", String(c.failedCount)],
@@ -235,9 +281,15 @@ export function ConnectorPanel({ variants }: { variants: VariantChoice[] }) {
                 {c.lastError ? <p className="mt-2.5 text-[0.75rem] text-amber">{c.lastError}</p> : null}
 
                 <div className="mt-3.5 flex gap-2">
-                  <Button variant="secondary" size="sm" chevron={false} disabled={busy} onClick={() => rotate(c.id)}>
-                    Rotate token
-                  </Button>
+                  {c.source === "shopify" ? (
+                    <Button variant="secondary" size="sm" chevron={false} disabled={busy} onClick={syncShopify}>
+                      Sync now
+                    </Button>
+                  ) : (
+                    <Button variant="secondary" size="sm" chevron={false} disabled={busy} onClick={() => rotate(c.id)}>
+                      Rotate token
+                    </Button>
+                  )}
                   <Button variant="ghost" size="sm" chevron={false} disabled={busy} onClick={() => disconnect(c.id)}>
                     Remove
                   </Button>

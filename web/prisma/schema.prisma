@@ -824,6 +824,25 @@ model InventoryConnector {
   appliedCount Int       @default(0)
   failedCount  Int       @default(0)
 
+  /// The source's own identity for the store this connector speaks to, when
+  /// the source is one Lipi calls rather than one that calls Lipi. Shopify
+  /// puts `acme.myshopify.com` here; a pushed connector leaves it null.
+  /// Globally unique because an inbound webhook names only the shop, with no
+  /// workspace in the URL, so a shop has to resolve to exactly one connector.
+  externalId   String?
+  /// OAuth access token, encrypted at rest through `lib/crypto` exactly as a
+  /// channel credential is. Never returned by an endpoint, never logged.
+  /// Cleared on disconnect, which is what stops a token outliving the
+  /// operator's decision to unplug the store.
+  accessToken  String?
+  /// The scopes the provider actually granted, so a feature that needs one
+  /// can say which re-consent it needs rather than failing on a 403.
+  scopes       String[]  @default([])
+  /// Anti-CSRF nonce for an install in flight. Written when the operator is
+  /// sent to the provider's consent screen, required to match on the way
+  /// back, and cleared the moment it is spent.
+  installState String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -837,6 +856,7 @@ model InventoryConnector {
   // One connector per source per workspace: two feeds for the same system
   // would fight over the same variants.
   @@unique([workspaceId, source])
+  @@unique([externalId])
   @@index([workspaceId])
   @@map("inventory_connectors")
 }
@@ -849,6 +869,13 @@ model InventoryConnector {
 model InventoryMapping {
   id          String   @id @default(cuid())
   externalSku String
+  /// A second handle the same source uses for the same sellable thing.
+  /// Shopify splits a variant's identity in two: it is sold by `variant.id`
+  /// and stocked by `inventory_item_id`, and `inventory_levels/update`
+  /// carries only the latter. One row per variant with both handles keeps
+  /// the operator's mapping list one line per thing they sell, rather than
+  /// two rows that look like two products.
+  externalRef String?
   createdAt   DateTime @default(now())
 
   connectorId String
@@ -857,6 +884,7 @@ model InventoryMapping {
   variant     Variant            @relation(fields: [variantId], references: [id], onDelete: Cascade)
 
   @@unique([connectorId, externalSku])
+  @@unique([connectorId, externalRef])
   @@index([variantId])
   @@map("inventory_mappings")
 }

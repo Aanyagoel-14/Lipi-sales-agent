@@ -69,6 +69,7 @@ reserved at that variant; and all effects appear in the event trail.
 | Channel adapters | Normalize provider payloads into a common inbound message and send approved replies. |
 | Analytics service | Derives KPIs, volume, intent mix and low-stock signals from live rows. |
 | Inventory connectors | Accept pushed stock batches, map external SKUs to variants, apply corrections idempotently and surface what could not be applied. |
+| Shopify connector | The one *pulled* source: OAuth install, product and order import, polled stock and webhooks. Corrections still go through the same `applySync()` as a pushed batch. |
 
 ## Data onboarding
 
@@ -102,6 +103,27 @@ to sign in as. Corrections land through the same path and append the same
 A correction below a variant's reserved units is refused rather than clamped:
 those units are already promised to a customer, and accepting the lower figure
 would let the twin sell them twice.
+
+### Shopify
+
+Shopify does not push, so it is the one source Lipi calls. The operator
+consents on Shopify's own screen (`POST /v1/inventory/shopify/install` ->
+Shopify -> `GET /v1/inventory/shopify/callback`); the access token is
+encrypted at rest with `lib/crypto` like a channel credential, is returned by
+no endpoint, and is cleared on disconnect along with the store's webhook
+subscriptions.
+
+Everything after the install reuses the connector framework rather than
+paralleling it:
+
+| Concern | How |
+| --- | --- |
+| Stock | Every count — polled, or delivered by `inventory_levels/update` — goes through `applySync()`. Imported variants are created at zero and corrected from there, so there is exactly one path over the number the twin quotes. |
+| Mapping | A Shopify variant id is an `InventoryMapping.externalSku` like any other external SKU. Shopify splits a variant's identity — sold by `variant.id`, stocked by `inventory_item_id` — so the second handle lives on the same row as `externalRef`, and an inventory item nobody has imported raises the existing `unmapped_sku` exception. |
+| Cursor | An `updated_at` watermark, advanced only to the newest record a run actually saw, and handed back as `updated_at_min`. The batch key is derived from it, so a poll that finds the same tail twice replays instead of re-applying. |
+| Webhooks | One URL for the deployment, `POST /webhooks/shopify`, HMAC-verified against `SHOPIFY_API_SECRET` over the raw bytes; the tenant comes from `X-Shopify-Shop-Domain`, which is why a shop resolves to exactly one connector. Same shape as `/webhooks/meta`, for the same reason. |
+| Orders | Imported so revenue that happened in Shopify is visible to attribution: the buyer's `landing_site` supplies `utm_*` and the click id, stamped on first touch only. An imported order reserves and deducts nothing — Shopify already counted the sale, and the next sync carries that number. |
+| Cadence | Lipi has no scheduler. `POST /v1/inventory/shopify/sync` is the tick, driven by a cron or an API key. |
 
 ## Training and evaluation
 
@@ -164,7 +186,8 @@ dashboard.
 1. Complete WhatsApp app-secret handling and production webhook deployment.
    Signature verification currently uses the operator verify token, so a real
    Meta webhook cannot authenticate.
-2. Add customer, order and invoice import connectors with provenance metadata.
+2. Add customer and invoice import connectors with provenance metadata.
+   Shopify orders import; no other source's do.
 3. Add idempotent provider-message handling using external message IDs. The
    channel adapters already parse them; the webhook route discards them, so a
    provider retry runs the ingest loop twice.
@@ -173,4 +196,4 @@ dashboard.
    `reserved` currently only ever increments.
 
 Done: inventory connectors with idempotency, cursors, reconciliation and an
-operator-visible exception queue.
+operator-visible exception queue; a real Shopify connector on top of them.
