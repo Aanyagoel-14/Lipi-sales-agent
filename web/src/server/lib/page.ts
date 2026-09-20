@@ -4,9 +4,10 @@ import { HttpError } from "./http";
 /**
  * Keyset pagination for the list endpoints.
  *
- * Every list here is ordered newest-first over a table that grows forever, so
- * offsets are the wrong tool: rows arriving mid-scroll shift the window and a
- * page boundary either repeats a row or skips one.
+ * Every list here runs over a table that grows forever, so offsets are the
+ * wrong tool: rows arriving mid-scroll shift the window and a page boundary
+ * either repeats a row or skips one. Most lists are newest-first over a
+ * timestamp (`after`); the catalogue is A-to-Z over a name (`afterText`).
  *
  * Prisma's own `cursor` option is also wrong here, and subtly so. It resolves
  * the anchor row by id *outside* the query's `where`, so a cursor naming
@@ -23,7 +24,8 @@ const schema = z.object({
   cursor: z.string().trim().min(1).max(200).optional(),
 });
 
-export type Anchor = { at: Date; id: string };
+/** The last row of the previous page: its sort key, then its id as tiebreak. */
+export type Anchor = { key: string; id: string };
 
 export type Page = {
   limit: number;
@@ -32,21 +34,23 @@ export type Page = {
   anchor: Anchor | null;
 };
 
-/** `<epochMillis>.<id>`, base64url'd so it reads as opaque and survives a URL. */
-export function encodeCursor(at: Date, id: string): string {
-  return Buffer.from(`${at.getTime()}.${id}`, "utf8").toString("base64url");
+/** `<sortKey>.<id>`, base64url'd so it reads as opaque and survives a URL. */
+export function encodeCursor(sortKey: Date | string, id: string): string {
+  const key = sortKey instanceof Date ? String(sortKey.getTime()) : sortKey;
+  return Buffer.from(`${key}.${id}`, "utf8").toString("base64url");
 }
+
+const invalidCursor = () => new HttpError(422, "That page cursor is not valid");
 
 function decodeCursor(raw: string): Anchor {
   const decoded = Buffer.from(raw, "base64url").toString("utf8");
-  const split = decoded.indexOf(".");
-  const millis = Number(decoded.slice(0, split));
+  // The *last* dot, not the first: a sort key can be text and contain one —
+  // a product named "3.5mm cable" — while an id never does.
+  const split = decoded.lastIndexOf(".");
 
-  if (split < 1 || !Number.isFinite(millis) || !decoded.slice(split + 1)) {
-    throw new HttpError(422, "That page cursor is not valid");
-  }
+  if (split < 1 || !decoded.slice(split + 1)) throw invalidCursor();
 
-  return { at: new Date(millis), id: decoded.slice(split + 1) };
+  return { key: decoded.slice(0, split), id: decoded.slice(split + 1) };
 }
 
 export function pageOf(req: Request): Page {
@@ -70,7 +74,9 @@ export function pageOf(req: Request): Page {
  */
 export function after(field: string, page: Page) {
   if (!page.anchor) return {};
-  const { at, id } = page.anchor;
+  const { key, id } = page.anchor;
+  const at = new Date(Number(key));
+  if (!Number.isFinite(at.getTime())) throw invalidCursor();
   return {
     OR: [
       { [field]: { lt: at } },
@@ -79,11 +85,28 @@ export function after(field: string, page: Page) {
   };
 }
 
+/**
+ * The same fragment for a list ordered `[{ [field]: "asc" }, { id: "asc" }]`
+ * over a text column. A catalogue reads A-to-Z, not newest-first, and forcing
+ * it onto a timestamp would either need a column products do not have or hand
+ * an integrator a page order no human would recognise.
+ */
+export function afterText(field: string, page: Page) {
+  if (!page.anchor) return {};
+  const { key, id } = page.anchor;
+  return {
+    OR: [
+      { [field]: { gt: key } },
+      { [field]: key, id: { gt: id } },
+    ],
+  };
+}
+
 /** Drops the sentinel row and mints the cursor for the next request. */
 export function paged<T extends { id: string }>(
   rows: T[],
   page: Page,
-  sortValue: (row: T) => Date,
+  sortValue: (row: T) => Date | string,
 ) {
   if (rows.length <= page.limit) return { rows, nextCursor: null as string | null };
   const trimmed = rows.slice(0, page.limit);

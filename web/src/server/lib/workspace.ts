@@ -1,7 +1,7 @@
 import { headers } from "next/headers";
 import type { ApiScope } from "@/generated/prisma/client";
 import { prisma } from "./prisma";
-import { HttpError, requestInFlight } from "./http";
+import { HttpError, noteWorkspace, requestInFlight } from "./http";
 import { hasSessionCookie, requireUser } from "./session";
 import { checkRateLimit } from "./rate-limit";
 import {
@@ -49,6 +49,18 @@ export async function resolveWorkspaceId(options: ResolveOptions = {}): Promise<
     throw new HttpError(400, "Send a session cookie or an API key, not both");
   }
 
+  const workspaceId = await resolveCredential(presented, requested, options);
+  // The wrapper needs the tenant to answer a cross-origin caller, and this is
+  // the one place that knows it. See lib/origins.ts.
+  noteWorkspace(workspaceId);
+  return workspaceId;
+}
+
+function resolveCredential(
+  presented: string | null,
+  requested: string | null,
+  options: ResolveOptions,
+): Promise<string> {
   if (!presented) return resolveFromSession(requested);
 
   if (options.sessionOnly) {

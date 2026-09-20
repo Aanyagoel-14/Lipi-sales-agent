@@ -128,6 +128,34 @@ extracts intent, updates the customer Twin, matches a variant, applies allowed
 inventory/order effects, creates agent runs and approvals, composes a grounded
 reply, and appends events for each effect.
 
+## The public API
+
+`/v1` is one surface with two audiences. The dashboard reads it same-origin with
+a session cookie; an external integration reads the same routes with an API key.
+There is no second API for outsiders, because a second API is how one of them
+ends up missing a check the other has.
+
+What makes it a contract rather than whatever the dashboard happened to need:
+
+- **The shapes are declared, not implied.** `src/app/v1/contract.ts` holds a Zod
+  schema for every documented request and response. The projections in
+  `shapes.ts` are typed as `z.infer` of those schemas, so a field cannot leave
+  the API without being described.
+- **The document is generated from them.** `src/app/v1/openapi.ts` turns the same
+  schemas into OpenAPI 3.1; `docs/openapi.json` is the checked-in output and
+  `test/openapi.test.ts` regenerates it on every run, so a stale document fails
+  the suite. It is served at `GET /v1/openapi.json` without a credential.
+- **One pagination convention and one error envelope.** Every list takes `limit`
+  and `cursor` and answers `{ <noun>s, nextCursor }`; every error at every status
+  is `{ error, details? }`, produced in one place by `route()`.
+- **Two CORS stories, kept apart.** The anonymous widget answers `*` to anybody —
+  `server/lib/cors.ts`, unchanged. A key-authenticated browser call is readable
+  only from an origin the resolved workspace listed in `allowedOrigins` —
+  `server/lib/origins.ts`. Neither loosens the other.
+
+Integration notes live in `docs/api.md`, `docs/integrations/react.md` and
+`docs/integrations/wordpress.md`.
+
 ## Channel delivery status
 
 | Channel | Current capability | Production requirement |
@@ -158,6 +186,11 @@ dashboard.
 - List endpoints are keyset-paginated. The cursor carries the sort key rather
   than a row id, so it can only narrow a query already scoped to the workspace
   and cannot be used to shift another tenant's window or hide a row.
+- Cross-origin reads of key-authenticated responses are denied by default. An
+  origin is allowed per workspace, never globally, and credentials are never
+  allowed with it, so no third-party page can ride an operator's cookie.
+- Events posted from outside are namespaced under `external.`, so nothing a
+  caller writes can pose as something the ingest path observed.
 
 ## Near-term priorities
 

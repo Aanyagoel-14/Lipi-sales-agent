@@ -163,6 +163,13 @@ limit.
 
 ## API
 
+The documented integration surface — customers, conversations, products,
+events and conversions — is described in [`docs/api.md`](docs/api.md), with a
+generated OpenAPI 3.1 document in [`docs/openapi.json`](docs/openapi.json) and
+integration notes for [React and Lovable](docs/integrations/react.md) and
+[WordPress](docs/integrations/wordpress.md). The table below is the whole
+surface, documented and internal alike.
+
 | Method | Route                  | Purpose                      |
 | ------ | ---------------------- | ---------------------------- |
 | GET    | `/v1/health`           | Liveness                     |
@@ -170,11 +177,17 @@ limit.
 | GET    | `/v1/dashboard/overview` | KPIs, charts, alerts       |
 | GET    | `/v1/conversations`    | Thread list: preview and count, paged |
 | GET    | `/v1/conversations/:id` | One thread with its messages |
-| GET    | `/v1/customers`        | Customer twins               |
-| GET    | `/v1/products`         | Product twins and suppliers  |
+| POST   | `/v1/conversations`    | Start a thread from an integrator's own site |
+| GET    | `/v1/customers`        | Customer twins, paged        |
+| GET    | `/v1/customers/:id`    | One customer twin            |
+| GET    | `/v1/products`         | Product twins and suppliers, paged |
+| GET    | `/v1/products/:id`     | One product with its variants |
+| GET    | `/v1/conversions`      | Orders as conversions, in paise, with attribution |
 | GET    | `/v1/orders`           | Orders with joins            |
 | GET    | `/v1/approvals`        | Agent actions awaiting a human |
 | GET    | `/v1/events`           | Twin event log               |
+| POST   | `/v1/events`           | Record an event from an integrator's own site |
+| GET    | `/v1/openapi.json`     | The contract, unauthenticated |
 | GET    | `/v1/agents/runs`      | Agent run history            |
 | GET    | `/v1/invoices`         | Invoices, payments, ageing   |
 | POST   | `/v1/messages`         | Inbound message, runs the ingest loop |
@@ -196,9 +209,8 @@ limit.
 | POST   | `/v1/inventory/exceptions/:id/resolve` | Map the SKU, or dismiss it |
 | POST   | `/v1/inventory/:id/sync`   | Where the source pushes stock (token auth) |
 
-`/v1/events`, `/v1/orders` and `/v1/conversations` are keyset-paginated:
-`?limit=` (default 50, max 200) and `?cursor=`, with `nextCursor` in the
-response and `null` on the last page. The dashboard server-renders the first
+Every list endpoint is keyset-paginated: `?limit=` (default 50, max 200) and
+`?cursor=`, with `nextCursor` in the response and `null` on the last page. The dashboard server-renders the first
 page and appends the rest, so a table that grows forever is never fetched
 whole.
 

@@ -202,5 +202,6 @@ export function agent() {
     put: make("PUT"),
     patch: make("PATCH"),
     delete: make("DELETE"),
+    options: make("OPTIONS"),
   };
 }
