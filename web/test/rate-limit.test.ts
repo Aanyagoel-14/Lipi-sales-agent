@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase } from "./helpers";
+import { prisma } from "@/server/lib/prisma";
 import { _resetRateLimitsForTests, checkRateLimit, clientIp } from "@/server/lib/rate-limit";
 
 /**
@@ -127,6 +128,43 @@ describe("the budget as a webchat caller meets it", () => {
 
     await poll("198.51.100.12").expect(429);
     await poll("198.51.100.13").expect(200);
+  });
+
+  /** The endpoint the budget exists for: every one of these runs a full
+   *  `ingest()` — an extraction call, a transaction, a lead-score recompute. */
+  const say = (ip: string, visitorId = "visitor-rate-2") =>
+    agent()
+      .post(`/v1/webchat/${workspaceId}/message`)
+      .send({ visitorId, text: "do you have olive polos" })
+      .set("x-forwarded-for", ip);
+
+  // One key per source address, not one per route, so the cheap endpoint
+  // cannot be used to drain a budget the expensive one then ignores — and,
+  // more to the point, `/message` is metered at all. Swap its `corsRoute`
+  // for a plain `route()` and this is the only case that notices.
+  it("spends one budget across all three routes, so a poll flood closes /message too", async () => {
+    for (let i = 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.20").expect(200);
+
+    const refused = await say("198.51.100.20").expect(429);
+    expect(refused.headers["access-control-allow-origin"]).toBe("*");
+    await agent().post(`/v1/webchat/${workspaceId}/session`)
+      .send({ visitorId: "visitor-rate-2" })
+      .set("x-forwarded-for", "198.51.100.20")
+      .expect(429);
+
+    // The refusal lands ahead of the handler, which is the whole point:
+    // no ingest ran, so the flood bought no LLM call and no fake lead.
+    expect(await prisma.customer.count({ where: { workspaceId } })).toBe(0);
+    expect(await prisma.message.count({ where: { conversation: { workspaceId } } })).toBe(0);
+  });
+
+  it("counts a visitor's own messages against the budget, not only their polls", async () => {
+    const spent = 5;
+    for (let i = 1; i <= spent; i++) await say("198.51.100.21").expect(201);
+    for (let i = spent + 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.21").expect(200);
+
+    await poll("198.51.100.21").expect(429);
+    expect(await prisma.message.count({ where: { conversation: { workspaceId }, from: "customer" } })).toBe(spent);
   });
 
   // The counter runs before the handler, so a flood aimed at a workspace id

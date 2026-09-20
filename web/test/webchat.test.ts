@@ -64,6 +64,18 @@ describe("the visitor session", () => {
     expect(greeting).toBe("Hi!");
   });
 
+  // A workspace that has not been through onboarding has no voice row yet,
+  // and the widget can still be embedded — it names the workspace rather
+  // than returning nothing for the one string this call exists to give.
+  it("names the workspace when it has no voice configured yet", async () => {
+    const bare = await prisma.workspace.create({
+      data: { name: "Bare Co", vertical: "apparel", channels: ["whatsapp"] },
+    });
+
+    const { greeting } = await upsertSession({ workspaceId: bare.id, visitorId: VISITOR, touch: EMPTY_TOUCH });
+    expect(greeting).toBe("Hi! How can Bare Co help?");
+  });
+
   it("keeps the same visitorId in two workspaces apart", async () => {
     const other = await setup("nothing", "Other Co");
     await upsertSession({ workspaceId, visitorId: VISITOR, touch: EMPTY_TOUCH });
