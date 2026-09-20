@@ -138,22 +138,24 @@ async function versions() {
 }
 
 /**
- * The four auth configs, in the form each toolkit actually accepts (read from
+ * The five auth configs, in the form each toolkit actually accepts (read from
  * `GET /toolkits/{slug}` on 2026-09-19).
  *
  * Telegram is API_KEY: the bot token is supplied per connection, so the config
- * itself carries no credentials. The other three are OAuth2. Gmail on
- * Composio-managed auth is fine for production. **WhatsApp and Instagram on
- * managed auth are development only** — Meta signs inbound webhooks with the
- * subscribing app's secret, so a managed config can never produce inbound Lipi
- * can verify. Replace both with custom configs on Lipi's own Meta app before
- * those channels go live (see docs/runbooks/meta-app.md).
+ * itself carries no credentials. The other four are OAuth2. Gmail on
+ * Composio-managed auth is fine for production. **WhatsApp, Instagram and
+ * Messenger on managed auth are development only** — Meta signs inbound
+ * webhooks with the subscribing app's secret, so a managed config can never
+ * produce inbound Lipi can verify. Replace all three with custom configs on
+ * Lipi's own Meta app before those channels go live (see
+ * docs/runbooks/meta-app.md).
  */
 const AUTH_CONFIGS = [
   { toolkit: "telegram", env: "COMPOSIO_AUTH_CONFIG_TELEGRAM", body: { type: "use_custom_auth", authScheme: "API_KEY", credentials: {}, name: "lipi-telegram" } },
   { toolkit: "gmail", env: "COMPOSIO_AUTH_CONFIG_GMAIL", body: { type: "use_composio_managed_auth", name: "lipi-gmail" } },
   { toolkit: "whatsapp", env: "COMPOSIO_AUTH_CONFIG_WHATSAPP", body: { type: "use_composio_managed_auth", name: "lipi-whatsapp-DEV-ONLY" } },
   { toolkit: "instagram", env: "COMPOSIO_AUTH_CONFIG_INSTAGRAM", body: { type: "use_composio_managed_auth", name: "lipi-instagram-DEV-ONLY" } },
+  { toolkit: "facebook", env: "COMPOSIO_AUTH_CONFIG_FACEBOOK", body: { type: "use_composio_managed_auth", name: "lipi-facebook-DEV-ONLY" } },
 ] as const;
 
 type AuthConfig = { id?: string; name?: string; toolkit?: { slug?: string }; auth_scheme?: string; is_composio_managed?: boolean };

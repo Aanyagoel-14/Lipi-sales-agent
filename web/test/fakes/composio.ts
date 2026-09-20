@@ -5,6 +5,7 @@ import type {
   ComposioEvent,
   ExecuteResult,
   ProxyMethod,
+  ProxyQuery,
   ProxyResult,
   WebhookHeaders,
 } from "@/server/lib/composio";
@@ -13,7 +14,13 @@ import { createHmac } from "node:crypto";
 
 type ExecuteArgs = { userId: string; connectedAccountId: string; arguments: Record<string, unknown> };
 type ExecuteScript = ExecuteResult | ((args: ExecuteArgs) => ExecuteResult);
-type ProxyArgs = { connectedAccountId: string; method: ProxyMethod; endpoint: string; body?: unknown };
+type ProxyArgs = {
+  connectedAccountId: string;
+  method: ProxyMethod;
+  endpoint: string;
+  body?: unknown;
+  query?: ProxyQuery;
+};
 type ProxyScript = ProxyResult | ((args: ProxyArgs) => ProxyResult);
 
 /**

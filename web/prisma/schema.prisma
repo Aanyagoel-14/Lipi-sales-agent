@@ -19,6 +19,7 @@ datasource db {
 enum Channel {
   whatsapp
   instagram
+  facebook
   telegram
   email
   webchat
@@ -634,21 +635,15 @@ model ChannelConnection {
   /// Trigger instances Lipi created for this account; deleted on disconnect.
   composioTriggerIds   String[]  @default([])
   connectedAt          DateTime?
-  /// Proves an inbound webhook came from the provider. For Telegram this is
-  /// the secret token header. For Meta channels it is ALSO the value the
-  /// operator enters as the callback's `hub.verify_token` for GET
-  /// verification -- but it is never the HMAC signing key. That is a
-  /// separate, Meta-issued App Secret (H-3 fix), kept below.
-  /// Nullable since the Composio track: only Telegram keeps one (the
-  /// `secret_token` Lipi generates for setWebhook); Meta channels verify
-  /// against the app-level META_APP_SECRET instead.
+  /// Proves an inbound webhook came from the provider. Telegram only: the
+  /// `secret_token` Lipi generates for `setWebhook` and Telegram echoes in
+  /// `x-telegram-bot-api-secret-token` on every delivery. Cleared on
+  /// disconnect, which is what stops a webhook Lipi can no longer withdraw.
+  /// Meta channels keep nothing here: their bodies are signed with Lipi's
+  /// own app-level META_APP_SECRET and their GET challenge is answered
+  /// against the deployment's META_VERIFY_TOKEN, so no per-tenant provider
+  /// secret is stored for them at all.
   webhookSecret       String?
-  /// AES-256-GCM ciphertext of the Meta App Secret. WhatsApp/Instagram sign
-  /// every webhook POST body with this key, distinct from `webhookSecret`
-  /// above (an operator-chosen verify token) and from `secretCipher` (the
-  /// access token used to send). Null until the operator supplies it, in
-  /// which case an inbound POST cannot authenticate (H-3).
-  metaAppSecretCipher String?
   lastEventAt         DateTime?
   lastError           String?
   createdAt           DateTime         @default(now())

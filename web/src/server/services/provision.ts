@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { toPaise } from "../lib/money";
 import { generateSku } from "../lib/sku";
 import { catalogueFor, type Vertical } from "./catalogues";
+import { channelSpecs } from "@/server/channels/registry";
 import type { Channel, PrismaClient } from "@/generated/prisma/client";
 
 type Tx = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$use" | "$extends" | "$transaction">;
@@ -196,7 +197,9 @@ export async function provisionHistory(
   // have real rows to count rather than a single point. Deterministic rather
   // than random: a demo that reshuffles on every reseed is hard to talk about.
   const INTENTS = ["buy", "inventory_request", "quote_request", "support", "return", "purchase_order", "complaint"] as const;
-  const CHANNELS: Channel[] = ["whatsapp", "instagram", "telegram", "email", "webchat"];
+  // The registry's channels plus webchat, so seeded history covers whatever
+  // this deployment can actually connect.
+  const CHANNELS: Channel[] = [...channelSpecs.map((spec) => spec.channel), "webchat"];
   const WEIGHTS = [5, 4, 3, 2, 2, 3, 4, 5, 6, 4, 5, 6, 7, 8];
 
   let seq = 0;

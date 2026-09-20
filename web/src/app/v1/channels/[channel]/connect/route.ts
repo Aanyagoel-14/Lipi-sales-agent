@@ -67,7 +67,10 @@ export const POST = route<{ channel: string }>(async (req, params) => {
         // A new account may resolve to a different number, bot or mailbox, so
         // nothing derived from the old one survives into the new connection.
         composioTriggerIds: [], externalId: null, displayName: null,
-        config: {}, connectedAt: null, lastError: null,
+        // The old webhook secret proved the old account's deliveries. If the
+        // new one never finishes, a delivery from the webhook the previous
+        // token still points at must not be accepted on its strength.
+        config: {}, webhookSecret: null, connectedAt: null, lastError: null,
       },
     });
 
@@ -76,7 +79,9 @@ export const POST = route<{ channel: string }>(async (req, params) => {
       client.initiateApiKey(workspaceId, authConfigId, token,
         spec.connect.kind === "api_key" ? spec.connect.composioField : undefined));
 
-    const finished = await finishConnection(await upsert(connectedAccountId));
+    // The token is handed on by value, for the one hook that cannot go
+    // through Composio (Telegram's setWebhook), and is never written down.
+    const finished = await finishConnection(await upsert(connectedAccountId), { apiKey: token });
     if (finished.status !== "connected") {
       throw new HttpError(400, finished.lastError ?? `${spec.label} did not accept that token`);
     }

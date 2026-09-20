@@ -509,7 +509,7 @@ describe("through the routes", () => {
       data: { webhookSecret: "telegram-secret-for-tests" },
     });
 
-    await agent().post(`/webhooks/telegram/${workspaceId}`)
+    await agent().post(`/webhooks/telegram/${row.id}`)
       .set("x-telegram-bot-api-secret-token", "telegram-secret-for-tests")
       .send({
         update_id: 1,

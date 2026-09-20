@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
 import { fakeComposio } from "./fakes/composio";
 import { channelSpecs } from "@/server/channels/registry";
@@ -16,6 +16,7 @@ const AUTH = {
   whatsapp: "ac_test_whatsapp",
   telegram: "ac_test_telegram",
   instagram: "ac_test_instagram",
+  facebook: "ac_test_facebook",
   gmail: "ac_test_gmail",
 } as const;
 
@@ -24,6 +25,7 @@ const original = {
   whatsapp: env.COMPOSIO_AUTH_CONFIG_WHATSAPP,
   telegram: env.COMPOSIO_AUTH_CONFIG_TELEGRAM,
   instagram: env.COMPOSIO_AUTH_CONFIG_INSTAGRAM,
+  facebook: env.COMPOSIO_AUTH_CONFIG_FACEBOOK,
   gmail: env.COMPOSIO_AUTH_CONFIG_GMAIL,
 };
 
@@ -32,6 +34,7 @@ beforeAll(() => {
   env.COMPOSIO_AUTH_CONFIG_WHATSAPP = AUTH.whatsapp;
   env.COMPOSIO_AUTH_CONFIG_TELEGRAM = AUTH.telegram;
   env.COMPOSIO_AUTH_CONFIG_INSTAGRAM = AUTH.instagram;
+  env.COMPOSIO_AUTH_CONFIG_FACEBOOK = AUTH.facebook;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = AUTH.gmail;
 });
 
@@ -40,13 +43,42 @@ afterAll(() => {
   env.COMPOSIO_AUTH_CONFIG_WHATSAPP = original.whatsapp;
   env.COMPOSIO_AUTH_CONFIG_TELEGRAM = original.telegram;
   env.COMPOSIO_AUTH_CONFIG_INSTAGRAM = original.instagram;
+  env.COMPOSIO_AUTH_CONFIG_FACEBOOK = original.facebook;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = original.gmail;
 });
+
+/**
+ * Telegram's `setWebhook` is the one provider call that does not go through
+ * Composio — its credential lives in the URL path, which Composio's proxy
+ * cannot fill — so the fake client never sees it. `fetch` stands in instead,
+ * and what it was asked for is what these tests read.
+ */
+type TelegramCall = { url: string; body: { url?: string; secret_token?: string; allowed_updates?: string[] } };
+let telegram: { calls: TelegramCall[]; answer: { ok: boolean; description?: string }; status: number };
+
+beforeEach(() => {
+  telegram = { calls: [], answer: { ok: true }, status: 200 };
+  vi.stubGlobal("fetch", async (url: string | URL, init: { body: string }) => {
+    telegram.calls.push({ url: String(url), body: JSON.parse(init.body) });
+    return new Response(JSON.stringify(telegram.answer), {
+      status: telegram.status, headers: { "content-type": "application/json" },
+    });
+  });
+});
+
+afterEach(() => vi.unstubAllGlobals());
 
 let workspaceId: string;
 
 const TELEGRAM_IDENTITY = { successful: true, data: { result: { id: 42, username: "lipibot" } }, error: null };
 const GMAIL_IDENTITY = { successful: true, data: { emailAddress: "sales@acme.test" }, error: null };
+/**
+ * The WABA id Composio collected when the account was created. It is not in
+ * any tool's response — `afterConnect` reads it off the connected account —
+ * and `POST /{waba_id}/subscribed_apps` is addressed with it.
+ */
+const WABA = "waba_102290129340398";
+
 const numbers = (...ids: string[]) => ({
   successful: true,
   error: null,
@@ -235,7 +267,8 @@ describe("the callback", () => {
       fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers("111"));
       const { app, accountId } = await start("whatsapp");
       fakeComposio.accounts.set(accountId, {
-        id: accountId, status: "ACTIVE", statusReason: null, userId: workspaceId, toolkit: "whatsapp",
+        id: accountId, status: "ACTIVE", statusReason: null, userId: workspaceId,
+        toolkit: "whatsapp", params: { generic_id: WABA },
       });
 
       await app.get(`/v1/channels/callback?connected_account_id=${accountId}`).expect(303);
@@ -256,7 +289,7 @@ describe("choosing a WhatsApp number", () => {
     const pending = await connection("whatsapp");
     fakeComposio.accounts.set(pending!.composioAccountId!, {
       id: pending!.composioAccountId!, status: "ACTIVE", statusReason: null,
-      userId: workspaceId, toolkit: "whatsapp",
+      userId: workspaceId, toolkit: "whatsapp", params: { generic_id: WABA },
     });
     await app.get(`/v1/channels/callback?connected_account_id=${pending!.composioAccountId}`).expect(303);
     return app;
@@ -311,6 +344,138 @@ describe("choosing a WhatsApp number", () => {
   });
 });
 
+describe("turning inbound on at connect time", () => {
+  /** Runs an OAuth channel all the way through its callback. */
+  const link = async (channel: string, toolkit: string, params: Record<string, string> = {}) => {
+    const app = await signedIn();
+    await app.post(`/v1/channels/${channel}/connect`).expect(201);
+    const pending = await connection(channel);
+    fakeComposio.accounts.set(pending!.composioAccountId!, {
+      id: pending!.composioAccountId!, status: "ACTIVE", statusReason: null,
+      userId: workspaceId, toolkit, params,
+    });
+    await app.get(`/v1/channels/callback?connected_account_id=${pending!.composioAccountId}`).expect(303);
+    return { app, connectionId: pending!.id };
+  };
+
+  const subscriptions = () => fakeComposio.calls.proxy.map((call) => ({
+    method: call.method, endpoint: call.endpoint, query: call.query,
+  }));
+
+  it("subscribes the WABA, not the number, when WhatsApp connects", async () => {
+    fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers("111", "222"));
+    await link("whatsapp", "whatsapp", { generic_id: WABA });
+
+    expect(subscriptions()).toEqual([{
+      method: "POST", endpoint: `/${WABA}/subscribed_apps`, query: { subscribed_fields: "messages" },
+    }]);
+    // Still unpicked: the subscription is account-wide, the sender is not.
+    expect(await connection("whatsapp")).toMatchObject({ status: "connected", externalId: null });
+  });
+
+  it("refuses to call WhatsApp connected when Composio cannot say which WABA it is", async () => {
+    fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers("111"));
+    await link("whatsapp", "whatsapp");
+
+    expect(fakeComposio.calls.proxy).toEqual([]);
+    const row = await connection("whatsapp");
+    expect(row?.status).toBe("error");
+    expect(row?.lastError).toContain("WhatsApp Business Account");
+  });
+
+  it("leaves the row in error when Meta refuses the subscription", async () => {
+    fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers("111"));
+    fakeComposio.proxy.respond(`/${WABA}/subscribed_apps`, {
+      status: 403, data: { error: { message: "(#200) Requires whatsapp_business_management" } },
+    });
+    await link("whatsapp", "whatsapp", { generic_id: WABA });
+
+    const row = await connection("whatsapp");
+    expect(row?.status).toBe("error");
+    expect(row?.lastError).toContain("whatsapp_business_management");
+    expect(row?.connectedAt).toBeNull();
+  });
+
+  it("subscribes the professional account when Instagram connects", async () => {
+    fakeComposio.execute.respond("INSTAGRAM_GET_USER_INFO", {
+      successful: true, error: null, data: { id: "app-scoped", user_id: "1784", username: "lipi.apparel" },
+    });
+    await link("instagram", "instagram");
+
+    expect(subscriptions()).toEqual([{
+      method: "POST", endpoint: "/1784/subscribed_apps", query: { subscribed_fields: "messages" },
+    }]);
+    expect(await connection("instagram")).toMatchObject({ status: "connected", externalId: "1784" });
+  });
+
+  it("subscribes every Page a Messenger account manages, and picks the only one", async () => {
+    fakeComposio.execute.respond("FACEBOOK_GET_USER_PAGES", {
+      successful: true, error: null,
+      data: { data: [{ id: "page_77", name: "Lipi Apparel", access_token: "EAA-never-stored" }] },
+    });
+    await link("facebook", "facebook");
+
+    expect(subscriptions().map((call) => call.endpoint)).toEqual(["/page_77/subscribed_apps"]);
+    const row = await connection("facebook");
+    expect(row).toMatchObject({ status: "connected", externalId: "page_77", displayName: "Lipi Apparel" });
+    // The Pages list is shown back to the operator, so it must not carry the
+    // Page access token that came with it.
+    expect(JSON.stringify(row?.config)).not.toContain("EAA-never-stored");
+  });
+
+  it("registers the Telegram webhook against this connection, with a secret only it knows", async () => {
+    const app = await signedIn();
+    const token = "1234567890:AAH-this-looks-like-a-bot-token";
+    await app.post("/v1/channels/telegram/connect").send({ token }).expect(201);
+
+    const row = await connection("telegram");
+    expect(row?.status).toBe("connected");
+    expect(row?.webhookSecret).toBeTruthy();
+
+    expect(telegram.calls).toHaveLength(1);
+    const [call] = telegram.calls;
+    expect(call!.url).toBe(`https://api.telegram.org/bot${token}/setWebhook`);
+    expect(call!.body.url).toBe(`${env.PUBLIC_URL}/webhooks/telegram/${row!.id}`);
+    expect(call!.body.secret_token).toBe(row!.webhookSecret);
+    expect(call!.body.allowed_updates).toEqual(["message"]);
+  });
+
+  it("never calls Telegram connected when setWebhook fails", async () => {
+    telegram.answer = { ok: false, description: "Bad webhook: HTTPS url must be provided" };
+    telegram.status = 400;
+
+    const app = await signedIn();
+    const res = await app.post("/v1/channels/telegram/connect")
+      .send({ token: "1234567890:AAH-this-looks-like-a-bot-token" }).expect(400);
+
+    expect(res.body.error).toContain("HTTPS url must be provided");
+    const row = await connection("telegram");
+    expect(row).toMatchObject({ status: "error", connectedAt: null });
+    expect(row?.webhookSecret).toBeNull();
+  });
+
+  it("never lets a transport failure put the bot token on screen", async () => {
+    const token = "1234567890:AAH-this-looks-like-a-bot-token";
+    vi.stubGlobal("fetch", async () => { throw new TypeError(`fetch failed: https://api.telegram.org/bot${token}/setWebhook`); });
+
+    const app = await signedIn();
+    const res = await app.post("/v1/channels/telegram/connect").send({ token }).expect(400);
+
+    expect(res.text).not.toContain(token);
+    expect(JSON.stringify(await connection("telegram"))).not.toContain(token);
+  });
+
+  it("destroys the webhook secret on disconnect, since the webhook itself cannot be withdrawn", async () => {
+    const app = await signedIn();
+    await app.post("/v1/channels/telegram/connect")
+      .send({ token: "1234567890:AAH-this-looks-like-a-bot-token" }).expect(201);
+    expect((await connection("telegram"))?.webhookSecret).toBeTruthy();
+
+    await app.delete("/v1/channels/telegram").expect(204);
+    expect((await connection("telegram"))?.webhookSecret).toBeNull();
+  });
+});
+
 describe("the list", () => {
   it("carries the catalog, the webchat snippet and no webhook URL", async () => {
     const app = await signedIn();
@@ -321,7 +486,7 @@ describe("the list", () => {
         .map((row) => [row.channel, row]),
     );
     expect(Object.keys(byChannel).sort()).toEqual(
-      ["email", "instagram", "telegram", "webchat", "whatsapp"],
+      ["email", "facebook", "instagram", "telegram", "webchat", "whatsapp"],
     );
     expect(byChannel.telegram).toMatchObject({
       label: "Telegram", connectKind: "api_key", available: true, status: "disconnected",

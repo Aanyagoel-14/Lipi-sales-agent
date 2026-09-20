@@ -224,6 +224,9 @@
   --color-series-3: #b87a00;
   --color-series-4: #c42a6b;
   --color-series-5: #2a78d6;
+  /* Sixth channel, added with Messenger. Green is the one hue the five
+   * above leave open, so a six-line chart still separates at a glance. */
+  --color-series-6: #3d8b37;
 
   --color-ramp-1: #b8a7f4;
   --color-ramp-2: #9a80ee;

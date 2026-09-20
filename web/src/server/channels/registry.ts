@@ -1,7 +1,7 @@
 import type { Channel } from "@/generated/prisma/client";
+import { newWebhookSecret } from "@/server/lib/crypto";
 import type { ComposioClient } from "@/server/lib/composio";
 import { env } from "../env";
-import type { InboundMessage } from "./types";
 
 /**
  * The channel registry: one declarative spec per channel, and nothing else in
@@ -15,10 +15,24 @@ import type { InboundMessage } from "./types";
  * spec is plain data plus pure functions and adding a channel is one entry
  * here plus, if new, one enum value.
  *
- * The old adapters in `./whatsapp.ts` and `./telegram.ts` stay until the
- * routes that import them are replaced; their parsers are copied here, not
- * moved, so the two never drift apart while both exist.
+ * One call escapes that rule and says so where it happens: Telegram's
+ * `setWebhook`. Composio's proxy passes an endpoint to the provider verbatim,
+ * and Telegram carries its credential in the path rather than a header, so a
+ * proxied `/setWebhook` reaches `api.telegram.org` with no bot token in it
+ * and comes back 404. The toolkit has no webhook tool either. Registering it
+ * is therefore done directly, in the one request where Lipi still holds the
+ * token, and the token is not written down on the way past.
  */
+
+/** What every channel is normalised into before it touches the twins. */
+export type InboundMessage = {
+  channel: Channel;
+  handle: string;
+  text: string;
+  name?: string;
+  /** Provider's own id, so a retried webhook does not create a second conversation. */
+  externalId: string;
+};
 
 export type Json = Record<string, unknown>;
 
@@ -48,6 +62,20 @@ export type ConnectContext = {
   identityData: unknown;
   /** The app's own public origin, for webhook URLs handed to a provider. */
   publicUrl: string;
+  /**
+   * The non-secret values Composio holds for this account, as
+   * `ComposioAccount.params`. WhatsApp's WABA id (`generic_id`) is read from
+   * here; nothing else uses it. Empty on the disconnect path.
+   */
+  accountParams: Record<string, string>;
+  /**
+   * The API key the operator has just supplied, on the one path where Lipi
+   * still has it: an `api_key` connect, in the same request that handed it to
+   * Composio. Absent on an OAuth callback and on every disconnect, so a hook
+   * that wants it has to say what it cannot do without it. Never persisted,
+   * never logged — see `setTelegramWebhook`.
+   */
+  apiKey?: string;
 };
 
 /**
@@ -70,6 +98,7 @@ export type ChannelSpec = {
   authConfigEnv:
     | "COMPOSIO_AUTH_CONFIG_WHATSAPP"
     | "COMPOSIO_AUTH_CONFIG_INSTAGRAM"
+    | "COMPOSIO_AUTH_CONFIG_FACEBOOK"
     | "COMPOSIO_AUTH_CONFIG_TELEGRAM"
     | "COMPOSIO_AUTH_CONFIG_GMAIL";
   connect:
@@ -82,7 +111,18 @@ export type ChannelSpec = {
      */
     | { kind: "api_key"; field: string; composioField: string; hint: string };
   inbound:
-    | { kind: "meta"; object: "whatsapp_business_account" | "instagram" | "page" }
+    | {
+      kind: "meta";
+      object: "whatsapp_business_account" | "instagram" | "page";
+      /**
+       * One `entry` from a Meta delivery, split into the connections it is
+       * for: the provider id that routes it and the slice of the body that
+       * belongs to that id. A single delivery can carry entries for several
+       * tenants, and a WhatsApp entry can carry changes for several numbers,
+       * so this returns a list rather than one id.
+       */
+      route(entry: Json): { externalId: string; payload: Json }[];
+    }
     | { kind: "telegram" }
     | { kind: "composio_trigger"; slug: string; config(connection: ConnectionView): Json }
     | { kind: "none"; reason: string };
@@ -113,8 +153,23 @@ export type ChannelSpec = {
    * Returning `externalId: null` means "the operator still has to choose",
    * which is not the same as omitting the key and keeping what identity found.
    */
-  afterConnect?(ctx: ConnectContext): Promise<Partial<{ externalId: string | null; config: Json; triggerIds: string[] }>>;
+  afterConnect?(ctx: ConnectContext): Promise<Partial<{
+    externalId: string | null;
+    config: Json;
+    triggerIds: string[];
+    /** Set when the hook registered a webhook and chose the secret that proves it. */
+    webhookSecret: string;
+  }>>;
   beforeDisconnect?(ctx: ConnectContext): Promise<void>;
+  /**
+   * Present when one connected account can own several provider identities
+   * and only the operator knows which is theirs. `afterConnect` records the
+   * candidates under `list` and leaves `externalId` null; `PATCH
+   * /v1/channels/:channel` takes `{ [field]: id }`, checks it against that
+   * list and settles it. WhatsApp's numbers and Messenger's Pages are the
+   * two; both are keys inbound routes on, so neither is ever guessed.
+   */
+  choice?: { field: string; list: string; noun: string; prompt: string };
 };
 
 /**
@@ -132,6 +187,7 @@ const PINS = {
   whatsapp: "20260915_00",
   telegram: "20260821_00",
   instagram: "20260915_00",
+  facebook: "20260902_00",
   gmail: "20260915_00",
 } as const;
 
@@ -151,6 +207,34 @@ const firstList = (data: unknown, keys: string[]): Json[] => {
   }
   return [];
 };
+
+/**
+ * Points Lipi's Meta app at a WABA, an Instagram professional account or a
+ * Page, so the provider starts delivering that node's messages to
+ * `/webhooks/meta`.
+ *
+ * Done through the proxy rather than a tool because no Meta toolkit has one:
+ * `WHATSAPP_SUBSCRIBE_APP` and `INSTAGRAM_ENABLE_WEBHOOK_SUBSCRIPTIONS` are
+ * both 404 on the live API (checked 2026-09-19), and the facebook toolkit's
+ * 41 tools include no subscription either. The Graph edge is the same shape
+ * on all three, and `subscribed_fields` is a query parameter there.
+ *
+ * Throwing is deliberate: `finishConnection` turns it into `status: "error"`
+ * with this message. A channel that cannot receive is not a connected sales
+ * channel, and an operator who sees "Live" should never have to wonder
+ * whether inbound arrived.
+ */
+async function subscribeMeta(client: ComposioClient, connectedAccountId: string, nodeId: string) {
+  const result = await client.proxy({
+    connectedAccountId,
+    method: "POST",
+    endpoint: `/${nodeId}/subscribed_apps`,
+    query: { subscribed_fields: "messages" },
+  });
+  if (result.status >= 300) {
+    throw new Error(`Meta refused the message subscription for ${nodeId}: ${JSON.stringify(result.data).slice(0, 200)}`);
+  }
+}
 
 // --------------------------------------------------------------- whatsapp --
 
@@ -184,7 +268,18 @@ const whatsapp: ChannelSpec = {
   toolkitVersion: PINS.whatsapp,
   authConfigEnv: "COMPOSIO_AUTH_CONFIG_WHATSAPP",
   connect: { kind: "link" },
-  inbound: { kind: "meta", object: "whatsapp_business_account" },
+  inbound: {
+    kind: "meta",
+    object: "whatsapp_business_account",
+    // A WABA's webhook carries the receiving number in the change itself,
+    // not on the entry, and one entry may hold changes for several numbers
+    // — so each change is routed and parsed on its own.
+    route: (entry) => ((entry.changes as Json[] | undefined) ?? []).flatMap((change) => {
+      const value = record(change?.value);
+      const id = str(record(value?.metadata)?.phone_number_id);
+      return id ? [{ externalId: id, payload: { entry: [{ changes: [change] }] } }] : [];
+    }),
+  },
 
   parse(body) {
     const payload = body as WhatsAppPayload;
@@ -238,12 +333,28 @@ const whatsapp: ChannelSpec = {
    * `(channel, externalId)` is the key inbound routes on in C3.
    */
   async afterConnect(ctx) {
+    // The subscription is on the WABA, not on a number, so it happens once
+    // and before the choice below — whichever number the operator ends up
+    // sending from, inbound for the whole account is already flowing.
+    const wabaId = ctx.accountParams.generic_id;
+    if (!wabaId) {
+      throw new Error("Composio did not say which WhatsApp Business Account this connection is for");
+    }
+    await subscribeMeta(ctx.client, ctx.connectedAccountId, wabaId);
+
     const numbers = phoneNumbersFrom(ctx.identityData);
     if (numbers.length === 1) {
       const only = numbers[0]!;
-      return { externalId: only.id, config: { phoneNumbers: numbers, phoneNumberId: only.id } };
+      return { externalId: only.id, config: { wabaId, phoneNumbers: numbers, phoneNumberId: only.id } };
     }
-    return { externalId: null, config: { phoneNumbers: numbers } };
+    return { externalId: null, config: { wabaId, phoneNumbers: numbers } };
+  },
+
+  choice: {
+    field: "phoneNumberId",
+    list: "phoneNumbers",
+    noun: "number",
+    prompt: "This account has more than one number. Which one do customers message?",
   },
 
   identity: {
@@ -274,6 +385,51 @@ type TelegramUpdate = {
     from?: { first_name?: string; username?: string };
   };
 };
+
+/**
+ * Registers the bot's webhook with Telegram directly.
+ *
+ * This is the one provider call in the app that does not go through
+ * Composio, and it is not a shortcut. Composio's proxy forwards an endpoint
+ * to the toolkit's base URL unchanged, and Telegram's credential lives in
+ * the path (`/bot<token>/setWebhook`), not a header — a proxied `/setWebhook`
+ * arrives at `api.telegram.org` with no token in it and comes back
+ * `{"ok":false,"error_code":404}`. The toolkit has no `TELEGRAM_SET_WEBHOOK`
+ * tool and Composio has no Telegram trigger, so the alternatives are this or
+ * no Telegram inbound at all. `TELEGRAM_GET_UPDATES` is not an alternative:
+ * long-polling and a webhook are mutually exclusive, and calling it would
+ * tear down the webhook this just set.
+ *
+ * The token is the operator's, held for the length of this call and never
+ * written anywhere. Both failure paths are careful with it: a transport
+ * error is replaced rather than reported, because the URL it names contains
+ * the token and the message ends up in `lastError` on screen.
+ */
+async function setTelegramWebhook(token: string, url: string, secretToken: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        secret_token: secretToken,
+        allowed_updates: ["message"],
+        // A bot that has been sitting unconnected has a backlog Telegram
+        // would replay the moment a webhook appears. Those are old
+        // conversations; answering them now would be worse than missing them.
+        drop_pending_updates: true,
+      }),
+    });
+  } catch {
+    throw new Error("Could not reach Telegram to register the webhook");
+  }
+
+  const body = (await response.json().catch(() => null)) as { ok?: boolean; description?: string } | null;
+  if (!response.ok || !body?.ok) {
+    throw new Error(body?.description ?? `Telegram refused setWebhook (${response.status})`);
+  }
+}
 
 const telegram: ChannelSpec = {
   channel: "telegram",
@@ -313,6 +469,27 @@ const telegram: ChannelSpec = {
     return { slug: "TELEGRAM_SEND_MESSAGE", arguments: { chat_id: to, text } };
   },
 
+  /**
+   * Telegram delivers to one URL per bot, so the URL carries the connection
+   * id and the header carries a secret only this connection knows. Both are
+   * set here, in the only request that has the token.
+   *
+   * There is no `beforeDisconnect` to match. Deleting the Composio account
+   * does not give the token back — Composio returns a placeholder in its
+   * place, checked against the live API — so `/deleteWebhook` cannot be
+   * called on the way out. Disconnect clears `webhookSecret` instead, which
+   * makes every later delivery from the stale webhook a 401 and writes
+   * nothing. DEPLOYMENT.md tells the operator how to clear it for good.
+   */
+  async afterConnect(ctx) {
+    if (!ctx.apiKey) {
+      throw new Error("Telegram's webhook can only be set while the bot token is in hand; reconnect the channel");
+    }
+    const secret = newWebhookSecret();
+    await setTelegramWebhook(ctx.apiKey, `${ctx.publicUrl}/webhooks/telegram/${ctx.connectionId}`, secret);
+    return { webhookSecret: secret };
+  },
+
   identity: {
     slug: "TELEGRAM_GET_ME",
     pick(data) {
@@ -327,9 +504,15 @@ const telegram: ChannelSpec = {
   },
 };
 
-// -------------------------------------------------------------- instagram --
+// ------------------------------------------- instagram and messenger --
 
-type InstagramPayload = {
+/**
+ * Instagram DMs and Messenger threads arrive on the same Meta Messaging
+ * Platform envelope, so one parser serves both. `messaging[]` also carries
+ * read receipts, reactions, deliveries and postbacks; none of them has
+ * `message.text`, which is what keeps them out.
+ */
+type MessagingPayload = {
   entry?: {
     id?: string;
     messaging?: {
@@ -340,6 +523,40 @@ type InstagramPayload = {
   }[];
 };
 
+function parseMessaging(channel: Channel, body: unknown): ParsedMessage[] {
+  const payload = body as MessagingPayload;
+  const out: ParsedMessage[] = [];
+
+  for (const entry of payload.entry ?? []) {
+    for (const event of entry.messaging ?? []) {
+      const message = event.message;
+      // Our own replies come back through the same webhook flagged as
+      // echoes; answering them would be the twin talking to itself.
+      if (!message || message.is_echo) continue;
+      const text = message.text?.trim();
+      const sender = event.sender?.id;
+      if (!text || !sender) continue;
+
+      out.push({
+        channel,
+        handle: sender,
+        text,
+        // Meta sends no profile name on this envelope, so the customer is
+        // named by handle until they say otherwise — same as before.
+        externalId: message.mid ?? `${sender}-${Date.now()}`,
+      });
+    }
+  }
+
+  return out;
+}
+
+/** One `entry` per account or Page, and its id is what routes it. */
+const routeByEntryId = (entry: Json) => {
+  const id = str(entry.id);
+  return id ? [{ externalId: id, payload: { entry: [entry] } }] : [];
+};
+
 const instagram: ChannelSpec = {
   channel: "instagram",
   label: "Instagram",
@@ -347,33 +564,13 @@ const instagram: ChannelSpec = {
   toolkitVersion: PINS.instagram,
   authConfigEnv: "COMPOSIO_AUTH_CONFIG_INSTAGRAM",
   connect: { kind: "link" },
-  inbound: { kind: "meta", object: "instagram" },
-
-  parse(body) {
-    const payload = body as InstagramPayload;
-    const out: ParsedMessage[] = [];
-
-    for (const entry of payload.entry ?? []) {
-      for (const event of entry.messaging ?? []) {
-        const message = event.message;
-        // Our own replies come back through the same webhook flagged as
-        // echoes; answering them would be the twin talking to itself.
-        if (!message || message.is_echo) continue;
-        const text = message.text?.trim();
-        const sender = event.sender?.id;
-        if (!text || !sender) continue;
-
-        out.push({
-          channel: "instagram",
-          handle: sender,
-          text,
-          externalId: message.mid ?? `${sender}-${Date.now()}`,
-        });
-      }
-    }
-
-    return out;
+  inbound: {
+    kind: "meta",
+    object: "instagram",
+    route: routeByEntryId,
   },
+
+  parse: (body) => parseMessaging("instagram", body),
 
   // Meta's messaging API caps Instagram text at 1000 characters, well below
   // WhatsApp's, so a reply that fits on WhatsApp can still need splitting here.
@@ -381,6 +578,17 @@ const instagram: ChannelSpec = {
 
   send({ to, text }) {
     return { slug: "INSTAGRAM_SEND_TEXT_MESSAGE", arguments: { text, recipient_id: to } };
+  },
+
+  /**
+   * One professional account, one subscription, and the id identity already
+   * found is the one webhooks carry in `entry.id` — so there is nothing for
+   * the operator to choose here.
+   */
+  async afterConnect(ctx) {
+    if (!ctx.externalId) throw new Error("Instagram did not identify the professional account to subscribe");
+    await subscribeMeta(ctx.client, ctx.connectedAccountId, ctx.externalId);
+    return {};
   },
 
   identity: {
@@ -394,6 +602,85 @@ const instagram: ChannelSpec = {
       if (!id) throw new Error("Instagram did not identify the account");
       const username = str(me.username);
       return { externalId: id, displayName: username ? `@${username}` : (str(me.name) ?? "Instagram account") };
+    },
+  },
+};
+
+// -------------------------------------------------------------- messenger --
+
+export type Page = { id: string; name: string };
+
+/**
+ * The Pages this account manages, as `FACEBOOK_GET_USER_PAGES` returns them.
+ *
+ * Only the id and the name are kept. That call's default field set includes
+ * each Page's own access token, and `config` is shown back to the operator
+ * in the browser — a credential has no business travelling there.
+ */
+const pagesFrom = (data: unknown): Page[] =>
+  firstList(data, ["data", "pages"])
+    .map((page) => ({ id: str(page.id) ?? "", name: str(page.name) ?? "" }))
+    .filter((page) => page.id);
+
+const facebook: ChannelSpec = {
+  channel: "facebook",
+  label: "Messenger",
+  toolkit: "facebook",
+  toolkitVersion: PINS.facebook,
+  authConfigEnv: "COMPOSIO_AUTH_CONFIG_FACEBOOK",
+  connect: { kind: "link" },
+  inbound: { kind: "meta", object: "page", route: routeByEntryId },
+
+  parse: (body) => parseMessaging("facebook", body),
+
+  // The Send API rejects a message body over 2000 characters.
+  textLimit: 2000,
+
+  send({ to, text, config }) {
+    const pageId = str(config.pageId);
+    if (!pageId) throw new Error("No Page chosen for this Messenger connection");
+    return {
+      slug: "FACEBOOK_SEND_MESSAGE",
+      arguments: { page_id: pageId, recipient_id: to, message_text: text },
+    };
+  },
+
+  /**
+   * Every Page the operator manages is subscribed, not just the one they
+   * send from. Inbound routes on `(channel, externalId)`, so an unchosen
+   * Page's messages are dropped at the door either way; subscribing them all
+   * means the choice below is a database write rather than another round
+   * trip to Meta, and a later change of mind needs no reconnect.
+   */
+  async afterConnect(ctx) {
+    const pages = pagesFrom(ctx.identityData);
+    if (!pages.length) throw new Error("This Facebook account manages no Pages");
+
+    for (const page of pages) await subscribeMeta(ctx.client, ctx.connectedAccountId, page.id);
+
+    if (pages.length === 1) {
+      const only = pages[0]!;
+      return { externalId: only.id, config: { pages, pageId: only.id } };
+    }
+    return { externalId: null, config: { pages } };
+  },
+
+  choice: {
+    field: "pageId",
+    list: "pages",
+    noun: "Page",
+    prompt: "This account manages more than one Page. Which one do customers message?",
+  },
+
+  identity: {
+    slug: "FACEBOOK_GET_USER_PAGES",
+    // Without a field list Graph returns each Page's access token, which
+    // would then sit in `identityData` for the length of the connect.
+    arguments: { fields: "id,name" },
+    pick(data) {
+      const first = pagesFrom(data)[0];
+      if (!first) throw new Error("This Facebook account manages no Pages");
+      return { externalId: first.id, displayName: first.name || first.id };
     },
   },
 };
@@ -474,12 +761,24 @@ const email: ChannelSpec = {
 
 // --------------------------------------------------------------- registry --
 
-export const channelSpecs: readonly ChannelSpec[] = [whatsapp, telegram, instagram, email];
+export const channelSpecs: readonly ChannelSpec[] = [whatsapp, telegram, instagram, facebook, email];
 
 const byChannel = new Map(channelSpecs.map((spec) => [spec.channel, spec]));
 
 /** Null for a channel with no spec (webchat is served in-process, not connected). */
 export const specFor = (channel: Channel): ChannelSpec | null => byChannel.get(channel) ?? null;
+
+const byMetaObject = new Map<string, ChannelSpec>(
+  channelSpecs.flatMap((spec) => (spec.inbound.kind === "meta" ? [[spec.inbound.object as string, spec] as const] : [])),
+);
+
+/**
+ * Which channel a Meta delivery is for, from its top-level `object`. Null for
+ * an object this deployment does not serve — a subscription left on in the
+ * Meta app, which the route answers 200 and drops.
+ */
+export const specForMetaObject = (object: unknown): ChannelSpec | null =>
+  (typeof object === "string" ? byMetaObject.get(object) : undefined) ?? null;
 
 /** `{ whatsapp: "20260902_00", … }` — what the SDK is constructed with. */
 export const toolkitVersions = (): Record<string, string> =>
@@ -494,6 +793,8 @@ export type CatalogEntry = {
   toolkit: string;
   connect: ChannelSpec["connect"];
   inbound: { kind: ChannelSpec["inbound"]["kind"]; slug?: string; reason?: string };
+  /** What the operator has to pick between, when a connection can own several identities. */
+  choice?: ChannelSpec["choice"];
   /** False when this environment has no auth config for the channel. */
   available: boolean;
   unavailableReason?: string;
@@ -513,6 +814,7 @@ export function catalog(): CatalogEntry[] {
         ...(spec.inbound.kind === "composio_trigger" ? { slug: spec.inbound.slug } : {}),
         ...(spec.inbound.kind === "none" ? { reason: spec.inbound.reason } : {}),
       },
+      ...(spec.choice ? { choice: spec.choice } : {}),
       available: configured,
       ...(configured
         ? {}
