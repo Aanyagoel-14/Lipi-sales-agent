@@ -574,7 +574,12 @@ model VoiceExample {
 
 enum ConnectionStatus {
   disconnected
+  /// A Connect Link was issued and the callback has not been seen yet.
+  pending
   connected
+  /// Composio reported the account expired, a trigger was disabled, or a
+  /// send failed on auth. The operator has to go through connect again.
+  needs_reconnect
   error
 }
 
@@ -594,12 +599,23 @@ model ChannelConnection {
   secretCipher        String?
   /// Non-secret settings, safe to show back to the operator.
   config              Json             @default("{}")
+  /// The Composio connected account that holds this channel's credentials,
+  /// and the auth config it was created under. Globally unique: one account
+  /// belongs to one connection.
+  composioAccountId    String?   @unique
+  composioAuthConfigId String?
+  /// Trigger instances Lipi created for this account; deleted on disconnect.
+  composioTriggerIds   String[]  @default([])
+  connectedAt          DateTime?
   /// Proves an inbound webhook came from the provider. For Telegram this is
   /// the secret token header. For Meta channels it is ALSO the value the
   /// operator enters as the callback's `hub.verify_token` for GET
   /// verification -- but it is never the HMAC signing key. That is a
   /// separate, Meta-issued App Secret (H-3 fix), kept below.
-  webhookSecret       String
+  /// Nullable since the Composio track: only Telegram keeps one (the
+  /// `secret_token` Lipi generates for setWebhook); Meta channels verify
+  /// against the app-level META_APP_SECRET instead.
+  webhookSecret       String?
   /// AES-256-GCM ciphertext of the Meta App Secret. WhatsApp/Instagram sign
   /// every webhook POST body with this key, distinct from `webhookSecret`
   /// above (an operator-chosen verify token) and from `secretCipher` (the
@@ -617,6 +633,10 @@ model ChannelConnection {
   processedMessages ProcessedMessage[]
 
   @@unique([workspaceId, channel])
+  // Inbound is routed by the provider's own id (phone_number_id, IG account
+  // id, Page id, bot id, mailbox) with no workspace in the URL, so an id has
+  // to resolve to exactly one workspace.
+  @@unique([channel, externalId])
   @@index([workspaceId])
   @@map("channel_connections")
 }

@@ -23,6 +23,27 @@ const schema = z.object({
   // URLs handed to ERPs are built from it, so it has to be publicly reachable
   // and has to match where the app is actually served.
   PUBLIC_URL: z.string().default("http://localhost:3000"),
+
+  // ------------------------------------------------------------ Composio --
+  // Composio holds every provider credential and runs every outbound send
+  // from the connector track onward. All of it is optional: the app has to
+  // boot for the webchat-only path with none of these set. A channel whose
+  // auth config id is absent is reported by the catalog as unavailable and
+  // refused at connect with a message that names the missing key.
+  COMPOSIO_API_KEY: z.string().optional(),
+  // Signs every webhook Composio delivers. Printed once by
+  // `npm run composio:subscribe`; there is no way to read it back.
+  COMPOSIO_WEBHOOK_SECRET: z.string().optional(),
+  // One auth config (`ac_…`) per channel, per environment.
+  COMPOSIO_AUTH_CONFIG_WHATSAPP: z.string().optional(),
+  COMPOSIO_AUTH_CONFIG_INSTAGRAM: z.string().optional(),
+  COMPOSIO_AUTH_CONFIG_TELEGRAM: z.string().optional(),
+  COMPOSIO_AUTH_CONFIG_GMAIL: z.string().optional(),
+  // Lipi's own Meta app. Meta signs inbound webhooks with the subscribing
+  // app's secret, so inbound WhatsApp and Instagram cannot be verified with
+  // anything else. Both stay optional until the Meta webhook route exists.
+  META_APP_SECRET: z.string().optional(),
+  META_VERIFY_TOKEN: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
