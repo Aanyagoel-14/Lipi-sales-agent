@@ -219,10 +219,10 @@ surface, documented and internal alike.
 
 The lists that grow without bound are keyset-paginated — customers,
 conversations, products, events, conversions, orders, webhook deliveries,
-inventory exceptions and connector runs. Each takes `?limit=` (default 50, max 200) and `?cursor=`, and
-answers with `nextCursor`, `null` on the last page. The dashboard
-server-renders the first page and appends the rest, so a table that grows
-forever is never fetched whole.
+inventory exceptions and connector runs. Each takes `?limit=` (default 50, max
+200) and `?cursor=`, and answers with `nextCursor`, `null` on the last page.
+The dashboard server-renders the first page and appends the rest, so a table
+that grows forever is never fetched whole.
 
 ## The ingest loop
 

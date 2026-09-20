@@ -3,6 +3,7 @@ import { preflight } from "@/server/lib/origins";
 import { after, paged, pageOf } from "@/server/lib/page";
 import { prisma } from "@/server/lib/prisma";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
+import { webhookDeliveryStatus } from "../../contract";
 import { deliveryView } from "../view";
 
 /**
@@ -39,12 +40,13 @@ export const GET = route(async (req) => {
   return json({ nextCursor, deliveries: rows.map(deliveryView) });
 });
 
-const STATUSES = ["pending", "delivered", "dead"] as const;
+type Status = (typeof webhookDeliveryStatus.options)[number];
 
 /* An unknown status filters to nothing rather than 422ing: these are our own
  * names, and a caller polling `?status=dead` should not start failing the day
- * a fourth one is added. */
-const isStatus = (value: string): value is (typeof STATUSES)[number] =>
-  (STATUSES as readonly string[]).includes(value);
+ * a fourth one is added. The list is the contract's, so the filter cannot
+ * drift from what the document says is askable. */
+const isStatus = (value: string): value is Status =>
+  (webhookDeliveryStatus.options as readonly string[]).includes(value);
 
 export const OPTIONS = route(preflight);

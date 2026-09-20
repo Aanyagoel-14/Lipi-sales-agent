@@ -4,7 +4,7 @@ import {
   conversationShape, conversationSummaryShape, conversionShape, createConversationBody,
   createEventBody, createWebhookBody, customerShape, errorShape, eventShape, messageShape,
   orderStage, productShape, quoteShape, responses, supplierShape, updateWebhookBody,
-  variantShape, webhookDeliveryShape, webhookSubscriptionShape,
+  variantShape, webhookDeliveryShape, webhookDeliveryStatus, webhookSubscriptionShape,
 } from "./contract";
 
 /**
@@ -165,7 +165,7 @@ export const endpoints: Endpoint[] = [
       {
         name: "status",
         description: "Repeatable. Absent means every status.",
-        schema: { type: "array", items: { type: "string", enum: ["pending", "delivered", "dead"] } },
+        schema: { type: "array", items: { type: "string", enum: webhookDeliveryStatus.options } },
       },
       {
         name: "subscription",

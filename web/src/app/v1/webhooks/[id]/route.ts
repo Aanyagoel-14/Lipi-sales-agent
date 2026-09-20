@@ -31,8 +31,9 @@ export const PATCH = route<{ id: string }>(async (req, { id }) => {
 
   const updated = await prisma.webhookSubscription.update({
     where: { id: subscription.id },
-    data: { ...(url ? { url } : {}), ...(data.eventTypes ? { eventTypes: data.eventTypes } : {}),
-            ...(data.active === undefined ? {} : { active: data.active }) },
+    // Prisma leaves an `undefined` field alone, so a PATCH naming only
+    // `active` pauses the subscription and changes nothing else.
+    data: { ...data, url },
   });
 
   return json({ subscription: subscriptionView(updated) });

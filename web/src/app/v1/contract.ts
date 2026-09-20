@@ -158,10 +158,13 @@ export const webhookSubscriptionShape = z.object({
   updatedIso: isoString,
 });
 
+/** `pending` covers both "not tried yet" and "waiting out a backoff". */
+export const webhookDeliveryStatus = z.enum(["pending", "delivered", "dead"]);
+
 /**
- * One event owed to one endpoint, and what became of it. `pending` covers
- * both "not tried yet" and "waiting out a backoff" — `nextAttemptIso` is
- * which. `dead` is the dead letter and waits for a person.
+ * One event owed to one endpoint, and what became of it. `nextAttemptIso`
+ * tells the two kinds of `pending` apart. `dead` is the dead letter and waits
+ * for a person.
  */
 export const webhookDeliveryShape = z.object({
   id: z.string(),
@@ -169,7 +172,7 @@ export const webhookDeliveryShape = z.object({
   /** The `Event.id` this carries. De-duplicate on it: delivery is at-least-once. */
   eventId: z.string(),
   eventType: z.string(),
-  status: z.enum(["pending", "delivered", "dead"]),
+  status: webhookDeliveryStatus,
   attempts: z.number().int(),
   nextAttemptIso: isoString,
   /** What the endpoint answered, or null where it never answered at all. */
@@ -261,6 +264,11 @@ export const createEventBody = z.object({
 /** `?stage=Paid&stage=Shipped`. Absent means every stage. */
 export const conversionStageQuery = z.array(orderStage);
 
+/* The two fields a subscription is made and remade from, so the limits a
+ * create is held to are the same ones a PATCH is held to. */
+const webhookUrl = z.string().trim().min(1).max(2048);
+const webhookEventTypes = z.array(z.string().trim().min(1).max(80)).max(50);
+
 /**
  * Subscribes an endpoint to this workspace's twin events.
  *
@@ -269,14 +277,14 @@ export const conversionStageQuery = z.array(orderStage);
  * has not said otherwise is better served by too much than by silence.
  */
 export const createWebhookBody = z.object({
-  url: z.string().trim().min(1).max(2048),
-  eventTypes: z.array(z.string().trim().min(1).max(80)).max(50).default([]),
+  url: webhookUrl,
+  eventTypes: webhookEventTypes.default([]),
 });
 
 /** Every field optional: a PATCH that names only `active` pauses and nothing else. */
 export const updateWebhookBody = z.object({
-  url: z.string().trim().min(1).max(2048).optional(),
-  eventTypes: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
+  url: webhookUrl.optional(),
+  eventTypes: webhookEventTypes.optional(),
   active: z.boolean().optional(),
 });
 

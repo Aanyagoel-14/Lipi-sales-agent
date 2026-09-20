@@ -48,12 +48,12 @@ const httpPoster: WebhookPoster = async ({ url, headers, body }) => {
   }
 };
 
-const reasonOf = (error: unknown) =>
-  error instanceof Error
-    ? error.name === "TimeoutError"
-      ? `No answer within ${WEBHOOK_TIMEOUT_MS / 1000}s`
-      : error.message
-    : "Request failed";
+/** Why no answer came, in words an operator can act on. */
+function reasonOf(error: unknown): string {
+  if (!(error instanceof Error)) return "Request failed";
+  if (error.name === "TimeoutError") return `No answer within ${WEBHOOK_TIMEOUT_MS / 1000}s`;
+  return error.message;
+}
 
 let poster: WebhookPoster = httpPoster;
 
@@ -86,8 +86,7 @@ export const setWebhookPoster = (replacement: WebhookPoster) => {
  * deployment; this is the part the application can hold.
  */
 const LOOPBACK = /^(localhost|127(\.\d+){3}|\[?::1\]?)$/i;
-const PRIVATE_HOST =
-  /^(0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/;
+const PRIVATE_HOST = /^(0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/;
 
 export function requireDeliverableUrl(raw: string, allowLoopback: boolean): URL {
   let url: URL;
@@ -97,11 +96,14 @@ export function requireDeliverableUrl(raw: string, allowLoopback: boolean): URL 
     throw new HttpError(422, "That is not a URL");
   }
 
-  const local = LOOPBACK.test(url.hostname) && allowLoopback;
+  const loopback = LOOPBACK.test(url.hostname);
 
-  if (!local && url.protocol !== "https:") throw new HttpError(422, "A webhook URL must be https");
-  if (local) return url;
-  if (LOOPBACK.test(url.hostname) || PRIVATE_HOST.test(url.hostname)) {
+  // The developer's own handler is the one address allowed over plain http:
+  // nothing posted to it leaves the machine.
+  if (loopback && allowLoopback) return url;
+
+  if (url.protocol !== "https:") throw new HttpError(422, "A webhook URL must be https");
+  if (loopback || PRIVATE_HOST.test(url.hostname)) {
     throw new HttpError(422, "That host is not reachable from the internet");
   }
   return url;

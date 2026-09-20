@@ -124,7 +124,9 @@ export function WebhookPanel() {
       setSummary(await apiJson<Summary>("webhooks/dispatch", { method: "POST" }));
     });
 
-  const again = (delivery: Delivery) =>
+  // Queueing is not sending, so the operator's click ticks the queue too —
+  // otherwise "Redeliver" would look like it had done nothing.
+  const redeliver = (delivery: Delivery) =>
     act(async () => {
       await apiJson(`webhooks/deliveries/${delivery.id}/redeliver`, { method: "POST" });
       setSummary(await apiJson<Summary>("webhooks/dispatch", { method: "POST" }));
@@ -268,7 +270,7 @@ export function WebhookPanel() {
                 <span className="ml-auto flex items-center gap-3">
                   <span className="font-mono text-[0.6875rem] text-ink-subtle">{delivery.eventId}</span>
                   {delivery.status === "pending" ? null : (
-                    <Button variant="ghost" size="sm" chevron={false} disabled={busy} onClick={() => again(delivery)}>
+                    <Button variant="ghost" size="sm" chevron={false} disabled={busy} onClick={() => redeliver(delivery)}>
                       Redeliver
                     </Button>
                   )}

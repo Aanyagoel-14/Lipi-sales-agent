@@ -25,9 +25,6 @@ import { webhookPoster } from "../lib/webhook-endpoint";
  * because the debt was recorded before the first attempt was made.
  */
 
-/** Tries per delivery before it is dead. Five backoffs, so six attempts. */
-export const MAX_ATTEMPTS = 6;
-
 /**
  * Seconds to wait before attempt *n+1*, indexed by the attempt that failed.
  * Roughly three hours end to end: an endpoint that is down for a deploy or an
@@ -35,6 +32,9 @@ export const MAX_ATTEMPTS = 6;
  * afternoon is a person's problem rather than a retry loop's.
  */
 export const BACKOFF_SECONDS = [30, 120, 600, 1_800, 7_200];
+
+/** Tries per delivery before it is dead: one per backoff, plus the first. */
+export const MAX_ATTEMPTS = BACKOFF_SECONDS.length + 1;
 
 /** Events read from the log in one enqueue pass, per subscription. */
 const SCAN_LIMIT = 500;
@@ -235,14 +235,15 @@ async function attempt(
   });
 
   const now = new Date();
+  const accepted = ok(result.status);
   const common = {
     attempts,
     lastAttemptAt: now,
     lastStatus: result.status,
-    lastError: result.error ?? (ok(result.status) ? null : `The endpoint answered ${result.status}`),
+    lastError: result.error ?? (accepted ? null : `The endpoint answered ${result.status}`),
   };
 
-  if (ok(result.status)) {
+  if (accepted) {
     await close(delivery, "delivered", { ...common, deliveredAt: now });
     return "delivered";
   }
@@ -254,7 +255,7 @@ async function attempt(
 
   await prisma.webhookDelivery.update({
     where: { id: delivery.id },
-    data: { ...common, status: "pending", nextAttemptAt: backoffFrom(now, attempts) },
+    data: { ...common, status: "pending", nextAttemptAt: dueAfter(now, attempts) },
   });
   return "retrying";
 }
@@ -271,11 +272,11 @@ const ok = (status: number | null) => status !== null && status >= 200 && status
 const retryable = (status: number | null) =>
   status === null || status >= 500 || status === 408 || status === 429;
 
-export const backoffFrom = (from: Date, attempts: number) =>
-  new Date(from.getTime() + backoffSeconds(attempts) * 1000);
-
-const backoffSeconds = (attempts: number) =>
-  BACKOFF_SECONDS[Math.min(attempts, BACKOFF_SECONDS.length) - 1]!;
+/** When a delivery whose *n*th attempt just failed becomes due again. */
+const dueAfter = (failedAt: Date, attempts: number) => {
+  const wait = BACKOFF_SECONDS[Math.min(attempts, BACKOFF_SECONDS.length) - 1]!;
+  return new Date(failedAt.getTime() + wait * 1000);
+};
 
 const close = (
   delivery: WebhookDelivery,
