@@ -192,6 +192,45 @@ first row of that same ranking, so the template path and the model path cannot
 disagree about which policy applies. `SellResult.knowledgeUsed` reports what
 grounded the turn, and the storefront panel shows it.
 
+## Model cost and rate control
+
+Every language-model call goes through `lib/openrouter.ts`, and that is where
+it is metered: a `ModelCall` row is appended on the way out of `chatCompletion()`
+on the success path and on every failure path alike, carrying the workspace, the
+purpose (`extract`, `sell`, `twin_chat`), the model id asked for, the tokens the
+response reported, the latency, and the error if there was one. `meter` is a
+required argument, so a fourth model-backed path cannot be written without
+saying whose budget it spends. A call that timed out or came back `402` is
+recorded too — it cost latency, it may have cost tokens, and a budget blind to
+failures is blind to exactly the workspace being ground through its ceiling.
+
+Three ceilings live on `Workspace`, all counted over those rows since UTC
+midnight, so they survive a restart and are shared by every process — unlike
+`lib/rate-limit.ts`, which bounds requests per IP in one process's memory and
+knows nothing about spend:
+
+- `dailyModelCalls` and `dailyModelTokens` — the workspace's day. Both, not
+  one: a failing call reports no tokens, so a wrong API key would otherwise
+  burn an unbounded number of billable attempts without moving the token total.
+- `customerModelCalls` — what one customer's thread may take of that day. The
+  cap is keyed on the customer twin rather than on a `Conversation` row,
+  because a `Conversation` here is one inbound message; the customer is what
+  persists across a back-and-forth.
+
+Over a ceiling nothing throws. `extract()` falls back to its rule extractor
+(visible as `via=rules` on the `intent.extracted` event), `sell()` sends
+`ingest()`'s composed reply with the reason on `SellResult.degraded`, and the
+operator's twin chat answers from the briefing snapshot — the same degradation
+an absent `OPENROUTER_API_KEY` already produces. The customer still gets a
+correct answer; it is just less warm. A ceiling of zero is the kill switch.
+
+No money is stored. OpenRouter prices in fractional US dollars and converting
+that to rupees needs an FX rate nobody here has, so spend is metered in the
+units the response reports — calls and tokens — rather than in a rounded
+figure (invariant 4 by omission). `GET /v1/usage/models` returns today against
+the ceilings, broken down by purpose, and the dashboard's **Model spend** page
+renders it.
+
 ## The public API
 
 `/v1` is one surface with two audiences. The dashboard reads it same-origin with
@@ -289,6 +328,10 @@ dashboard.
   allowed with it, so no third-party page can ride an operator's cookie.
 - Events posted from outside are namespaced under `external.`, so nothing a
   caller writes can pose as something the ingest path observed.
+- Model spend is bounded per workspace and per customer thread in Postgres, not
+  per address in one process's memory, so a scripted caller rotating IPs cannot
+  run a tenant through its budget. Past the ceiling the twin degrades to its
+  deterministic path rather than erroring.
 - A webhook subscription's URL must be `https` and must not be a private or
   link-local host — loopback is allowed outside production only — so an operator
   cannot aim a signed delivery at the deployment's own neighbours. Deliveries do

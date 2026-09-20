@@ -1,5 +1,6 @@
 import { env } from "../env";
 import { chatForReply } from "../lib/openrouter";
+import { checkModelBudget } from "../lib/metering";
 import { buildBriefing, type Briefing } from "./briefing";
 
 /**
@@ -48,8 +49,9 @@ How to answer:
 - You are read-only here: you can advise on reordering, pricing or chasing an order, but you cannot perform it. Say so and point at the page that can.`;
 }
 
-const askOpenRouter = (messages: ChatTurn[], briefing: string) =>
+const askOpenRouter = (workspaceId: string, messages: ChatTurn[], briefing: string) =>
   chatForReply({
+    meter: { workspaceId, purpose: "twin_chat" },
     messages: [{ role: "system", content: systemPrompt(briefing) }, ...messages.slice(-HISTORY_TURNS)],
     temperature: 0.2,
     maxTokens: 1400,
@@ -102,9 +104,23 @@ export async function chatWithTwin(workspaceId: string, messages: ChatTurn[]): P
     return { reply: answerWithRules(latest, briefing), source: "rules", model: null, facts: briefing.facts };
   }
 
+  // No customer: this is the operator, so only the workspace ceiling applies.
+  // Over it, the snapshot answers — which is the same thing an absent key
+  // does, and `degraded` says which ceiling it was.
+  const budget = await checkModelBudget({ workspaceId, purpose: "twin_chat" });
+  if (!budget.allowed) {
+    return {
+      reply: answerWithRules(latest, briefing),
+      source: "rules",
+      model: null,
+      facts: briefing.facts,
+      degraded: budget.reason,
+    };
+  }
+
   try {
     return {
-      reply: await askOpenRouter(messages, briefing.text),
+      reply: await askOpenRouter(workspaceId, messages, briefing.text),
       source: "openrouter",
       model: env.OPENROUTER_CHAT_MODEL,
       facts: briefing.facts,

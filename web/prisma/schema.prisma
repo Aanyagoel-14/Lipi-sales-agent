@@ -122,6 +122,7 @@ model Customer {
   invoices          Invoice[]
   payments          Payment[]
   growthSuggestions GrowthSuggestion[]
+  modelCalls        ModelCall[]
 
   @@index([segment])
   @@index([workspaceId])
@@ -505,6 +506,23 @@ model Workspace {
   /// `server/lib/cors.ts`.
   allowedOrigins  String[]       @default([])
 
+  /// What this workspace may spend on language models, and the unit each
+  /// ceiling is counted in. Both daily ceilings reset at UTC midnight and are
+  /// counted over `model_calls`, so they survive a restart and are shared by
+  /// every process — unlike `lib/rate-limit.ts`, which bounds requests per IP
+  /// in one process's memory and says nothing about spend.
+  ///
+  /// A call ceiling as well as a token one, because a failing call reports no
+  /// tokens: a wrong API key would otherwise burn an unbounded number of
+  /// billable attempts without ever moving the token total. Zero on either is
+  /// a kill switch — every model-backed path degrades to its deterministic
+  /// one, which is what an absent key already does.
+  dailyModelCalls  Int @default(2000)
+  dailyModelTokens Int @default(1000000)
+  /// And within the day, what one customer's thread may take of it, so a
+  /// single scripted visitor cannot spend the whole workspace's budget.
+  customerModelCalls Int @default(60)
+
   voice               TwinVoice?
   knowledge           KnowledgeEntry[]
   examples            VoiceExample[]
@@ -528,6 +546,7 @@ model Workspace {
 
   webhookSubscriptions WebhookSubscription[]
   webhookDeliveries    WebhookDelivery[]
+  modelCalls           ModelCall[]
 
   @@map("workspaces")
 }
@@ -1093,4 +1112,70 @@ model WebhookDelivery {
   @@index([workspaceId, createdAt])
   @@index([status, nextAttemptAt])
   @@map("webhook_deliveries")
+}
+
+enum ModelPurpose {
+  /// Turning one customer message into structured intent (`services/extract.ts`).
+  extract
+  /// Voicing a reply whose facts `ingest()` already decided (`services/selling.ts`).
+  sell
+  /// The operator asking their own twin about the business (`services/twin-chat.ts`).
+  twin_chat
+}
+
+/**
+ * One call to OpenRouter, whatever became of it.
+ *
+ * Written by `lib/openrouter.ts` itself rather than by its callers, so a
+ * fourth model-backed path cannot be added without being metered: the row is
+ * appended on the way out of `chatCompletion()`, on the success path and on
+ * every failure path alike. A call that timed out or came back 402 still cost
+ * latency and may still have cost tokens, and a budget that only counted the
+ * calls that worked would be blind to exactly the workspace that is being
+ * ground through its ceiling.
+ *
+ * No money column. OpenRouter prices in fractional US dollars, and converting
+ * that to a rupee figure needs an FX rate nobody here has — so spend is
+ * metered in the units the response actually reports, calls and tokens, and
+ * invariant 4 is kept by storing no money at all rather than by rounding one.
+ */
+model ModelCall {
+  id String @id @default(cuid())
+
+  purpose ModelPurpose
+  /// The model as asked for, not as routed: OpenRouter may serve a request
+  /// from any provider behind the id, and the id is what the budget was set
+  /// against.
+  model   String
+
+  /// Tokens as reported by the response. Null when there was no response to
+  /// report them — a timeout, a transport failure, a non-2xx body.
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+
+  /// Wall clock for the whole call, including the time a timeout waited.
+  latencyMs Int
+  /// False means the caller fell back to its deterministic path.
+  ok        Boolean
+  /// Why it failed, truncated. Null when it succeeded.
+  error     String?
+
+  occurredAt DateTime @default(now())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  /// The customer twin whose thread spent this call, which is the unit the
+  /// per-conversation cap counts — a `Conversation` row here is one inbound
+  /// message, so it is the customer that persists across a back-and-forth.
+  /// Null for twin chat, which has no customer, and for the very first
+  /// message of a twin's life, where the row does not exist yet and no prior
+  /// call can have been charged to it either.
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, occurredAt])
+  @@index([customerId, occurredAt])
+  @@map("model_calls")
 }

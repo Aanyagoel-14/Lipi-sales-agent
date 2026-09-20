@@ -86,7 +86,15 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     optionsB: [...new Set(live.flatMap((p) => p.variants.map((v) => v.optionB)))],
     axes: (live[0]?.axes as [string, string]) ?? undefined,
   });
-  const extracted = await extract(input.text, vocab, now);
+  // Resolved before the transaction, and only so the budget below has a thread
+  // to count against: the transaction reads the customer again and that read
+  // is the authoritative one. Null on a twin's first ever message, which is
+  // also the one message that cannot have exceeded a per-conversation cap.
+  const existing = await prisma.customer.findFirst({
+    where: { handle: input.handle, workspaceId: workspace.id },
+    select: { id: true },
+  });
+  const extracted = await extract(input.text, vocab, { workspaceId: workspace.id, customerId: existing?.id }, now);
 
   try {
     return await prisma.$transaction(async (tx) => {

@@ -1,5 +1,6 @@
 import { env } from "../env";
 import { chatForReply } from "../lib/openrouter";
+import { checkModelBudget, type ModelMeter } from "../lib/metering";
 import { prisma } from "../lib/prisma";
 import { toRupees } from "../lib/money";
 import { buildGrounding } from "./briefing";
@@ -120,8 +121,9 @@ Voice: ${voiceRules(voice)}
 Reply with JSON only: {"reply": "<the message>"}. Do not write your reasoning.`;
 }
 
-const voiceReply = (system: string, history: SellTurn[]) =>
+const voiceReply = (system: string, history: SellTurn[], meter: ModelMeter) =>
   chatForReply({
+    meter,
     messages: [{ role: "system", content: system }, ...history.slice(-HISTORY_TURNS)],
     temperature: 0.4,
     // Room for a reasoning model to think before it fills the field. Too tight
@@ -227,6 +229,18 @@ export async function sell(input: {
 
   if (!env.OPENROUTER_API_KEY) return { ...base, reply: result.reply, voicedBy: "template" };
 
+  // `ingest()` has just spent this workspace's budget on extraction, so the
+  // verdict is taken again here rather than shared with it: voicing is the
+  // expensive half, and a turn that tips the ceiling should tip it before the
+  // expensive call, not after. Over the ceiling the customer still gets the
+  // composed reply — every number in it is verified — and the operator sees
+  // why on `degraded`.
+  const meter: ModelMeter = { workspaceId: input.workspaceId, purpose: "sell", customerId: result.customer.id };
+  const budget = await checkModelBudget(meter);
+  if (!budget.allowed) {
+    return { ...base, reply: result.reply, voicedBy: "template", degraded: budget.reason };
+  }
+
   const [grounding, workspace] = await Promise.all([
     // The customer-safe block, never the operator briefing: that one carries
     // other customers, their order values and this month's approvals. Narrowed
@@ -247,6 +261,7 @@ export async function sell(input: {
     const spoken = await voiceReply(
       systemPrompt(grounding.text, voice, outcome(result, invoice)),
       [...(input.history ?? []), { role: "user", content: input.text }],
+      meter,
     );
 
     // The voice rules are the workspace's, so a model that ignores them does

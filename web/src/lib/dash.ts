@@ -2,7 +2,7 @@ import { apiBaseUrl } from "./api";
 import { apiHeaders } from "./session";
 import type {
   Ageing, Approval, ConversationSummary, Conversation, Customer, Invoice,
-  Order, Overview, Paged, Payment, Product, Supplier, TwinEvent,
+  ModelSpend, Order, Overview, Paged, Payment, Product, Supplier, TwinEvent,
 } from "./dash-types";
 
 /**
@@ -65,6 +65,7 @@ export const getConversations = (page: Cursor = {}) =>
   get<Paged<"conversations", ConversationSummary>>("conversations", page);
 export const getOrders = (page: Cursor = {}) => get<Paged<"orders", Order>>("orders", page);
 export const getEvents = (page: Cursor = {}) => get<Paged<"events", TwinEvent>>("events", page);
+export const getModelSpend = () => get<ModelSpend>("usage/models");
 
 /** One thread with its messages. The list endpoint deliberately omits them. */
 export const getConversation = (id: string) =>
