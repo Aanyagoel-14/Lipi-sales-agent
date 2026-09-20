@@ -150,6 +150,37 @@ extracts intent, updates the customer Twin, matches a variant, applies allowed
 inventory/order effects, creates agent runs and approvals, composes a grounded
 reply, and appends events for each effect.
 
+## Grounding the salesperson
+
+`sell()` decides what is said; `ingest()` has already decided what is true.
+What the salesperson is allowed to say comes from one retrieval path —
+`buildGrounding()` in `services/briefing.ts` — assembled per turn:
+
+- **The policies that answer this message, first.** `rankKnowledge()`
+  (`services/voice.ts`) scores every `KnowledgeEntry` the workspace has taught
+  its twin on word overlap with the message, with a bonus for the kind the
+  extracted intent implies, and returns the few that clear a relevance floor.
+  "Do you do bulk pricing for 200 units, and what is your returns window?"
+  arrives with both policies stated rather than one. The order is total —
+  score, then title, then id — so the same message and workspace build the
+  same block; a block that reshuffles between identical turns is one nobody
+  can debug.
+- **The catalogue slice that is relevant.** The product `ingest()` matched
+  leads, then the rest of its category, then whatever else the message named,
+  then the remainder A to Z. Every price and count is read here, from the
+  product and variant rows, and handed over as a fact — the model has no
+  arithmetic to do and no number to choose (invariant 2). Margins, suppliers,
+  reservations and other customers are never loaded, so they cannot leak.
+- **Bounded.** `GROUNDING_MAX_CHARS` caps the block. Sections are filled in
+  priority order and each item fits whole or is dropped, so a workspace with
+  500 taught entries loses the general policy least related to what was asked,
+  never half a price.
+
+`findKnowledge()` — the single entry the composed reply has room for — is the
+first row of that same ranking, so the template path and the model path cannot
+disagree about which policy applies. `SellResult.knowledgeUsed` reports what
+grounded the turn, and the storefront panel shows it.
+
 ## The public API
 
 `/v1` is one surface with two audiences. The dashboard reads it same-origin with

@@ -83,28 +83,60 @@ const KIND_FOR_INTENT: Record<string, KnowledgeEntry["kind"][]> = {
   complaint: ["warranty", "policy"],
 };
 
-/**
- * Picks the knowledge entry that best answers this message. Scored on word
- * overlap so a customer does not have to name the policy to get it, but
- * anything with no overlap at all returns nothing rather than a guess.
- */
-export function findKnowledge(text: string, intent: string, entries: KnowledgeEntry[]): KnowledgeEntry | null {
-  if (!entries.length) return null;
+/** A knowledge entry with the score that earned it its place. */
+export type RankedKnowledge = { entry: KnowledgeEntry; score: number };
 
+/**
+ * Below this an entry is a coincidence rather than an answer: a single word
+ * in common, or nothing but the right kind for the intent.
+ */
+const RELEVANT = 4;
+
+/** How many entries a single message can pull in. */
+export const KNOWLEDGE_TOP = 5;
+
+const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Ranks what the business has taught the twin against this message. Scored on
+ * word overlap so a customer does not have to name the policy to get it, with
+ * a bonus for the kind the intent implies.
+ *
+ * The order is total — score, then title, then id — so the same message and
+ * the same workspace produce the same block however the rows arrive from
+ * Postgres. A block that reshuffles between two identical turns is a block
+ * nobody can debug.
+ */
+export function rankKnowledge(
+  text: string,
+  intent: string,
+  entries: KnowledgeEntry[],
+  limit = KNOWLEDGE_TOP,
+): RankedKnowledge[] {
   const preferred = KIND_FOR_INTENT[intent] ?? [];
   const words = new Set(
     text.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 3),
   );
 
-  let best: { entry: KnowledgeEntry; score: number } | null = null;
+  return entries
+    .map((entry) => {
+      const haystack = `${entry.title} ${entry.body}`.toLowerCase();
+      let score = 0;
+      for (const word of words) if (haystack.includes(word)) score += 2;
+      if (preferred.includes(entry.kind)) score += 3;
+      return { entry, score };
+    })
+    .filter((r) => r.score >= RELEVANT)
+    .sort((a, b) => b.score - a.score || compare(a.entry.title, b.entry.title) || compare(a.entry.id, b.entry.id))
+    .slice(0, limit);
+}
 
-  for (const entry of entries) {
-    const haystack = `${entry.title} ${entry.body}`.toLowerCase();
-    let score = 0;
-    for (const word of words) if (haystack.includes(word)) score += 2;
-    if (preferred.includes(entry.kind)) score += 3;
-    if (score > (best?.score ?? 0)) best = { entry, score };
-  }
-
-  return best && best.score >= 4 ? best.entry : null;
+/**
+ * The single entry that best answers this message, for the composed reply,
+ * which has room for one. The same ranking the grounding block uses -- one
+ * retrieval path, read two ways -- so the template and the model never
+ * disagree about which policy applies.
+ */
+export function findKnowledge(text: string, intent: string, entries: KnowledgeEntry[]): KnowledgeEntry | null {
+  return rankKnowledge(text, intent, entries, 1)[0]?.entry ?? null;
 }

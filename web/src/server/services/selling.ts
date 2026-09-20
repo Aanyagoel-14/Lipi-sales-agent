@@ -2,7 +2,7 @@ import { env } from "../env";
 import { chatForReply } from "../lib/openrouter";
 import { prisma } from "../lib/prisma";
 import { toRupees } from "../lib/money";
-import { buildCustomerCatalogue } from "./briefing";
+import { buildGrounding } from "./briefing";
 import { ingest, type IngestResult } from "./ingest";
 import { invoiceForOrder } from "./invoicing";
 import { DEFAULT_VOICE, voiceViolations, type Voice } from "./voice";
@@ -34,6 +34,11 @@ export type SellResult = {
   conversationId: string;
   customer: IngestResult["customer"];
   matched: IngestResult["matched"];
+  /**
+   * The policies the block was grounded in, most relevant first, so the
+   * dashboard can show why the twin said what it said.
+   */
+  knowledgeUsed: { title: string; kind: string }[];
   order: (IngestResult["order"] & { stage: string }) | null;
   invoice: { number: string; amountInr: number; dueIso: string; url: string } | null;
   intent: string;
@@ -80,8 +85,6 @@ function outcome(result: IngestResult, invoice: SellResult["invoice"]) {
     );
   }
 
-  if (result.knowledgeUsed) lines.push(`Relevant policy: ${result.knowledgeUsed.title}.`);
-
   lines.push(
     "",
     "The system composed this plain reply. Every number in it is verified, so treat it as the source of truth " +
@@ -92,10 +95,10 @@ function outcome(result: IngestResult, invoice: SellResult["invoice"]) {
   return lines.join("\n");
 }
 
-function systemPrompt(catalogue: string, voice: Voice, facts: string) {
+function systemPrompt(grounding: string, voice: Voice, facts: string) {
   return `You are a salesperson at this business, chatting with a customer who is deciding what to buy. Your job is to help them choose and then close the sale — friendly, confident, never pushy.
 
-${catalogue}
+${grounding}
 
 WHAT THE SYSTEM DID WITH THEIR LAST MESSAGE:
 ${facts}
@@ -216,21 +219,32 @@ export async function sell(input: {
     invoice,
     intent: result.extracted.intent,
     held: !result.replySent,
+    // What grounded the composed reply. Replaced by the ranked block below
+    // when the model is the one speaking; `findKnowledge` is that ranking's
+    // first row, so the two never contradict each other.
+    knowledgeUsed: result.knowledgeUsed ? [result.knowledgeUsed] : [],
   };
 
   if (!env.OPENROUTER_API_KEY) return { ...base, reply: result.reply, voicedBy: "template" };
 
-  const [briefing, workspace] = await Promise.all([
-    // The customer-safe catalogue, never the operator briefing: that one
-    // carries other customers, their order values and this month's approvals.
-    buildCustomerCatalogue(input.workspaceId),
+  const [grounding, workspace] = await Promise.all([
+    // The customer-safe block, never the operator briefing: that one carries
+    // other customers, their order values and this month's approvals. Narrowed
+    // to this message, so the policies it asks about are stated rather than
+    // buried, and the catalogue leads with what was matched.
+    buildGrounding(input.workspaceId, {
+      text: input.text,
+      intent: result.extracted.intent,
+      matched: result.matched,
+    }),
     prisma.workspace.findUnique({ where: { id: input.workspaceId }, include: { voice: true } }),
   ]);
   const voice = workspace?.voice ?? DEFAULT_VOICE;
+  base.knowledgeUsed = grounding.knowledge.map(({ title, kind }) => ({ title, kind }));
 
   try {
     const spoken = await voiceReply(
-      systemPrompt(briefing, voice, outcome(result, invoice)),
+      systemPrompt(grounding.text, voice, outcome(result, invoice)),
       [...(input.history ?? []), { role: "user", content: input.text }],
     );
 
