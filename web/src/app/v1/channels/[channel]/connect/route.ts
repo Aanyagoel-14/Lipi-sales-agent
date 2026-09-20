@@ -1,117 +1,117 @@
 import { z } from "zod";
-import { adapterFor } from "@/server/channels/index";
-import { registerTelegramWebhook } from "@/server/channels/telegram";
-import { encrypt, newWebhookSecret } from "@/server/lib/crypto";
+import type { Channel } from "@/generated/prisma/client";
+import { finishConnection } from "@/server/channels/connect";
+import { authConfigIdFor, specFor } from "@/server/channels/registry";
 import { env } from "@/server/env";
+import { composio } from "@/server/lib/composio";
 import { body, HttpError, json, route } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
-import { eventId } from "../../../events";
-import { type ChannelName, publicView, webhookUrlFor } from "../../view";
+import { publicView } from "../../view";
 
-const connectSchema = z.object({
-  secret: z.string().trim().min(8).max(500),
-  config: z.record(z.string(), z.string().trim().max(200)).default({}),
-  // H-3 fix: Meta signs every webhook POST with the app's own App Secret,
-  // which is a different credential from `secret` above (the long-lived
-  // access token used to SEND messages) and from the auto-generated verify
-  // token used for the GET subscription challenge. Required only for
-  // Meta-family channels; ignored otherwise.
-  metaAppSecret: z.string().trim().min(8).max(500).optional(),
-});
+/**
+ * Starts a connection. Lipi no longer takes a credential for it.
+ *
+ * For an OAuth channel this issues a Connect Link and answers with the URL to
+ * send the browser to; the operator consents on the provider's own screen and
+ * comes back through `/v1/channels/callback`. For an API-key channel the key
+ * goes straight to Composio in this request and is never written down — not to
+ * a column, not to a log line — and the connection finishes inline, because
+ * there is no consent screen to come back from.
+ *
+ * Either way the row lands in `pending` first and only `finishConnection` is
+ * allowed to promote it. Nothing here treats having started as having worked.
+ */
 
-const META_CHANNELS = new Set(["whatsapp", "instagram"]);
+const tokenSchema = z.object({ token: z.string().trim().min(20).max(200) });
 
 export const POST = route<{ channel: string }>(async (req, params) => {
   const workspaceId = await resolveWorkspaceId();
-  const channel = params.channel as ChannelName;
+  const channel = params.channel as Channel;
 
-  const adapter = adapterFor(channel);
-  if (!adapter) throw new HttpError(400, `${channel} cannot be connected yet`);
+  const spec = specFor(channel);
+  if (!spec) throw new HttpError(400, `${params.channel} cannot be connected`);
 
-  const data = await body(req, connectSchema, "Check the credentials");
-
-  if (META_CHANNELS.has(channel) && !data.metaAppSecret) {
-    throw new HttpError(422, "This channel needs its Meta App Secret to verify inbound webhooks",
-      { metaAppSecret: ["Required for whatsapp and instagram"] });
+  const authConfigId = authConfigIdFor(spec);
+  if (!authConfigId) {
+    throw new HttpError(400,
+      `${spec.label} is not set up in this deployment (${spec.authConfigEnv} is empty)`);
   }
 
-  // Prove the credentials work before storing them, so a connection is never
-  // shown as connected when it would fail on the first real message.
-  let identity: { displayName: string; externalId: string };
-  try {
-    identity = await adapter.test({ secret: data.secret, config: data.config });
-  } catch (error) {
-    throw new HttpError(400, (error as Error).message);
-  }
+  // Read the body before anything is torn down: a mistyped token must not
+  // cost the operator the connection they already had.
+  const token = spec.connect.kind === "api_key"
+    ? (await body(req, tokenSchema, spec.connect.hint)).token
+    : null;
 
+  const client = composio();
   const existing = await prisma.channelConnection.findUnique({
     where: { workspaceId_channel: { workspaceId, channel } },
   });
-  const webhookSecret = existing?.webhookSecret ?? newWebhookSecret();
-  const metaAppSecretCipher = data.metaAppSecret ? encrypt(data.metaAppSecret) : existing?.metaAppSecretCipher ?? null;
 
-  const connection = await prisma.channelConnection.upsert({
-    where: { workspaceId_channel: { workspaceId, channel } },
-    create: {
-      workspaceId, channel, status: "connected",
-      secretCipher: encrypt(data.secret), config: data.config,
-      webhookSecret, metaAppSecretCipher,
-      externalId: identity.externalId, displayName: identity.displayName,
-    },
-    update: {
-      status: "connected", secretCipher: encrypt(data.secret),
-      config: data.config, metaAppSecretCipher, externalId: identity.externalId,
-      displayName: identity.displayName, lastError: null,
-    },
-  });
+  // Reconnect. Composio refuses a second link on an auth config that already
+  // holds an active account, so the previous one is retired first — and its
+  // triggers with it, or they would keep delivering to a dead connection.
+  if (existing?.composioAccountId) await retire(existing.composioTriggerIds, existing.composioAccountId);
 
-  // Telegram can be pointed at us automatically; Meta requires the operator
-  // to paste the URL into the app dashboard themselves.
-  const webhookUrl = webhookUrlFor(env.PUBLIC_URL, channel, workspaceId);
-  let webhookNote: string | null = null;
+  const upsert = (composioAccountId: string) =>
+    prisma.channelConnection.upsert({
+      where: { workspaceId_channel: { workspaceId, channel } },
+      create: {
+        workspaceId, channel, status: "pending",
+        composioAccountId, composioAuthConfigId: authConfigId,
+      },
+      update: {
+        status: "pending",
+        composioAccountId, composioAuthConfigId: authConfigId,
+        // A new account may resolve to a different number, bot or mailbox, so
+        // nothing derived from the old one survives into the new connection.
+        composioTriggerIds: [], externalId: null, displayName: null,
+        config: {}, connectedAt: null, lastError: null,
+      },
+    });
 
-  if (channel === "telegram") {
-    try {
-      await registerTelegramWebhook(data.secret, webhookUrl, webhookSecret);
-    } catch (error) {
-      webhookNote = (error as Error).message;
-      await prisma.channelConnection.update({
-        where: { id: connection.id },
-        data: { lastError: webhookNote },
-      });
+  if (token !== null) {
+    const { connectedAccountId } = await callComposio(() =>
+      client.initiateApiKey(workspaceId, authConfigId, token,
+        spec.connect.kind === "api_key" ? spec.connect.composioField : undefined));
+
+    const finished = await finishConnection(await upsert(connectedAccountId));
+    if (finished.status !== "connected") {
+      throw new HttpError(400, finished.lastError ?? `${spec.label} did not accept that token`);
     }
-  } else {
-    webhookNote = "Add this URL to your Meta app webhooks, with the verify token below.";
+    return json({ redirectUrl: null, channel: publicView(finished) }, 201);
   }
 
-  // `push` appends unconditionally, so reconnecting the same channel grew the
-  // column every time. Writing the deduped union is idempotent, and writing
-  // the whole array rather than appending to it is safe under a concurrent
-  // connect: the loser rewrites the same set.
-  const workspace = await prisma.workspace.findUnique({
-    where: { id: workspaceId },
-    select: { channels: true },
-  });
-  if (workspace && !workspace.channels.includes(channel)) {
-    await prisma.workspace.update({
-      where: { id: workspaceId },
-      data: { channels: [...new Set([...workspace.channels, channel])] },
-    }).catch(() => {});
-  }
+  const { redirectUrl, connectedAccountId } = await callComposio(() =>
+    client.link(workspaceId, authConfigId, {
+      callbackUrl: `${env.PUBLIC_URL}/v1/channels/callback`,
+      alias: channel,
+    }));
 
-  await prisma.twinEvent.create({
-    data: {
-      id: eventId(), workspaceId, occurredAt: new Date(),
-      type: "channel.connected", twin: "conversation",
-      payload: `${channel} as ${identity.displayName}`,
-    },
-  });
-
-  return json({
-    channel: publicView({ ...connection }),
-    webhookUrl,
-    verifyToken: webhookSecret,
-    webhookNote,
-  }, 201);
+  return json({ redirectUrl, channel: publicView(await upsert(connectedAccountId)) }, 201);
 });
+
+/**
+ * Composio's own failures are the operator's problem to see, not a 500. An
+ * auth config that no longer exists, a toolkit outage or a rejected key all
+ * arrive here as an exception with a message worth showing.
+ */
+async function callComposio<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    throw new HttpError(502, (error instanceof Error ? error.message : String(error)).slice(0, 300));
+  }
+}
+
+/** Best effort: the operator asked for a new connection, not for a report on the old one. */
+async function retire(triggerIds: string[], accountId: string) {
+  const client = composio();
+  for (const triggerId of triggerIds) {
+    await client.deleteTrigger(triggerId).catch((error: unknown) =>
+      console.error(`composio: could not delete trigger ${triggerId}`, error));
+  }
+  await client.deleteAccount(accountId).catch((error: unknown) =>
+    console.error(`composio: could not delete account ${accountId}`, error));
+}

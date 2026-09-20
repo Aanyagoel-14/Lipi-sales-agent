@@ -1,25 +1,38 @@
-export const CHANNELS = ["whatsapp", "instagram", "telegram", "email", "webchat"] as const;
-export type ChannelName = (typeof CHANNELS)[number];
+import type { ChannelConnection } from "@/generated/prisma/client";
 
-/** Secrets are never returned. The operator can replace one, not read it back. */
-export const publicView = (c: {
-  channel: string; status: string; externalId: string | null; displayName: string | null;
-  config: unknown; lastEventAt: Date | null; lastError: string | null; secretCipher: string | null;
-}) => ({
+/**
+ * How a channel row reaches the browser.
+ *
+ * Two things are deliberately absent. Credentials, because Composio holds
+ * them and Lipi could not show one if it wanted to. And the connected account
+ * id, because it is a capability: anything holding one can ask Composio about
+ * the account. Support needs to recognise an account in a log line, not
+ * reproduce it, so only the last four characters travel.
+ */
+export const publicView = (c: ChannelConnection) => ({
   channel: c.channel,
   status: c.status,
   externalId: c.externalId,
   displayName: c.displayName,
   config: c.config,
-  hasCredentials: Boolean(c.secretCipher),
+  connectedAt: c.connectedAt?.toISOString() ?? null,
   lastEventIso: c.lastEventAt?.toISOString() ?? null,
   lastError: c.lastError,
+  accountRef: c.composioAccountId ? `…${c.composioAccountId.slice(-4)}` : null,
 });
 
-/** Where a provider should call us back. Built from the app's own origin now
- *  that the API and the dashboard are served from one deployment. */
-export const webhookUrlFor = (publicUrl: string, channel: string, workspaceId: string) =>
-  `${publicUrl}/webhooks/${channel}/${workspaceId}`;
+/** The same shape for a channel this workspace has never connected. */
+export const unconnectedView = (channel: string) => ({
+  channel,
+  status: "disconnected",
+  externalId: null,
+  displayName: null,
+  config: {} as Record<string, never>,
+  connectedAt: null,
+  lastEventIso: null,
+  lastError: null,
+  accountRef: null,
+});
 
 /**
  * The webchat "install snippet": a single script tag the operator pastes

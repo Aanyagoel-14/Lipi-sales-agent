@@ -39,6 +39,13 @@ export type ConnectContext = {
   connectedAccountId: string;
   externalId: string | null;
   config: Json;
+  /**
+   * Whatever the identity tool returned, so a hook that needs the same
+   * response does not execute the same tool a second time. WhatsApp's does:
+   * `WHATSAPP_GET_PHONE_NUMBERS` is both the identity call and the list the
+   * operator picks a number from.
+   */
+  identityData: unknown;
   /** The app's own public origin, for webhook URLs handed to a provider. */
   publicUrl: string;
 };
@@ -83,10 +90,24 @@ export type ChannelSpec = {
   parse(body: unknown, connection: ConnectionView): ParsedMessage[];
   /** What to execute to reply. Throws when the connection lacks something the tool needs. */
   send(args: { to: string; text: string; config: Json; threadId?: string; subject?: string }): SendRequest;
-  /** A cheap read tool that proves the account works and names it. */
-  identity: { slug: string; pick(data: unknown): { externalId: string; displayName: string } };
-  /** Subscribe the WABA / IG account, set the Telegram webhook, upsert the Gmail trigger. Added by later phases. */
-  afterConnect?(ctx: ConnectContext): Promise<Partial<{ externalId: string; config: Json; triggerIds: string[] }>>;
+  /**
+   * A cheap read tool that proves the account works and names it. Arguments
+   * are declared rather than assumed: Gmail's profile call wants the mailbox
+   * it is scoped to, Instagram's wants a field list, and sending nothing to
+   * either returns less than the `pick` below needs.
+   */
+  identity: {
+    slug: string;
+    arguments?: Json;
+    pick(data: unknown): { externalId: string; displayName: string };
+  };
+  /**
+   * Runs once a connected account is ACTIVE and its identity is known: picks
+   * the WhatsApp number, upserts the Gmail trigger, subscribes the WABA.
+   * Returning `externalId: null` means "the operator still has to choose",
+   * which is not the same as omitting the key and keeping what identity found.
+   */
+  afterConnect?(ctx: ConnectContext): Promise<Partial<{ externalId: string | null; config: Json; triggerIds: string[] }>>;
   beforeDisconnect?(ctx: ConnectContext): Promise<void>;
 };
 
@@ -138,6 +159,18 @@ type WhatsAppPayload = {
   }[];
 };
 
+export type PhoneNumber = { id: string; display: string; verifiedName: string };
+
+/** The numbers on a WABA, as `WHATSAPP_GET_PHONE_NUMBERS` returns them. */
+const phoneNumbersFrom = (data: unknown): PhoneNumber[] =>
+  firstList(data, ["data", "phone_numbers", "phoneNumbers"])
+    .map((number) => ({
+      id: str(number.id) ?? "",
+      display: str(number.display_phone_number) ?? "",
+      verifiedName: str(number.verified_name) ?? "",
+    }))
+    .filter((number) => number.id);
+
 const whatsapp: ChannelSpec = {
   channel: "whatsapp",
   label: "WhatsApp",
@@ -181,6 +214,22 @@ const whatsapp: ChannelSpec = {
     const phoneNumberId = str(config.phoneNumberId);
     if (!phoneNumberId) throw new Error("No phone number chosen for this WhatsApp connection");
     return { slug: "WHATSAPP_SEND_MESSAGE", arguments: { text, to_number: to, phone_number_id: phoneNumberId } };
+  },
+
+  /**
+   * A WABA can hold several numbers and only one of them is this workspace's
+   * sender, so the connect step records all of them and picks only when the
+   * choice is unambiguous. With more than one, `externalId` is deliberately
+   * cleared: a guess here would send every reply from the wrong number, and
+   * `(channel, externalId)` is the key inbound routes on in C3.
+   */
+  async afterConnect(ctx) {
+    const numbers = phoneNumbersFrom(ctx.identityData);
+    if (numbers.length === 1) {
+      const only = numbers[0]!;
+      return { externalId: only.id, config: { phoneNumbers: numbers, phoneNumberId: only.id } };
+    }
+    return { externalId: null, config: { phoneNumbers: numbers } };
   },
 
   identity: {
@@ -315,6 +364,7 @@ const instagram: ChannelSpec = {
 
   identity: {
     slug: "INSTAGRAM_GET_USER_INFO",
+    arguments: { fields: "id,user_id,username,name" },
     pick(data) {
       // `user_id` is the professional account id that webhooks carry in
       // `entry.id`; `id` is the app-scoped one. Route on the former.
@@ -387,6 +437,7 @@ const email: ChannelSpec = {
 
   identity: {
     slug: "GMAIL_GET_PROFILE",
+    arguments: { user_id: "me" },
     pick(data) {
       const profile = record(data) ?? {};
       const address = str(profile.emailAddress) ?? str(profile.email_address);

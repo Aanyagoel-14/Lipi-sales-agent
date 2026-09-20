@@ -32,6 +32,23 @@ npm run composio:subscribe -- --rotate
 `PUBLIC_URL` must be an HTTPS origin Composio can reach. In development that means a
 tunnel (ngrok, cloudflared) and re-running the command when the tunnel URL changes.
 
+### The connect callback is not the webhook
+
+Two different URLs are built from `PUBLIC_URL` and only one of them is called by
+Composio's servers.
+
+| URL | Who calls it | Needs a public origin |
+| --- | --- | --- |
+| `PUBLIC_URL/webhooks/composio` | Composio, server to server | Yes |
+| `PUBLIC_URL/v1/channels/callback` | The operator's own browser, as a redirect | No |
+
+So a channel can be connected end to end against `http://localhost:3000` with no tunnel
+running: the Connect Link opens in the operator's browser and sends it back to localhost,
+which their machine can reach. Lifecycle events — an account expiring, a trigger being
+switched off — are the part that needs the tunnel, and until one exists those simply do
+not arrive. A connection made without one still works; it just will not notice when it
+stops working.
+
 ## 3. Auth configs
 
 One auth config per channel. Names, not values, go in the handoff notes; the `ac_…` ids

@@ -74,7 +74,10 @@ export class FakeComposio implements ComposioClient {
       userId,
       toolkit: this.authConfigs.get(authConfigId) ?? "unknown",
     });
-    return { redirectUrl: `https://connect.composio.test/link/${connectedAccountId}`, connectedAccountId };
+    // Composio's own link carries an opaque `lk_` token, not the account id.
+    // Keeping that true here is what lets a test assert the account id never
+    // reaches the browser.
+    return { redirectUrl: `https://connect.composio.test/link/${this.nextId("lk")}`, connectedAccountId };
   }
 
   async initiateApiKey(userId: string, authConfigId: string, apiKey: string, field = "generic_api_key") {
