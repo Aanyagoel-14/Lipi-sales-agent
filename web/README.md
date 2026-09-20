@@ -139,11 +139,27 @@ npx prisma migrate deploy
 npm run dev             # http://localhost:3000
 ```
 
-Run tests (needs a second Postgres database, e.g. `lipi_test`):
+The suite runs against its own database, `lipi_test`, never the development
+one. One command creates it and applies the migrations:
 
 ```bash
-TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/lipi_test" npm test
+npm run db:test:setup
+npm test
 ```
+
+`db:test:setup` is idempotent — run it again after a migration and it applies
+only what is pending. It takes the URL from `test/database-url.ts`, the same
+module the suite reads, which derives the role from the OS user. Where that is
+not how your Postgres is reached, set `TEST_DATABASE_URL` for both commands:
+
+```bash
+export TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/lipi_test"
+```
+
+CI runs the same three checks on every push and pull request — `npm run lint`,
+`npm run typecheck`, `npm test`, against a `postgres:15` service container and
+this same setup script. See `.github/workflows/ci.yml`; it needs no repository
+secret, because `test/setup.ts` stubs OpenRouter and Composio itself.
 
 ## Deployment
 

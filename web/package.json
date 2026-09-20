@@ -11,6 +11,7 @@
     "postinstall": "prisma generate",
     "db:seed": "prisma db seed",
     "db:migrate": "prisma migrate dev",
+    "db:test:setup": "tsx scripts/setup-test-db.ts",
     "db:studio": "prisma studio",
     "composio:subscribe": "tsx scripts/composio-subscribe.ts",
     "pretypecheck": "next typegen",
