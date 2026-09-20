@@ -219,9 +219,9 @@ export async function sell(input: {
     invoice,
     intent: result.extracted.intent,
     held: !result.replySent,
-    // What grounded the composed reply. Replaced by the ranked block below
-    // when the model is the one speaking; `findKnowledge` is that ranking's
-    // first row, so the two never contradict each other.
+    // What grounded the composed reply: `findKnowledge`'s single entry, which
+    // is the first row of the ranking the grounding block below uses, so the
+    // two never contradict each other.
     knowledgeUsed: result.knowledgeUsed ? [result.knowledgeUsed] : [],
   };
 
@@ -240,6 +240,7 @@ export async function sell(input: {
     prisma.workspace.findUnique({ where: { id: input.workspaceId }, include: { voice: true } }),
   ]);
   const voice = workspace?.voice ?? DEFAULT_VOICE;
+  // The model speaks from the whole ranked block, so that is what grounded the turn.
   base.knowledgeUsed = grounding.knowledge.map(({ title, kind }) => ({ title, kind }));
 
   try {

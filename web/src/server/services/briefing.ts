@@ -1,7 +1,7 @@
 import { toRupees } from "../lib/money";
 import { prisma } from "../lib/prisma";
 import { rankKnowledge } from "./voice";
-import { Prisma, type KnowledgeEntry } from "@/generated/prisma/client";
+import type { KnowledgeEntry, Prisma } from "@/generated/prisma/client";
 
 /**
  * The briefing: everything the twin is allowed to know about its own business,
@@ -234,7 +234,8 @@ const SCAFFOLDING = [FOR_SALE, ANSWERS, MORE_POLICY, ALL_POLICY, PARTIAL, "", ""
 
 const size = (lines: string[]) => lines.reduce((a, line) => a + line.length + 1, 0);
 
-const knowledgeLine = (entry: KnowledgeEntry) => `- ${entry.title}: ${entry.body}`;
+/** One taught policy, as the block states it. */
+const knowledgeLines = (entry: KnowledgeEntry) => [`- ${entry.title}: ${entry.body}`];
 
 /** One product, priced and counted from its own rows. */
 function productLines(product: CatalogueProduct): string[] {
@@ -274,6 +275,12 @@ function mentions(words: string[], product: CatalogueProduct): number {
   return words.filter((word) => terms.some((term) => term.includes(word) || word.includes(term))).length;
 }
 
+/** A to Z, so the tie-break between equally relevant products is its own, not the database's. */
+function byName(a: CatalogueProduct, b: CatalogueProduct): number {
+  if (a.name === b.name) return 0;
+  return a.name < b.name ? -1 : 1;
+}
+
 /**
  * The catalogue, most relevant first: the product `ingest()` matched, then the
  * rest of its category, then whatever the message named, then the rest A to Z.
@@ -302,9 +309,8 @@ async function byRelevance(
 
   const words = termsOf(focus.text);
   const named = new Map(catalogue.map((p) => [p.id, mentions(words, p)]));
-  const rest = [...catalogue].sort(
-    (a, b) => named.get(b.id)! - named.get(a.id)! || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
-  );
+  const mentioned = (product: CatalogueProduct) => named.get(product.id) ?? 0;
+  const rest = [...catalogue].sort((a, b) => mentioned(b) - mentioned(a) || byName(a, b));
 
   const ordered: CatalogueProduct[] = [];
   const seen = new Set<string>();
@@ -378,44 +384,39 @@ export async function buildGrounding(workspaceId: string, focus: Focus): Promise
   const header = [`You work at ${workspace.name}.`, `Everything is sold by ${axes[0]} and ${axes[1]}.`];
 
   let left = GROUNDING_MAX_CHARS - size(header) - size(SCAFFOLDING);
+  /** Renders items until the next one would not fit, and spends what it kept. */
   const take = <T>(items: T[], render: (item: T) => string[]) => {
-    const kept: { item: T; lines: string[] }[] = [];
+    const kept: T[] = [];
+    const lines: string[] = [];
     for (const item of items) {
-      const lines = render(item);
-      if (size(lines) > left) break;
-      left -= size(lines);
-      kept.push({ item, lines });
+      const rendered = render(item);
+      const cost = size(rendered);
+      if (cost > left) break;
+      left -= cost;
+      kept.push(item);
+      lines.push(...rendered);
     }
-    return kept;
+    return { kept, lines };
   };
 
-  const answering = take(ranked, (r) => [knowledgeLine(r.entry)]);
+  const answering = take(ranked, (r) => knowledgeLines(r.entry));
   const shown = take(products, productLines);
-  const answered = new Set(answering.map((k) => k.item.entry.id));
-  const general = take(
-    entries.filter((e) => !answered.has(e.id)).slice(0, CAPS.knowledge),
-    (e) => [knowledgeLine(e)],
-  );
+  const answered = new Set(answering.kept.map((r) => r.entry.id));
+  const general = take(entries.filter((e) => !answered.has(e.id)).slice(0, CAPS.knowledge), knowledgeLines);
 
   /* ---------------------------------------------------------------- block */
   const lines = [...header, "", FOR_SALE];
 
   if (!catalogue.length) lines.push("- Nothing is listed yet.");
-  for (const product of shown) lines.push(...product.lines);
+  lines.push(...shown.lines);
   // Either the budget cut the tail, or the catalogue is bigger than one page.
-  if (shown.length < products.length || catalogue.length === CAPS.products) lines.push(PARTIAL);
+  if (shown.kept.length < products.length || catalogue.length === CAPS.products) lines.push(PARTIAL);
 
-  if (answering.length) {
-    lines.push("", ANSWERS);
-    for (const entry of answering) lines.push(...entry.lines);
-  }
-  if (general.length) {
-    lines.push("", answering.length ? MORE_POLICY : ALL_POLICY);
-    for (const entry of general) lines.push(...entry.lines);
-  }
+  if (answering.kept.length) lines.push("", ANSWERS, ...answering.lines);
+  if (general.kept.length) lines.push("", answering.kept.length ? MORE_POLICY : ALL_POLICY, ...general.lines);
 
   return {
     text: lines.join("\n"),
-    knowledge: answering.map(({ item }) => ({ title: item.entry.title, kind: item.entry.kind, score: item.score })),
+    knowledge: answering.kept.map(({ entry, score }) => ({ title: entry.title, kind: entry.kind, score })),
   };
 }

@@ -351,12 +351,12 @@ describe("a sale that is already made", () => {
 
 describe("the grounding block", () => {
   /** A second product in an existing category, so neighbours have something to be. */
-  async function addPolo(name: string, priceInr = 1500) {
+  async function addPolo(name: string) {
     const supplier = await prisma.supplier.findFirstOrThrow({ where: { workspaceId } });
     await prisma.product.create({
       data: {
         id: `prd_${name.toLowerCase().replace(/\W/g, "")}`, workspaceId, name, category: "Polo",
-        axes: ["Size", "Colour"], price: priceInr * 100, marginPct: 40, leadTimeDays: 5,
+        axes: ["Size", "Colour"], price: 150_000, marginPct: 40, leadTimeDays: 5,
         crossSell: [], supplierId: supplier.id,
         variants: { create: [{ optionA: "L", optionB: "Cobalt", stock: 7, reserved: 0, sku: `${name}-L-COB` }] },
       },

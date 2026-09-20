@@ -93,9 +93,13 @@ export type RankedKnowledge = { entry: KnowledgeEntry; score: number };
 const RELEVANT = 4;
 
 /** How many entries a single message can pull in. */
-export const KNOWLEDGE_TOP = 5;
+const KNOWLEDGE_TOP = 5;
 
-const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+/** A to Z, so equal scores break the same way whatever order the rows arrived in. */
+function compare(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
 
 /**
  * Ranks what the business has taught the twin against this message. Scored on
