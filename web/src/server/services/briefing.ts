@@ -1,5 +1,6 @@
 import { toRupees } from "../lib/money";
 import { prisma } from "../lib/prisma";
+import { buildRecommendations, type Recommendation } from "./recommend";
 import { rankKnowledge } from "./voice";
 import type { KnowledgeEntry, Prisma } from "@/generated/prisma/client";
 
@@ -38,7 +39,8 @@ const CAPS = {
  */
 export const GROUNDING_MAX_CHARS = 8000;
 
-const inr = (paise: number) => `₹${toRupees(paise).toLocaleString("en-IN")}`;
+const rupees = (amount: number) => `₹${amount.toLocaleString("en-IN")}`;
+const inr = (paise: number) => rupees(toRupees(paise));
 
 export type Briefing = {
   text: string;
@@ -198,6 +200,8 @@ export type Grounding = {
   text: string;
   /** The entries that answered this message, most relevant first. */
   knowledge: { title: string; kind: string; score: number }[];
+  /** What the system chose to put in front of them, strongest reason first. */
+  recommendations: Recommendation[];
 };
 
 // No supplier, no margin: the customer is buying the product, not the
@@ -212,6 +216,9 @@ const catalogueSelect = {
 
 type CatalogueProduct = Prisma.ProductGetPayload<{ select: typeof catalogueSelect }>;
 
+const RECOMMEND =
+  "WHAT TO PUT IN FRONT OF THEM (the system chose these from stock and this shop's own past orders — " +
+  "recommend from this list and nothing else, with these numbers):";
 const FOR_SALE = "WHAT IS FOR SALE (these counts are what a customer can buy today):";
 const ANSWERS = "POLICY THAT ANSWERS THIS MESSAGE (state these if they ask, and nothing beyond them):";
 const MORE_POLICY = "WHAT ELSE YOU MAY TELL THEM ABOUT POLICY (nothing beyond this):";
@@ -225,14 +232,35 @@ const ALL_POLICY = "WHAT YOU MAY TELL THEM ABOUT POLICY (nothing beyond this):";
 const PARTIAL = "- (This is not the whole catalogue. If they ask for something that is not listed, offer to check rather than saying you do not have it.)";
 
 /**
+ * What to say when the answer is no. An empty shelf is a fact like any other,
+ * and a model left to fill the silence fills it with a product that does not
+ * exist.
+ */
+const nothingLikeIt = (soldOut: { product: string; variant: string }) =>
+  `- ${soldOut.product} ${soldOut.variant} is sold out, and nothing else in stock replaces it. ` +
+  `Say so plainly. Do not offer a substitute.`;
+
+/**
  * Everything the block spends on scaffolding rather than facts, reserved
  * before the facts are chosen so a section's own heading cannot be what
- * pushes the block over its ceiling. Over-reserved on purpose: at most three
- * of the four headings can appear in one block.
+ * pushes the block over its ceiling. Over-reserved on purpose: `MORE_POLICY`
+ * and `ALL_POLICY` are alternatives, and the sold-out sentence only appears
+ * when the recommendation list carries no alternative.
  */
-const SCAFFOLDING = [FOR_SALE, ANSWERS, MORE_POLICY, ALL_POLICY, PARTIAL, "", "", ""];
+const SCAFFOLDING = [
+  FOR_SALE, RECOMMEND, ANSWERS, MORE_POLICY, ALL_POLICY, PARTIAL,
+  // Reserved at a generous product and variant name, so the sentence that
+  // admits the shelf is empty is never the line that does not fit.
+  nothingLikeIt({ product: " ".repeat(60), variant: " ".repeat(30) }),
+  "", "", "", "",
+];
 
 const size = (lines: string[]) => lines.reduce((a, line) => a + line.length + 1, 0);
+
+/** One candidate, with the price and count that were read from its own rows. */
+const recommendationLines = (r: Recommendation) => [
+  `- ${r.why}: ${r.product}${r.variant ? ` in ${r.variant}` : ""} — ${rupees(r.priceInr)} each, ${r.available} available.`,
+];
 
 /** One taught policy, as the block states it. */
 const knowledgeLines = (entry: KnowledgeEntry) => [`- ${entry.title}: ${entry.body}`];
@@ -350,7 +378,7 @@ async function byRelevance(
  *    model can read them.
  */
 export async function buildGrounding(workspaceId: string, focus: Focus): Promise<Grounding> {
-  const [workspace, catalogue, entries] = await Promise.all([
+  const [workspace, catalogue, entries, recommended] = await Promise.all([
     prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true } }),
     prisma.product.findMany({
       where: { workspaceId },
@@ -366,6 +394,10 @@ export async function buildGrounding(workspaceId: string, focus: Focus): Promise
       orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       take: CAPS.knowledgeScan,
     }),
+    // Deterministic candidate generation: what is worth offering is decided
+    // from stock and order history here, so the model has products to choose
+    // words for rather than products to choose (invariant 2).
+    buildRecommendations(workspaceId, focus),
   ]);
 
   if (!workspace) throw new Error(`Unknown workspace ${workspaceId}`);
@@ -374,12 +406,14 @@ export async function buildGrounding(workspaceId: string, focus: Focus): Promise
   const products = await byRelevance(workspaceId, catalogue, focus);
 
   /* --------------------------------------------------------------- budget */
-  // Priority, highest first: the policies that answer this message, the
-  // catalogue in relevance order, then general policy with whatever room is
-  // left. Nothing is truncated mid-fact -- half a price is worse than no
-  // price -- so an item either fits whole or is dropped, and because each
-  // list is already in relevance order, dropping from the end drops the
-  // lowest-ranked first.
+  // Priority, highest first: the policies that answer this message, what the
+  // system chose to put in front of them, the catalogue in relevance order,
+  // then general policy with whatever room is left. A recommendation outranks
+  // the catalogue because it is the catalogue already narrowed to the few rows
+  // worth saying out loud. Nothing is truncated mid-fact -- half a price is
+  // worse than no price -- so an item either fits whole or is dropped, and
+  // because each list is already in relevance order, dropping from the end
+  // drops the lowest-ranked first.
   const axes = (products[0]?.axes as string[] | undefined) ?? ["Option A", "Option B"];
   const header = [`You work at ${workspace.name}.`, `Everything is sold by ${axes[0]} and ${axes[1]}.`];
 
@@ -400,6 +434,7 @@ export async function buildGrounding(workspaceId: string, focus: Focus): Promise
   };
 
   const answering = take(ranked, (r) => knowledgeLines(r.entry));
+  const offers = take(recommended.items, recommendationLines);
   const shown = take(products, productLines);
   const answered = new Set(answering.kept.map((r) => r.entry.id));
   const general = take(entries.filter((e) => !answered.has(e.id)).slice(0, CAPS.knowledge), knowledgeLines);
@@ -412,11 +447,21 @@ export async function buildGrounding(workspaceId: string, focus: Focus): Promise
   // Either the budget cut the tail, or the catalogue is bigger than one page.
   if (shown.kept.length < products.length || catalogue.length === CAPS.products) lines.push(PARTIAL);
 
+  if (offers.kept.length || recommended.soldOut) {
+    lines.push("", RECOMMEND, ...offers.lines);
+    // Only when the list carries nothing to put in its place: an alternative
+    // and "nothing replaces it" in the same block contradict each other.
+    if (recommended.soldOut && !offers.kept.some((i) => i.kind === "alternative")) {
+      lines.push(nothingLikeIt(recommended.soldOut));
+    }
+  }
+
   if (answering.kept.length) lines.push("", ANSWERS, ...answering.lines);
   if (general.kept.length) lines.push("", answering.kept.length ? MORE_POLICY : ALL_POLICY, ...general.lines);
 
   return {
     text: lines.join("\n"),
     knowledge: answering.kept.map(({ entry, score }) => ({ title: entry.title, kind: entry.kind, score })),
+    recommendations: offers.kept,
   };
 }

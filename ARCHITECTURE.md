@@ -250,6 +250,41 @@ figure (invariant 4 by omission). `GET /v1/usage/models` returns today against
 the ceilings, broken down by purpose, and the dashboard's **Model spend** page
 renders it.
 
+## Recommending, and refusing to discount
+
+`services/recommend.ts` generates the candidates; the model only words them.
+`buildGrounding()` calls it, so there is still one retrieval path behind
+`sell()`, and the block carries a `WHAT TO PUT IN FRONT OF THEM` section with
+each candidate's own price and count:
+
+- **an alternative**, when the variant they asked for is sold out: the in-stock
+  variants of the same product — nearest to what they asked for first, then
+  deepest stock — and then the in-stock products in its category. When there is
+  nothing, the block says there is nothing and tells the model to say so
+  plainly, because a model left to fill that silence fills it with a product
+  that does not exist;
+- **a cross-sell**, from a plain co-occurrence count over this workspace's own
+  `Order` rows: who bought the matched product, then what else those customers
+  bought. Tenant-scoped at both hops (invariant 5) and bounded at both, so the
+  cost of a recommendation does not grow with every sale the business makes.
+  The count itself never reaches the block — the shopper gets the belt, not how
+  many other people bought one;
+- **an upsell**: the cheapest product in the same category that costs more than
+  the matched one and is in stock. A step, not a leap.
+
+Nothing with zero available stock is ever a candidate, and one product is
+offered once even when it qualifies twice.
+
+Objection handling is the other half, and it is a matter of words: the model
+may reframe, restate a policy from the block, or put a cheaper in-stock option
+in front of them. It may not invent money. `voiceViolations()` catches a
+first-person offer of a percentage off, a waived fee or a thrown-in extra — and
+catches the offer, not the mention, so restating "discounts beyond 10% need
+owner approval" is still allowed. A reply that offers one is thrown away for
+the composed reply, with a `degraded` line saying which. An *authorised*
+discount is a separate path with its own approval; when it exists, this gate
+consults what it approved rather than refusing outright.
+
 ## The public API
 
 `/v1` is one surface with two audiences. The dashboard reads it same-origin with

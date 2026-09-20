@@ -375,6 +375,60 @@ describe("a sale that is already made", () => {
   });
 });
 
+describe("objections, alternatives and what may answer them", () => {
+  beforeEach(() => { env.OPENROUTER_API_KEY = "test-key"; });
+  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); });
+
+  /** Answers with whatever the model is told to say, and keeps the prompt. */
+  function modelSays(reply: string) {
+    const seen = { system: "" };
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      seen.system = JSON.parse(init.body).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply }) } }] }), { status: 200 });
+    });
+    return seen;
+  }
+
+  it("refuses a discount the model invented, and sends the plain reply instead", async () => {
+    await setup();
+    modelSays("I can do 15% off if you take two today.");
+
+    const result = await buy("that is more than I wanted to spend on 2 blue XL polos");
+
+    expect(result.voicedBy).toBe("template");
+    expect(result.degraded).toContain("unauthorised discount");
+    expect(result.reply).not.toContain("15%");
+    expect(result.reply).not.toMatch(/discount/i);
+  });
+
+  it("hands the model in-stock alternatives when what they asked for is gone", async () => {
+    await setup();
+    await prisma.variant.updateMany({
+      where: { optionA: "XL", optionB: "Cobalt", product: { workspaceId, name: "Polo Classic" } },
+      data: { stock: 0, reserved: 0 },
+    });
+    const seen = modelSays("That size is gone, but M is here.");
+
+    const result = await buy("I need 2 blue XL polos");
+
+    expect(seen.system).toContain("WHAT TO PUT IN FRONT OF THEM");
+    expect(seen.system).toMatch(/which is sold out: Polo Classic in .+ available/);
+    expect(result.recommended.some((r) => r.kind === "alternative" && r.available > 0)).toBe(true);
+    // Nothing was sold, so nothing was reserved.
+    expect(result.order).toBeNull();
+  });
+
+  it("tells the model it may not invent a discount", async () => {
+    await setup();
+    const seen = modelSays("Those are reserved.");
+
+    await buy("I need 2 blue XL polos");
+
+    expect(seen.system).toContain("You may NEVER offer a discount");
+    expect(seen.system).toContain("HANDLING AN OBJECTION IS A MATTER OF WORDS");
+  });
+});
+
 describe("the grounding block", () => {
   /** A second product in an existing category, so neighbours have something to be. */
   async function addPolo(name: string) {
