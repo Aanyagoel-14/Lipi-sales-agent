@@ -1,5 +1,6 @@
 import { env } from "../env";
 import { chatForReply } from "../lib/openrouter";
+import { checkModelBudget } from "../lib/metering";
 import { buildBriefing, type Briefing } from "./briefing";
 
 /**
@@ -48,8 +49,9 @@ How to answer:
 - You are read-only here: you can advise on reordering, pricing or chasing an order, but you cannot perform it. Say so and point at the page that can.`;
 }
 
-const askOpenRouter = (messages: ChatTurn[], briefing: string) =>
+const askOpenRouter = (workspaceId: string, messages: ChatTurn[], briefing: string) =>
   chatForReply({
+    meter: { workspaceId, purpose: "twin_chat" },
     messages: [{ role: "system", content: systemPrompt(briefing) }, ...messages.slice(-HISTORY_TURNS)],
     temperature: 0.2,
     maxTokens: 1400,
@@ -98,13 +100,26 @@ export async function chatWithTwin(workspaceId: string, messages: ChatTurn[]): P
   const briefing = await buildBriefing(workspaceId);
   const latest = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
 
-  if (!env.OPENROUTER_API_KEY) {
-    return { reply: answerWithRules(latest, briefing), source: "rules", model: null, facts: briefing.facts };
-  }
+  /** Every answer that does not reach the model. `degraded` is absent when none was tried. */
+  const fromSnapshot = (degraded?: string): ChatResult => ({
+    reply: answerWithRules(latest, briefing),
+    source: "rules",
+    model: null,
+    facts: briefing.facts,
+    ...(degraded ? { degraded } : {}),
+  });
+
+  if (!env.OPENROUTER_API_KEY) return fromSnapshot();
+
+  // No customer: this is the operator, so only the workspace ceiling applies.
+  // Over it, the snapshot answers — which is the same thing an absent key
+  // does, and `degraded` says which ceiling it was.
+  const verdict = await checkModelBudget({ workspaceId, purpose: "twin_chat" });
+  if (!verdict.allowed) return fromSnapshot(verdict.reason);
 
   try {
     return {
-      reply: await askOpenRouter(messages, briefing.text),
+      reply: await askOpenRouter(workspaceId, messages, briefing.text),
       source: "openrouter",
       model: env.OPENROUTER_CHAT_MODEL,
       facts: briefing.facts,
@@ -112,12 +127,6 @@ export async function chatWithTwin(workspaceId: string, messages: ChatTurn[]): P
   } catch (error) {
     const reason = (error as Error).message;
     console.warn(`[twin-chat] OpenRouter failed, answering from the snapshot: ${reason}`);
-    return {
-      reply: answerWithRules(latest, briefing),
-      source: "rules",
-      model: null,
-      facts: briefing.facts,
-      degraded: reason,
-    };
+    return fromSnapshot(reason);
   }
 }

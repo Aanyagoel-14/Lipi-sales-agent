@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { env } from "../env";
 import { chatCompletion } from "../lib/openrouter";
+import { checkModelBudget, type ModelMeter, type ModelSpender } from "../lib/metering";
 import { catalogueFor, type Vertical } from "./catalogues";
 
 /**
@@ -236,8 +237,14 @@ const jsonSchema = {
   },
 };
 
-async function extractWithOpenRouter(text: string, vocab: Vocabulary, now: Date): Promise<ExtractionResult> {
+async function extractWithOpenRouter(
+  text: string,
+  vocab: Vocabulary,
+  now: Date,
+  meter: ModelMeter,
+): Promise<ExtractionResult> {
   const content = await chatCompletion({
+    meter,
     model: env.OPENROUTER_MODEL,
     messages: [
       { role: "system", content: systemPrompt(vocab, now) },
@@ -259,11 +266,29 @@ async function extractWithOpenRouter(text: string, vocab: Vocabulary, now: Date)
   };
 }
 
-export async function extract(text: string, vocab: Vocabulary, now = new Date()): Promise<ExtractionResult> {
+/**
+ * `spender` names the workspace whose ceiling this extraction spends and the
+ * customer thread it is spent on. Over the ceiling the rules run instead —
+ * the same degradation an absent key already gets, and visible on the
+ * `intent.extracted` event as `via=rules`.
+ */
+export async function extract(
+  text: string,
+  vocab: Vocabulary,
+  spender: ModelSpender,
+  now = new Date(),
+): Promise<ExtractionResult> {
   if (!env.OPENROUTER_API_KEY) return extractWithRules(text, vocab, now);
 
+  const meter: ModelMeter = { ...spender, purpose: "extract" };
+  const verdict = await checkModelBudget(meter, now);
+  if (!verdict.allowed) {
+    console.warn(`[extract] ${verdict.reason}, using rules`);
+    return extractWithRules(text, vocab, now);
+  }
+
   try {
-    return await extractWithOpenRouter(text, vocab, now);
+    return await extractWithOpenRouter(text, vocab, now, meter);
   } catch (error) {
     console.warn(`[extract] OpenRouter failed, using rules: ${(error as Error).message}`);
     return extractWithRules(text, vocab, now);

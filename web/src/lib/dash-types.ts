@@ -106,6 +106,22 @@ export type Overview = {
   recentRuns: AgentRun[];
 };
 
+/** What spent a model call, mirroring the server enum of the same name. */
+export type ModelPurpose = "extract" | "sell" | "twin_chat";
+
+/**
+ * What the workspace has spent on language models today, against its ceilings.
+ * `exhausted` means the next model-backed turn falls back to its plain path —
+ * the twin keeps answering, from the template rather than from the model.
+ */
+export type ModelSpend = {
+  day: string;
+  ceilings: { dailyCalls: number; dailyTokens: number; conversationCalls: number };
+  today: { calls: number; failed: number; tokens: number };
+  byPurpose: { purpose: ModelPurpose; calls: number; failed: number; tokens: number }[];
+  exhausted: boolean;
+};
+
 /* ------------------------------- formatters ------------------------------- */
 /* Pinned to UTC so a server render and a client render agree; a locale
  * timezone here is a hydration mismatch waiting for a user in another one. */
