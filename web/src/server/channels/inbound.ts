@@ -2,7 +2,7 @@ import { after } from "next/server";
 import type { Channel } from "@/generated/prisma/client";
 import { prisma } from "@/server/lib/prisma";
 import { checkRateLimit } from "@/server/lib/rate-limit";
-import { ingest } from "@/server/services/ingest";
+import { sell } from "@/server/services/selling";
 import { sendReply } from "./outbound";
 import type { ParsedMessage } from "./registry";
 
@@ -50,11 +50,12 @@ export const rateLimitKey = (connectionId: string) => `webhook:${connectionId}`;
  *
  * The only rows this writes itself are the idempotency claims and the
  * connection's `lastEventAt`. Everything else a message causes happens inside
- * `ingest()`'s transaction, and the reply that follows is `sendReply`'s to
- * record. `status` is deliberately untouched: the route this replaced set it
- * to `connected` on every accepted delivery, which quietly healed a channel
- * whose credential had expired for sending — inbound arriving says nothing
- * about whether outbound works.
+ * `ingest()`'s transaction — which `sell()` runs, so the facts are decided
+ * here exactly as they are for the website and only the words differ — and
+ * the reply that follows is `sendReply`'s to record. `status` is deliberately
+ * untouched: the route this replaced set it to `connected` on every accepted
+ * delivery, which quietly healed a channel whose credential had expired for
+ * sending — inbound arriving says nothing about whether outbound works.
  */
 export async function receive(
   connection: ReceivingConnection,
@@ -99,7 +100,14 @@ export async function receive(
 
     for (const message of fresh) {
       try {
-        const result = await ingest({
+        // The salesperson, not the form letter. `sell()` is the same call the
+        // website makes: it runs the ingest transaction, then voices the
+        // outcome and writes those words onto the reply row ingest composed
+        // into. Which is why this stays one message per inbound message —
+        // there is one row, and the voiced reply replaces the draft in it
+        // rather than joining it. Voicing is inside `sell()` and behind the
+        // idempotency claim above, so a retried webhook costs no model call.
+        const result = await sell({
           workspaceId: connection.workspaceId,
           channel: connection.channel,
           handle: message.handle,
@@ -108,25 +116,20 @@ export async function receive(
         });
 
         // Only send when the workspace's policy actually cleared it. The
-        // reply ingest just persisted is the message being delivered, so
+        // reply `sell()` persisted is the message being delivered, so
         // `sendReply` can record the outcome on it; a failure is that
         // message's state, not the connection's, and is not caught here.
-        if (result.replySent) {
-          const reply = await prisma.message.findFirst({
-            where: { conversationId: result.conversationId, from: "agent" },
-            orderBy: { sentAt: "desc" },
+        if (!result.held) {
+          await sendReply({
+            workspaceId: connection.workspaceId,
+            conversationId: result.conversationId,
+            messageId: result.replyMessageId,
           });
-          if (reply) {
-            await sendReply({
-              workspaceId: connection.workspaceId,
-              conversationId: result.conversationId,
-              messageId: reply.id,
-            });
-          }
         }
       } catch (error) {
-        // Ingest itself failing is a bug in the loop, not a broken channel,
-        // so it is logged and the connection is left alone.
+        // The loop itself failing is a bug in the loop, not a broken channel,
+        // so it is logged and the connection is left alone. A model that is
+        // down is not one of these: `sell()` answers from the template.
         console.error(`[inbound:${connection.channel}] ${(error as Error).message}`);
       }
     }

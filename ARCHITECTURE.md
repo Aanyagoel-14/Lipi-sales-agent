@@ -150,6 +150,25 @@ extracts intent, updates the customer Twin, matches a variant, applies allowed
 inventory/order effects, creates agent runs and approvals, composes a grounded
 reply, and appends events for each effect.
 
+Those facts reach the customer through `sell()`, on every channel.
+`channels/inbound.ts` is the one door for WhatsApp, Instagram, Messenger and
+Telegram, and the website widget calls the same function directly — so one
+salesperson answers all of them and no channel gets a form letter. `sell()`
+runs the ingest transaction, then writes the voiced reply onto the very row
+ingest composed into, which is the row the connector delivers: one inbound
+message, one stored reply, one send. The provider's own message id is claimed
+before any of that starts, so a retried webhook costs neither a second model
+call nor a second reply, and with no model reachable the row keeps ingest's
+composed draft and is delivered anyway. The earlier turns replayed to the model
+are read by customer handle, so the memory is the same code on the website and
+on a phone.
+
+What does differ per channel is length and formatting, and it is asked for in
+the prompt rather than trimmed afterwards: cutting a model's output to fit a
+bubble cuts verified prices in half, which invents a number nobody computed.
+The `Channel` selects one line of the system prompt — markdown and three
+sentences for the website panel, plain text and two for a phone.
+
 The website widget is the one inbound path with a step before any message: it
 records the visitor at **page load**, not when the chat panel opens, because
 that is the only moment the `utm_*` parameters and the referrer are reliably

@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase } from "./helpers";
 import { fakeComposio } from "./fakes/composio";
 import { channelSpecs } from "@/server/channels/registry";
@@ -431,6 +431,133 @@ describe("the loop an inbound message sets off", () => {
     expect(row.status).toBe("needs_reconnect");
     expect(row.lastEventAt).not.toBeNull();
     expect(row.lastError).toBeNull();
+  });
+});
+
+// ------------------------------------- the salesperson, on every channel --
+
+/**
+ * P8: one AI sales layer across channels. The website already spoke through
+ * `sell()`; until now a WhatsApp customer got the composed draft, so the
+ * assertions here are about the *words* — which ones reach the provider, how
+ * many times, and what the model was told about where they are going.
+ */
+describe("the voice an inbound message is given", () => {
+  type Asked = { system: string; turns: { role: string; content: string }[] };
+  let asked: Asked[] = [];
+
+  /**
+   * Every voicing call the run makes, answering each with `reply`.
+   *
+   * A key on `env` turns on the model-backed *extractor* as well, which posts
+   * to the same endpoint, so only the sales prompt is recorded — otherwise
+   * "was the model called once?" counts two calls per message.
+   */
+  const answers = (reply: string) => {
+    asked = [];
+    vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
+      const payload = JSON.parse(init.body);
+      const system: string = payload.messages[0].content;
+      if (system.startsWith("You are a salesperson")) {
+        asked.push({ system, turns: payload.messages.slice(1) });
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply }) } }] }),
+        { status: 200 },
+      );
+    });
+    return asked;
+  };
+
+  const whatsappSends = () =>
+    fakeComposio.calls.execute.filter((call) => call.slug === "WHATSAPP_SEND_MESSAGE");
+
+  beforeEach(() => { env.OPENROUTER_API_KEY = "test-key"; });
+  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); });
+
+  it("sends the model's words to a WhatsApp customer, once", async () => {
+    answers("Olive polos are in, in every size — which would you like?");
+
+    await deliver(whatsappBody(A.phone, "do you have olive polos")).expect(200);
+    await settle();
+
+    const [conversation] = await conversationsIn(alpha);
+    const replies = conversation!.messages.filter((m) => m.from === "agent");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.text).toBe("Olive polos are in, in every size — which would you like?");
+    expect(replies[0]!.deliveryStatus).toBe("sent");
+
+    const sent = whatsappSends();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.arguments).toMatchObject({ text: replies[0]!.text });
+  });
+
+  it("tells the model which channel it is writing for", async () => {
+    answers("Olive is in.");
+
+    await deliver(whatsappBody(A.phone, "do you have olive polos")).expect(200);
+    await settle();
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.system).toContain("WhatsApp");
+    // The webchat instruction is the one this replaces, not one it adds to.
+    expect(asked[0]!.system).not.toContain("renders as markdown");
+  });
+
+  it("remembers what the same customer said on an earlier message", async () => {
+    answers("Olive is in.");
+
+    await deliver(whatsappBody(A.phone, "do you have olive polos", "wamid.first")).expect(200);
+    await settle();
+    await deliver(whatsappBody(A.phone, "and in L?", "wamid.second")).expect(200);
+    await settle();
+
+    expect(asked).toHaveLength(2);
+    expect(asked[1]!.turns).toEqual([
+      { role: "user", content: "do you have olive polos" },
+      { role: "assistant", content: "Olive is in." },
+      { role: "user", content: "and in L?" },
+    ]);
+  });
+
+  it("neither voices nor replies twice when the provider retries a delivery", async () => {
+    answers("Olive is in.");
+
+    const body = whatsappBody(A.phone, "do you have olive polos");
+    for (let i = 0; i < 2; i++) await deliver(body).expect(200);
+    await settle();
+
+    expect(asked).toHaveLength(1);
+    expect(whatsappSends()).toHaveLength(1);
+    const [conversation] = await conversationsIn(alpha);
+    expect(conversation!.messages.filter((m) => m.from === "agent")).toHaveLength(1);
+  });
+
+  it("still replies from the template when the model is unreachable", async () => {
+    vi.stubGlobal("fetch", async () => new Response("no credits", { status: 402 }));
+
+    await deliver(whatsappBody(A.phone, "I want 2 olive L polos")).expect(200);
+    await settle();
+
+    const [conversation] = await conversationsIn(alpha);
+    const reply = conversation!.messages.find((m) => m.from === "agent")!;
+    expect(reply.text).toContain("2,392");
+    expect(reply.deliveryStatus).toBe("sent");
+    expect(whatsappSends()).toHaveLength(1);
+  });
+
+  it("holds the reply rather than sending it when the policy says so", async () => {
+    await prisma.workspace.update({ where: { id: alpha }, data: { approvalPolicy: "everything" } });
+    answers("Olive is in.");
+
+    await deliver(whatsappBody(A.phone, "do you have olive polos")).expect(200);
+    await settle();
+
+    const [conversation] = await conversationsIn(alpha);
+    const replies = conversation!.messages.filter((m) => m.from === "agent");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.deliveryStatus).toBe("held");
+    expect(whatsappSends()).toHaveLength(0);
   });
 });
 

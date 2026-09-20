@@ -32,6 +32,11 @@ export type SellResult = {
   /** Which path wrote the words. The facts are deterministic either way. */
   voicedBy: "openrouter" | "template";
   conversationId: string;
+  /**
+   * The stored message carrying `reply`, for whoever delivers it. Every
+   * channel but webchat sends out of band — see `channels/inbound.ts`.
+   */
+  replyMessageId: string;
   customer: IngestResult["customer"];
   matched: IngestResult["matched"];
   /**
@@ -48,6 +53,82 @@ export type SellResult = {
 
 /** How much of the conversation the salesperson remembers. */
 export const HISTORY_TURNS = 10;
+
+/**
+ * What the channel does to a reply, in the only terms a model can act on.
+ *
+ * Asked for up front rather than enforced afterwards. Every provider accepts
+ * thousands of characters, so a model that wrote four paragraphs for WhatsApp
+ * produces a message that is deliverable and unreadable, and cutting it to
+ * length afterwards would cut a verified price in half — inventing a number
+ * nobody computed, which is precisely what the fact/voice split exists to
+ * prevent. The formatting note beside the length is the same kind of fact
+ * about the surface: nothing in `channels/registry.ts` asks a provider to
+ * parse markdown, so `**bold**` reaches a WhatsApp customer as four
+ * asterisks, and only the widget renders a list as a list.
+ */
+const CHANNEL_STYLE: Record<Channel, string> = {
+  webchat:
+    "This is the chat panel on the website and it renders as markdown. Two or three sentences, plus the "
+    + "list when there is one, and put each product's name in **bold**.",
+  whatsapp:
+    "This is a WhatsApp message, read on a phone. Two short sentences before any list, and write plain "
+    + "text — asterisks and hashes arrive as punctuation, not formatting.",
+  telegram:
+    "This is a Telegram message, read on a phone. Two short sentences before any list, and write plain "
+    + "text — asterisks and hashes arrive as punctuation, not formatting.",
+  instagram:
+    "This is an Instagram DM. One or two short sentences, at most three options, and plain text only — "
+    + "asterisks and hashes arrive as punctuation, not formatting.",
+  facebook:
+    "This is a Messenger DM. One or two short sentences, at most three options, and plain text only — "
+    + "asterisks and hashes arrive as punctuation, not formatting.",
+  email:
+    "This is a reply to an email, so a short paragraph is fine where a chat bubble would not be — but "
+    + "still no more than a paragraph and a list. Write plain text; it is not rendered as markdown.",
+};
+
+/**
+ * What this customer and the twin have already said to each other, oldest
+ * first — the salesperson's memory across turns, and the same memory on every
+ * channel.
+ *
+ * `ingest()` opens a conversation per message, so a customer's history is the
+ * tail of their conversations rather than the tail of one, and it has to be
+ * read by conversation: the agent's reply is stamped a second after the
+ * message it answers, so ordering every row by `sentAt` alone would slot the
+ * next question in front of the answer to the last one.
+ *
+ * Keyed by handle, which is what `ingest()` resolves a customer twin by, and
+ * scoped by workspace, so the same phone number in two tenants is two
+ * customers and neither is ever replayed into the other's prompt
+ * (invariant 5).
+ */
+async function historyFor(workspaceId: string, handle: string): Promise<SellTurn[]> {
+  const customer = await prisma.customer.findFirst({
+    where: { workspaceId, handle },
+    select: { id: true },
+  });
+  if (!customer) return [];
+
+  // The newest `HISTORY_TURNS` conversations are more than enough to fill the
+  // window, since every one of them holds at least the customer's own message.
+  const newestFirst = await prisma.conversation.findMany({
+    where: { workspaceId, customerId: customer.id },
+    orderBy: { lastAt: "desc" },
+    take: HISTORY_TURNS,
+    select: { messages: { orderBy: { sentAt: "asc" }, select: { from: true, text: true } } },
+  });
+
+  return newestFirst
+    .reverse()
+    .flatMap((conversation) => conversation.messages)
+    .map((message): SellTurn => ({
+      role: message.from === "agent" ? "assistant" : "user",
+      content: message.text,
+    }))
+    .slice(-HISTORY_TURNS);
+}
 
 function voiceRules(voice: Voice) {
   const rules = [
@@ -95,7 +176,7 @@ function outcome(result: IngestResult, invoice: SellResult["invoice"]) {
   return lines.join("\n");
 }
 
-function systemPrompt(grounding: string, voice: Voice, facts: string) {
+function systemPrompt(grounding: string, voice: Voice, facts: string, channel: Channel) {
   return `You are a salesperson at this business, chatting with a customer who is deciding what to buy. Your job is to help them choose and then close the sale — friendly, confident, never pushy.
 
 ${grounding}
@@ -109,11 +190,11 @@ How to reply:
 - Sell. Recommend something specific, say why, and end with a question that moves them forward — which size, how many, shall I reserve it.
 - BUT if an order was already created above, the sale is closed: do not ask "shall I reserve/proceed/go ahead". Confirm it, tell them the invoice is ready, and ask only whether they need anything else.
 - Put the closing question on its own line, after any list. Never let it run onto the end of a list item.
-- When you are showing more than one option, lay them out as a markdown list with a real newline before each "- ", one product per line, the name in **bold** and the price. Never bury choices in a paragraph.
+- When you are showing more than one option, lay them out as a list with a real newline before each "- ", one product per line with its price. Never bury choices in a paragraph.
 - Only offer things with stock above. If something is sold out, say so plainly and put the nearest available option in front of them.
 - Never mention other customers, other orders, reservations, stock you are holding for someone else, margins, suppliers, or anything about how the business runs. You know only the catalogue above.
 - Never promise a delivery date, discount, refund or policy that is not written above.
-- Short. A sentence or two, plus the list when there is one. It renders as markdown.
+- Short, and shaped for where it is going. ${CHANNEL_STYLE[channel]}
 
 Voice: ${voiceRules(voice)}
 
@@ -171,8 +252,19 @@ export async function sell(input: {
   handle: string;
   name?: string;
   text: string;
+  /**
+   * The turns to replay, when the caller already has them — the storefront
+   * panel holds its own transcript. Omitted means "read them", which is what
+   * every channel that arrives as a webhook does.
+   */
   history?: SellTurn[];
 }): Promise<SellResult> {
+  // Read before the message is ingested, or this turn would be replayed to
+  // the model as something the customer had already said. Skipped entirely
+  // when there is no model to replay it to.
+  const history = input.history
+    ?? (env.OPENROUTER_API_KEY ? await historyFor(input.workspaceId, input.handle) : []);
+
   // Real writes. A customer buying something has to reserve real stock and
   // create a real order, or the invoice at the end of it is a fiction.
   const result = await ingest({
@@ -213,6 +305,7 @@ export async function sell(input: {
 
   const base: Omit<SellResult, "reply" | "voicedBy"> = {
     conversationId: result.conversationId,
+    replyMessageId: result.replyMessageId,
     customer: result.customer,
     matched: result.matched,
     order,
@@ -245,8 +338,8 @@ export async function sell(input: {
 
   try {
     const spoken = await voiceReply(
-      systemPrompt(grounding.text, voice, outcome(result, invoice)),
-      [...(input.history ?? []), { role: "user", content: input.text }],
+      systemPrompt(grounding.text, voice, outcome(result, invoice), input.channel),
+      [...history, { role: "user", content: input.text }],
     );
 
     // The voice rules are the workspace's, so a model that ignores them does
@@ -274,13 +367,14 @@ export async function sell(input: {
     }
 
     // The spoken reply is what the customer actually got, so it is what the
-    // conversation must show. The plain one was never sent.
+    // conversation must show — written onto the row ingest composed into,
+    // which is also the row a channel is about to deliver. The plain one was
+    // never sent.
     if (result.replySent) {
-      const held = await prisma.message.findFirst({
-        where: { conversationId: result.conversationId, from: "agent" },
-        orderBy: { sentAt: "desc" },
+      await prisma.message.update({
+        where: { id: result.replyMessageId },
+        data: { text: finalReply },
       });
-      if (held) await prisma.message.update({ where: { id: held.id }, data: { text: finalReply } });
     }
 
     return { ...base, reply: finalReply, voicedBy: "openrouter" };

@@ -41,6 +41,13 @@ export type IngestResult = {
   order: { id: string; valueInr: number } | null;
   reply: string;
   replySent: boolean;
+  /**
+   * The row the reply above was written to. Whoever delivers it — the webhook
+   * loop, the approval queue — sends *that* message rather than re-reading
+   * "the newest agent message", so there is no window in which two of them
+   * disagree about which one was composed for this turn.
+   */
+  replyMessageId: string;
   voiceViolations: string[];
   knowledgeUsed: { title: string; kind: string } | null;
   agentRuns: { agent: string; action: string; status: "needs_approval" | "done" }[];
@@ -412,7 +419,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     // no message at all, so there was nothing for an approval to release.
     // Still one write on either branch, so the transaction is unchanged in
     // shape — only the held path stopped losing the reply it drafted.
-    await tx.message.create({
+    const replyMessage = await tx.message.create({
       data: {
         from: "agent", text: reply, sentAt: new Date(now.getTime() + 1000),
         conversationId: conversation.id,
@@ -441,6 +448,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       order,
       reply,
       replySent: !held,
+      replyMessageId: replyMessage.id,
       voiceViolations: violations,
       knowledgeUsed: knowledge ? { title: knowledge.title, kind: knowledge.kind } : null,
       agentRuns: runs.map((r) => ({

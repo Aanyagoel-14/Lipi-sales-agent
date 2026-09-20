@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma";
 import { EMPTY_TOUCH, firstTouchData, hasAttribution, type AttributionTouch } from "./attribution";
-import { HISTORY_TURNS, sell, type SellTurn } from "./selling";
+import { sell } from "./selling";
 
 /**
  * The webchat channel (Req 1).
@@ -85,37 +85,6 @@ export type MessageInput = {
   name?: string;
 };
 
-/**
- * What this visitor and the twin have already said to each other, oldest
- * first — the salesperson's memory across turns.
- *
- * `ingest()` opens a conversation per message, so a visitor's history is the
- * tail of their conversations rather than the tail of one, and it has to be
- * read by conversation: the agent's reply is stamped a second after the
- * message it answers, so ordering every row by `sentAt` alone would slot the
- * next question in front of the answer to the last one.
- *
- * The newest `HISTORY_TURNS` conversations are more than enough to fill the
- * window, since every one of them holds at least the visitor's own message.
- */
-async function historyFor(workspaceId: string, customerId: string): Promise<SellTurn[]> {
-  const newestFirst = await prisma.conversation.findMany({
-    where: { workspaceId, customerId },
-    orderBy: { lastAt: "desc" },
-    take: HISTORY_TURNS,
-    select: { messages: { orderBy: { sentAt: "asc" }, select: { from: true, text: true } } },
-  });
-
-  return newestFirst
-    .reverse()
-    .flatMap((conversation) => conversation.messages)
-    .map((message): SellTurn => ({
-      role: message.from === "agent" ? "assistant" : "user",
-      content: message.text,
-    }))
-    .slice(-HISTORY_TURNS);
-}
-
 export async function sendVisitorMessage(input: MessageInput) {
   const session = await prisma.visitorSession.findUnique({
     where: { workspaceId_visitorId: { workspaceId: input.workspaceId, visitorId: input.visitorId } },
@@ -125,19 +94,17 @@ export async function sendVisitorMessage(input: MessageInput) {
   // session here rather than reject the message the visitor actually sent.
   const touch: AttributionTouch = session ?? EMPTY_TOUCH;
 
-  // Read before the message is ingested, or this turn would be replayed to
-  // the model as something the visitor had already said.
-  const history = session?.customerId ? await historyFor(input.workspaceId, session.customerId) : [];
-
   // `sell()` runs `ingest()` itself: the facts are decided exactly once, and
-  // the model only chooses the words that carry them (invariant 2).
+  // the model only chooses the words that carry them (invariant 2). It reads
+  // this visitor's earlier turns too — by handle, which is the same customer
+  // twin `session.customerId` points at — so the website's memory and every
+  // webhook channel's are one piece of code.
   const result = await sell({
     workspaceId: input.workspaceId,
     channel: "webchat",
     handle: `web:${input.visitorId}`,
     text: input.text,
     name: input.name,
-    history,
   });
 
   // Copy first touch onto the customer twin exactly once — the moment a

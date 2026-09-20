@@ -195,6 +195,32 @@ describe("voicing the reply", () => {
     expect(result.reply).toContain("Reserved");
   });
 
+  /**
+   * Same salesperson, different surface. The length and formatting rule is
+   * chosen from the channel rather than applied to the model's output after
+   * the fact — trimming a reply to fit a bubble would cut a verified price in
+   * half, which is a number nobody computed.
+   */
+  it("asks for the reply the channel can actually render", async () => {
+    await setup();
+    // A key turns on the model-backed extractor too, and it posts to the
+    // same endpoint; only the sales prompt is of interest here.
+    const prompts: string[] = [];
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      const system: string = JSON.parse(init.body).messages[0].content;
+      if (system.startsWith("You are a salesperson")) prompts.push(system);
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply: "Olive is in." }) } }] }), { status: 200 });
+    });
+
+    await sell({ workspaceId, channel: "webchat", handle: "web:v1", text: "do you have olive polos" });
+    await sell({ workspaceId, channel: "whatsapp", handle: "+91 90 000 5555", text: "do you have olive polos" });
+
+    const [web, whatsapp] = prompts;
+    expect(web).toContain("renders as markdown");
+    expect(whatsapp).toContain("WhatsApp message");
+    expect(whatsapp).not.toContain("renders as markdown");
+  });
+
   it("refuses a reply that uses a banned phrase", async () => {
     await setup();
     await prisma.twinVoice.update({ where: { workspaceId }, data: { neverSay: ["no problem"] } });

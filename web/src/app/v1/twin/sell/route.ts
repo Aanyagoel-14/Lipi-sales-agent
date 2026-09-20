@@ -8,10 +8,16 @@ const sellSchema = z.object({
   handle: z.string().trim().min(1).max(120),
   name: z.string().trim().max(120).optional(),
   channel: z.enum(["whatsapp", "instagram", "facebook", "telegram", "email", "webchat"]).default("webchat"),
+  /**
+   * The caller's own transcript, when it keeps one — the storefront panel
+   * does. Omitted, `sell()` reads this handle's earlier turns itself, which
+   * is what every other channel relies on; an empty array is a caller saying
+   * there are none.
+   */
   history: z
     .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string().trim().min(1).max(2000) }))
     .max(20)
-    .default([]),
+    .optional(),
 });
 
 /**
