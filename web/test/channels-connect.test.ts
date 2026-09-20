@@ -147,9 +147,9 @@ describe("an API-key channel", () => {
     const row = await connection("telegram");
     expect(row).toMatchObject({ status: "connected", externalId: "42", displayName: "@lipibot" });
     expect(row?.connectedAt).toBeInstanceOf(Date);
-    // The token is the one thing that must not survive this request.
+    // The token is the one thing that must not survive this request. There is
+    // no longer a column it could survive in, so the whole row is the check.
     expect(JSON.stringify(row)).not.toContain(token);
-    expect(row?.secretCipher).toBeNull();
     expect(res.text).not.toContain(token);
   });
 

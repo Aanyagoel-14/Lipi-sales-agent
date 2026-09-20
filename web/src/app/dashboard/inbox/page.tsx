@@ -1,6 +1,7 @@
 import { ReplyBox } from "@/components/dash/actions";
 import { EmptyState, PageHead, Panel, Tag } from "@/components/dash/ui";
 import { channelLabel, getConversation, getConversations, inr, timeOf, type QuoteCard } from "@/lib/dash";
+import type { DeliveryState } from "@/lib/dash-types";
 import { ThreadList } from "./thread-list";
 
 export const metadata = { title: "Inbox · Lipi AI" };
@@ -38,6 +39,19 @@ function QuoteAttachment({ quote }: { quote: QuoteCard }) {
     </div>
   );
 }
+
+/**
+ * What became of an agent message. A drafted reply used to look exactly like
+ * a delivered one here, which is the one thing a shared inbox must not do:
+ * an operator reading the thread has no other way to know the customer never
+ * saw it. `sent` is left unlabelled — that is the expected case, and marking
+ * it would put a badge on every line.
+ */
+const DELIVERY: Record<Exclude<DeliveryState, "sent">, string> = {
+  pending: "sending…",
+  failed: "not delivered",
+  held: "awaiting approval",
+};
 
 export default async function InboxPage() {
   const data = await getConversations();
@@ -96,6 +110,17 @@ export default async function InboxPage() {
 
                     <p className="tabular text-[0.6875rem] text-ink-subtle">
                       {agent ? "Sales Agent" : active.customer?.name} · {timeOf(m.atIso)}
+                      {m.delivery && m.delivery !== "sent" ? (
+                        <>
+                          {" · "}
+                          <span
+                            className={m.delivery === "failed" ? "text-magenta" : undefined}
+                            title={m.deliveryError ?? undefined}
+                          >
+                            {DELIVERY[m.delivery]}
+                          </span>
+                        </>
+                      ) : null}
                     </p>
                   </div>
                 );

@@ -1,5 +1,6 @@
 import { after } from "next/server";
 import { adapterFor } from "@/server/channels/index";
+import { sendReply } from "@/server/channels/outbound";
 import { decrypt, secretsMatch, verifyMetaSignature } from "@/server/lib/crypto";
 import { prisma } from "@/server/lib/prisma";
 import { checkRateLimit, clientIp } from "@/server/lib/rate-limit";
@@ -146,24 +147,25 @@ export async function POST(req: Request, ctx: Params) {
             text: message.text, name: message.name,
           });
 
-          // Only send when the workspace's policy actually cleared it.
-          if (result.replySent && connection.secretCipher) {
-            const secret = decrypt(connection.secretCipher);
-            if (secret) {
-              await adapter.send({
-                secret,
-                config: connection.config as Record<string, unknown>,
-                to: message.handle,
-                text: result.reply,
+          // Only send when the workspace's policy actually cleared it. The
+          // reply ingest just persisted is the message being delivered, so
+          // `sendReply` can record the outcome on it; a failure is that
+          // message's state, not the connection's, and is not caught here.
+          if (result.replySent) {
+            const reply = await prisma.message.findFirst({
+              where: { conversationId: result.conversationId, from: "agent" },
+              orderBy: { sentAt: "desc" },
+            });
+            if (reply) {
+              await sendReply({
+                workspaceId, conversationId: result.conversationId, messageId: reply.id,
               });
             }
           }
         } catch (error) {
+          // Ingest itself failing is a bug in the loop, not a broken channel,
+          // so it is logged and the connection is left alone.
           console.error(`[webhook:${channel}] ${(error as Error).message}`);
-          await prisma.channelConnection.update({
-            where: { id: connection.id },
-            data: { status: "error", lastError: (error as Error).message.slice(0, 300) },
-          }).catch(() => {});
         }
       }
     });

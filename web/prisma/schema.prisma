@@ -274,12 +274,38 @@ model Conversation {
   @@map("conversations")
 }
 
+/**
+ * What became of an agent message after it was written.
+ *
+ * The distinction that matters is `sent` versus everything else: a message is
+ * only ever `sent` once a provider has accepted it. Before the Composio track
+ * the inbox showed every drafted reply as though it had gone out, which is the
+ * one thing a shared inbox must not do.
+ */
+enum DeliveryStatus {
+  /// Customer messages, and agent messages from before this was tracked.
+  not_applicable
+  /// Handed to the send path; no answer from the provider yet.
+  pending
+  sent
+  /// The provider refused it, or the channel could not carry it.
+  failed
+  /// Drafted under an approval policy and never released.
+  held
+}
+
 model Message {
   id     String   @id @default(cuid())
   from   String
   text   String
   sentAt DateTime
   quote  Json?
+  /// Whether this message actually reached the customer. Only agent messages
+  /// are ever delivered, so a customer message stays `not_applicable` --
+  /// as do agent messages written before delivery was tracked.
+  deliveryStatus DeliveryStatus @default(not_applicable)
+  /// The provider's own reason, when it refused. Shown to the operator.
+  deliveryError  String?
 
   conversationId String
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -584,9 +610,12 @@ enum ConnectionStatus {
 }
 
 /**
- * A channel the workspace has actually connected, with the credentials needed
- * to receive and send on it. Secrets are encrypted at rest; the webhook secret
- * is what proves an inbound request really came from the provider.
+ * A channel the workspace has actually connected.
+ *
+ * Since the Composio track the sending credential is not here: Composio holds
+ * it against `composioAccountId` and Lipi executes tools against that account.
+ * What remains is what inbound needs -- the provider's own identifier to route
+ * on, and the secrets that prove a webhook really came from the provider.
  */
 model ChannelConnection {
   id                  String           @id @default(cuid())
@@ -595,8 +624,6 @@ model ChannelConnection {
   /// Provider identity: phone number id, bot username, mailbox address.
   externalId          String?
   displayName         String?
-  /// AES-256-GCM ciphertext. Never returned to a client.
-  secretCipher        String?
   /// Non-secret settings, safe to show back to the operator.
   config              Json             @default("{}")
   /// The Composio connected account that holds this channel's credentials,

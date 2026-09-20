@@ -88,6 +88,12 @@ export type ChannelSpec = {
     | { kind: "none"; reason: string };
   /** Provider payload, already routed to one connection → canonical messages. */
   parse(body: unknown, connection: ConnectionView): ParsedMessage[];
+  /**
+   * Longest text the provider accepts in one message, so a long reply is
+   * split rather than truncated by the provider or rejected outright. Null
+   * for a channel with no practical limit (email).
+   */
+  textLimit: number | null;
   /** What to execute to reply. Throws when the connection lacks something the tool needs. */
   send(args: { to: string; text: string; config: Json; threadId?: string; subject?: string }): SendRequest;
   /**
@@ -210,10 +216,18 @@ const whatsapp: ChannelSpec = {
     return out;
   },
 
+  // Cloud API caps a text body at 4096 characters.
+  textLimit: 4096,
+
   send({ to, text, config }) {
     const phoneNumberId = str(config.phoneNumberId);
     if (!phoneNumberId) throw new Error("No phone number chosen for this WhatsApp connection");
-    return { slug: "WHATSAPP_SEND_MESSAGE", arguments: { text, to_number: to, phone_number_id: phoneNumberId } };
+    // The Cloud API wants a bare number: no `+`, no spaces. Inbound `wa_id`
+    // is already in that form, but a handle typed by an operator is not.
+    return {
+      slug: "WHATSAPP_SEND_MESSAGE",
+      arguments: { text, to_number: to.replace(/\D/g, ""), phone_number_id: phoneNumberId },
+    };
   },
 
   /**
@@ -292,6 +306,9 @@ const telegram: ChannelSpec = {
     }];
   },
 
+  // Bot API rejects sendMessage above 4096 characters.
+  textLimit: 4096,
+
   send({ to, text }) {
     return { slug: "TELEGRAM_SEND_MESSAGE", arguments: { chat_id: to, text } };
   },
@@ -357,6 +374,10 @@ const instagram: ChannelSpec = {
 
     return out;
   },
+
+  // Meta's messaging API caps Instagram text at 1000 characters, well below
+  // WhatsApp's, so a reply that fits on WhatsApp can still need splitting here.
+  textLimit: 1000,
 
   send({ to, text }) {
     return { slug: "INSTAGRAM_SEND_TEXT_MESSAGE", arguments: { text, recipient_id: to } };
@@ -427,6 +448,10 @@ const email: ChannelSpec = {
       threadId: str(data.thread_id) ?? str(data.threadId),
     }];
   },
+
+  // Gmail's limit is measured in megabytes; a reply never approaches it, and
+  // splitting an email into two emails would be the wrong shape anyway.
+  textLimit: null,
 
   send({ to, text, threadId, subject }) {
     if (threadId) {

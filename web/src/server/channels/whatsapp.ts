@@ -13,7 +13,6 @@ type WhatsAppPayload = {
 
 export const whatsappAdapter: ChannelAdapter = {
   channel: "whatsapp",
-  credentialLabel: "Permanent access token from your Meta app",
 
   parse(body) {
     const payload = body as WhatsAppPayload;
@@ -43,35 +42,5 @@ export const whatsappAdapter: ChannelAdapter = {
     }
 
     return out;
-  },
-
-  async send({ secret, config, to, text }) {
-    const phoneNumberId = config.phoneNumberId as string | undefined;
-    if (!phoneNumberId) throw new Error("No phone number id stored for this connection");
-
-    const res = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body: text } }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) throw new Error(`WhatsApp refused the message: ${(await res.text()).slice(0, 160)}`);
-  },
-
-  async test({ secret, config }) {
-    const phoneNumberId = config.phoneNumberId as string | undefined;
-    if (!phoneNumberId) throw new Error("Add the phone number id as well as the token");
-
-    const res = await fetch(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}?fields=display_phone_number,verified_name`,
-      { headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(10_000) },
-    );
-    if (!res.ok) throw new Error(`Meta rejected those credentials: ${(await res.text()).slice(0, 160)}`);
-
-    const body = (await res.json()) as { display_phone_number?: string; verified_name?: string; id?: string };
-    return {
-      displayName: body.verified_name ?? body.display_phone_number ?? "WhatsApp number",
-      externalId: body.id ?? phoneNumberId,
-    };
   },
 };
