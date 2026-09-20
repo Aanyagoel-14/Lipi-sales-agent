@@ -89,7 +89,11 @@ export const CONTACT_ASK_SCORE = 30;
  *  which is all the decision turns on. */
 export type ContactHeld = { name: boolean; email: boolean; phone: boolean };
 
-export type ContactField = "name" | "email" | "phone";
+/** The details the twin may ask for, cheapest to give first — the order
+ *  `nextContactAsk` walks and the set the widget's route accepts. */
+export const CONTACT_FIELDS = ["name", "email", "phone"] as const;
+
+export type ContactField = (typeof CONTACT_FIELDS)[number];
 
 /**
  * One field, or nothing. Never two at once: a reply that ends in two

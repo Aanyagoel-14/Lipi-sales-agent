@@ -1,5 +1,6 @@
-import { prisma } from "../lib/prisma";
 import { detectContact, type DetectedContact } from "./extract";
+import type { TwinEffect } from "../lib/events";
+import type { Tx } from "../lib/prisma";
 import type { ContactField, ContactHeld } from "./leads";
 import type { Channel, ContactSource } from "@/generated/prisma/client";
 
@@ -13,14 +14,12 @@ import type { Channel, ContactSource } from "@/generated/prisma/client";
  * differently about what overwrites what or what counts as a duplicate, so
  * the decision lives here and each caller does its own writing.
  *
- * Nothing here writes. `plan()` reads the twin, decides, and hands back the
- * columns to set and the events to append; `ingest()` folds those into the
- * customer update and the event batch it was already making (invariants 1
- * and 6), and the widget's route writes them in a transaction of its own.
+ * Nothing here writes. `planContactCapture()` reads the twin, decides, and
+ * hands back the columns to set and the events to append; `ingest()` folds
+ * those into the customer update and the event batch it was already making
+ * (invariants 1 and 6), and the widget's route writes them in a transaction
+ * of its own.
  */
-
-/** The transactional client or the plain one — this only reads. */
-type ContactClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
 /** The columns the decision reads. A webchat twin's `name` is its `handle`
  *  until somebody gives a real one, which is how "do we have a name" is
@@ -46,10 +45,6 @@ export type ContactUpdate = {
   phoneAt?: Date;
 };
 
-/** An event for the caller's own batch: `{type, twin, payload}`, the shape
- *  `ingest()` already collects. */
-export type ContactEffect = { type: string; twin: string; payload: string };
-
 export type ContactPlan = {
   update: ContactUpdate;
   captured: ContactField[];
@@ -62,8 +57,12 @@ export type ContactPlan = {
    * somebody else's history (invariant 5).
    */
   duplicateEmailOf: string | null;
-  events: ContactEffect[];
+  events: TwinEffect[];
 };
+
+/** A typed box answers for exactly one field, so the other two are spread in
+ *  from here rather than written out at each return. */
+const NOTHING_DETECTED: DetectedContact = { name: null, email: null, phone: null };
 
 /**
  * A value typed into the widget's own labelled field, read as that field.
@@ -83,11 +82,10 @@ export function readTypedContact(field: ContactField, value: string): DetectedCo
   const typed = value.trim();
   if (!typed) return null;
 
-  const empty: DetectedContact = { name: null, email: null, phone: null };
-  if (field === "name") return { ...empty, name: typed };
+  if (field === "name") return { ...NOTHING_DETECTED, name: typed };
 
   const found = detectContact(typed)[field];
-  return found ? { ...empty, [field]: found } : null;
+  return found ? { ...NOTHING_DETECTED, [field]: found } : null;
 }
 
 /**
@@ -108,7 +106,7 @@ const HANDLE_IS: Partial<Record<Channel, ContactField>> = {
 };
 
 /** What the twin already has, for `nextContactAsk`. */
-export const contactHeld = (customer: ContactRow): ContactHeld => {
+export function contactHeld(customer: ContactRow): ContactHeld {
   const fromHandle = HANDLE_IS[customer.channel];
 
   return {
@@ -116,7 +114,7 @@ export const contactHeld = (customer: ContactRow): ContactHeld => {
     email: Boolean(customer.email) || fromHandle === "email",
     phone: Boolean(customer.phone) || fromHandle === "phone",
   };
-};
+}
 
 /**
  * Event payloads name the field and where it came from, never the value.
@@ -125,13 +123,13 @@ export const contactHeld = (customer: ContactRow): ContactHeld => {
  * registered (#21) — an address written into a payload would be an address
  * we cannot take back out of it.
  */
-const captured = (customer: string, field: ContactField, source: ContactSource): ContactEffect => ({
+const captured = (customer: string, field: ContactField, source: ContactSource): TwinEffect => ({
   type: "customer_twin.contact_captured",
   twin: "customer",
   payload: `${customer} field=${field} source=${source}`,
 });
 
-const conflict = (customer: string, alsoOn: string): ContactEffect => ({
+const conflict = (customer: string, alsoOn: string): TwinEffect => ({
   type: "customer_twin.contact_conflict",
   twin: "customer",
   payload: `${customer} field=email also_on=${alsoOn} resolution=not_merged`,
@@ -149,7 +147,7 @@ const conflict = (customer: string, alsoOn: string): ContactEffect => ({
  * actually learned it.
  */
 export async function planContactCapture(
-  client: ContactClient,
+  client: Tx,
   input: {
     workspaceId: string;
     customer: ContactRow;
@@ -161,7 +159,7 @@ export async function planContactCapture(
   const { customer, detected, source, now } = input;
   const update: ContactUpdate = {};
   const fields: ContactField[] = [];
-  const events: ContactEffect[] = [];
+  const events: TwinEffect[] = [];
   let duplicateEmailOf: string | null = null;
 
   if (detected.name && customer.name === customer.handle) {

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { toRupees } from "../lib/money";
-import { prisma } from "../lib/prisma";
+import { prisma, type Tx } from "../lib/prisma";
 import { contactHeld, planContactCapture } from "./contacts";
 import { extract, vocabularyFor, type ExtractionResult } from "./extract";
 import { nextContactAsk, scoreLead, type ContactField, type LeadStage } from "./leads";
 import { composeReply, DEFAULT_VOICE, findKnowledge, voiceViolations, type ReplyParts } from "./voice";
+import type { TwinEffect } from "../lib/events";
 import type { Channel } from "@/generated/prisma/client";
 
 /**
@@ -65,7 +66,7 @@ export type IngestResult = {
   contactAsk: ContactField | null;
   knowledgeUsed: { title: string; kind: string } | null;
   agentRuns: { agent: string; action: string; status: "needs_approval" | "done" }[];
-  events: Effect[];
+  events: TwinEffect[];
 };
 
 class DryRunComplete extends Error {
@@ -78,11 +79,6 @@ function needsApproval(policy: "everything" | "money_only" | "nothing", touchesM
   if (policy === "nothing") return false;
   return touchesMoney;
 }
-
-/** The transactional client Prisma hands to $transaction. */
-type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
-
-type Effect = { type: string; twin: string; payload: string };
 
 export async function ingest(input: IngestInput, options: { dryRun?: boolean } = {}): Promise<IngestResult> {
   const now = new Date();
@@ -124,7 +120,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
 
   try {
     return await prisma.$transaction(async (tx) => {
-    const effects: Effect[] = [];
+    const effects: TwinEffect[] = [];
     const record = (type: string, twin: string, payload: string) => effects.push({ type, twin, payload });
 
     /* ---------------------------------------------------- customer twin */
@@ -430,7 +426,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
 
     // Asked of the twin as it stands after this message, so a detail given in
     // the same breath is never asked for again.
-    const contactAsk = nextContactAsk(leadScore, leadStage as LeadStage, contactHeld(customer));
+    const contactAsk = nextContactAsk(leadScore, leadStage, contactHeld(customer));
 
     /* -------------------------------------------------- agents and reply */
     const held = needsApproval(workspace.approvalPolicy, false);

@@ -226,14 +226,24 @@ describe("voicing the reply", () => {
    * a fact in the briefing like every other: what to ask for is decided by
    * the lead score before the model is called, and the model only words it.
    */
-  it("tells the model what to ask for, once the lead is worth asking", async () => {
-    await setup();
+
+  /** The briefings the salesperson was handed, in order, with the model
+   *  answering `reply` every time. A turn calls the model more than once —
+   *  extraction has its own prompt — so the salesperson's is picked out by
+   *  the line it opens with. */
+  function capturedPrompts(reply: string) {
     const prompts: string[] = [];
     vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
       const system: string = JSON.parse(init.body).messages[0].content;
       if (system.startsWith("You are a salesperson")) prompts.push(system);
-      return new Response(JSON.stringify({ choices: [{ message: { content: "Reserved." } }] }), { status: 200 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: reply } }] }), { status: 200 });
     });
+    return prompts;
+  }
+
+  it("tells the model what to ask for, once the lead is worth asking", async () => {
+    await setup();
+    const prompts = capturedPrompts("Reserved.");
 
     const result = await sell({ workspaceId, channel: "webchat", handle: "web:v1", text: "I need 2 blue XL polos" });
 
@@ -243,12 +253,7 @@ describe("voicing the reply", () => {
 
   it("says nothing about contact details on a cold first message", async () => {
     await setup();
-    const prompts: string[] = [];
-    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
-      const system: string = JSON.parse(init.body).messages[0].content;
-      if (system.startsWith("You are a salesperson")) prompts.push(system);
-      return new Response(JSON.stringify({ choices: [{ message: { content: "Hello!" } }] }), { status: 200 });
-    });
+    const prompts = capturedPrompts("Hello!");
 
     const result = await sell({ workspaceId, channel: "webchat", handle: "web:v2", text: "hi" });
 
@@ -261,12 +266,7 @@ describe("voicing the reply", () => {
 
   it("tells the model what it was just given, so it does not ask for it again", async () => {
     await setup();
-    const prompts: string[] = [];
-    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
-      const system: string = JSON.parse(init.body).messages[0].content;
-      if (system.startsWith("You are a salesperson")) prompts.push(system);
-      return new Response(JSON.stringify({ choices: [{ message: { content: "Got it." } }] }), { status: 200 });
-    });
+    const prompts = capturedPrompts("Got it.");
 
     const result = await sell({
       workspaceId, channel: "webchat", handle: "web:v3",

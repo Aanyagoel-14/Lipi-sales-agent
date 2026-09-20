@@ -158,6 +158,12 @@ export function loadWidget(options: PageOptions) {
   const launcher = () => byId("lipi-widget-launcher");
   const panel = () => byId("lipi-widget-panel");
 
+  /** Type into the contact box without pressing Save. */
+  const fillContact = (value: string) => {
+    const input = byId("lipi-widget-contact-input");
+    if (input) input.value = value;
+  };
+
   return {
     window, document, warnings, launcher, panel,
     domContentLoaded: () => {
@@ -181,14 +187,10 @@ export function loadWidget(options: PageOptions) {
     },
     contactPlaceholder: () => byId("lipi-widget-contact-input")?.placeholder ?? null,
     contactValue: () => byId("lipi-widget-contact-input")?.value ?? null,
-    /** Type into the contact box without pressing Save. */
-    fillContact: (value: string) => {
-      const input = byId("lipi-widget-contact-input");
-      if (input) input.value = value;
-    },
+    fillContact,
+    /** Type into the contact box and press Save. */
     typeContact: (value: string) => {
-      const input = byId("lipi-widget-contact-input");
-      if (input) input.value = value;
+      fillContact(value);
       byId("lipi-widget-contact")?.dispatch("submit");
     },
     skipContact: () => byId("lipi-widget-contact-skip")?.dispatch("click"),

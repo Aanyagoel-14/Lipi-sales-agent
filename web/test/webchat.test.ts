@@ -577,6 +577,10 @@ describe("the contact field the widget shows", () => {
   /** A message that scores high enough for the twin to want a way back. */
   const buy = () => sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "I need 2 blue XL polos" });
 
+  /** The customer twin a visitor's messages and saves both land on. */
+  const twin = (visitorId = VISITOR) =>
+    prisma.customer.findFirstOrThrow({ where: { workspaceId, handle: `web:${visitorId}` } });
+
   it("tells the widget what to put a field on screen for", async () => {
     const res = await agent().post(`/v1/webchat/${workspaceId}/message`)
       .send({ visitorId: VISITOR, text: "I need 2 blue XL polos" })
@@ -611,7 +615,7 @@ describe("the contact field the widget shows", () => {
 
     const res = await post("name", "Priya Sharma").expect(200);
 
-    const customer = await prisma.customer.findFirstOrThrow({ where: { workspaceId, handle: `web:${VISITOR}` } });
+    const customer = await twin();
     expect(customer.name).toBe("Priya Sharma");
     expect(res.body.captured).toEqual(["name"]);
   });
@@ -623,7 +627,7 @@ describe("the contact field the widget shows", () => {
     expect((await post("email", "priya@shop.test").expect(200)).body.contactAsk).toBe("phone");
     expect((await post("phone", "9876543210").expect(200)).body.contactAsk).toBeNull();
 
-    const customer = await prisma.customer.findFirstOrThrow({ where: { workspaceId, handle: `web:${VISITOR}` } });
+    const customer = await twin();
     expect(customer.emailSource).toBe("form");
     expect(customer.phoneSource).toBe("form");
     expect(customer.phone).toBe("9876543210");
@@ -639,7 +643,7 @@ describe("the contact field the widget shows", () => {
     await post("phone", "soon").expect(422);
     await post("shoe_size", "11").expect(422);
 
-    const customer = await prisma.customer.findFirstOrThrow({ where: { workspaceId, handle: `web:${VISITOR}` } });
+    const customer = await twin();
     expect(customer.email).toBeNull();
     expect(customer.phone).toBeNull();
   });

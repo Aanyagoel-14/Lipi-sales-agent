@@ -6,6 +6,7 @@ import { toRupees } from "../lib/money";
 import { buildGrounding } from "./briefing";
 import { ingest, type IngestResult } from "./ingest";
 import { invoiceForOrder } from "./invoicing";
+import type { ContactField } from "./leads";
 import type { Recommendation } from "./recommend";
 import { DEFAULT_VOICE, UNAUTHORISED_OFFER, voiceViolations, type Voice } from "./voice";
 import type { Channel } from "@/generated/prisma/client";
@@ -161,7 +162,7 @@ function voiceRules(voice: Voice) {
 
 /** What the twin may ask for this turn, in the only terms the model is
  *  allowed to act on: one thing, or nothing. */
-const CONTACT_WORDING: Record<NonNullable<IngestResult["contactAsk"]>, string> = {
+const CONTACT_WORDING: Record<ContactField, string> = {
   name: "their name — what to call them",
   email: "their email address",
   phone: "their phone number",

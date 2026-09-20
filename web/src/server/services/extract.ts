@@ -101,6 +101,10 @@ export type DetectedContact = {
 
 const EMAIL = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/i;
 
+/** The same pattern, for striking every address out of the text before the
+ *  phone search runs over what is left. */
+const EVERY_EMAIL = new RegExp(EMAIL.source, "gi");
+
 /**
  * A run of digits with the separators people actually type between them.
  * Bounded by non-word characters so the digits inside a token ("ord_4471",
@@ -137,14 +141,20 @@ const NOT_A_NAME = new Set([
  *  with a name, not a longer name. */
 const NAME_WORDS = 3;
 
+/** As much of a token as can be part of a name: letters, and the apostrophes,
+ *  hyphens and initials' full stops that sit inside real ones. */
+const NAME_WORD = /^[a-z][a-z'\u2019.-]*/i;
+
 function nameAfter(rest: string, needsCapital: boolean): string | null {
   const words: string[] = [];
 
   for (const token of rest.split(/\s+/).slice(0, NAME_WORDS)) {
-    const word = /^[a-z][a-z'\u2019.-]*/i.exec(token)?.[0];
+    const word = NAME_WORD.exec(token)?.[0];
     if (!word) break;
     if (NOT_A_NAME.has(word.toLowerCase())) break;
-    if (needsCapital && word[0] !== word[0]!.toUpperCase()) break;
+
+    const first = word[0]!;
+    if (needsCapital && first !== first.toUpperCase()) break;
     words.push(word);
   }
 
@@ -165,7 +175,7 @@ export function detectContact(text: string): DetectedContact {
 
   // Addresses are struck out before the number search: the local part of
   // an address is free to be ten digits long, and the domain carries dots.
-  const withoutEmails = text.replace(new RegExp(EMAIL.source, "gi"), " ");
+  const withoutEmails = text.replace(EVERY_EMAIL, " ");
 
   let phone: string | null = null;
   for (const run of withoutEmails.match(PHONE_RUN) ?? []) {
