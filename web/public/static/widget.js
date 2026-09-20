@@ -199,6 +199,7 @@
 
   // ------------------------------------------------------------- state
   var opened = false;
+  var greeted = false;
   var lastPollIso = null;
   var pollTimer = null;
 
@@ -206,7 +207,7 @@
     if (opened) return;
     opened = true;
     panel.classList.add("lipi-open");
-    ensureSession();
+    greet();
     startPolling();
   }
 
@@ -218,18 +219,44 @@
     }
   }
 
-  var sessionStarted = false;
+  /*
+   * The visitor is recorded when the page loads, not when they open the
+   * panel: most ad traffic reads the page and leaves without ever clicking,
+   * and that visit is still worth attributing. It is also the only moment
+   * `readTouch()` is reliable — a single-page app may rewrite the URL before
+   * the launcher is ever pressed.
+   *
+   * The greeting comes back with it and is HELD, not shown. Opening a panel
+   * at someone who did not ask for it is a separate feature with its own
+   * controls; `greet()` below is the only thing that puts it on screen.
+   */
+  var sessionRequest = null;
   function ensureSession() {
-    if (sessionStarted) return;
-    sessionStarted = true;
-    api("/v1/webchat/" + WORKSPACE_ID + "/session", {
-      method: "POST",
-      body: JSON.stringify({ visitorId: visitorId, touch: readTouch() }),
-    }).then(function (data) {
-      if (data && data.greeting) appendMessage(data.greeting, "agent");
-    }).catch(function () {
-      appendMessage("Sorry, chat isn't available right now.", "agent");
-    });
+    if (!sessionRequest) {
+      sessionRequest = api("/v1/webchat/" + WORKSPACE_ID + "/session", {
+        method: "POST",
+        body: JSON.stringify({ visitorId: visitorId, touch: readTouch() }),
+      });
+      // Nothing is waiting on this at load, and an unhandled rejection would
+      // surface in the host page's own error tracking rather than ours.
+      sessionRequest.catch(function () { /* handled by whoever awaits it */ });
+    }
+    return sessionRequest;
+  }
+
+  function greet() {
+    if (greeted) return;
+    greeted = true;
+    ensureSession()
+      // A blip at page load must not cost this visitor the chat, so the one
+      // retry happens here — the moment they have actually asked for it.
+      .catch(function () { sessionRequest = null; return ensureSession(); })
+      .then(function (data) {
+        if (data && data.greeting) appendMessage(data.greeting, "agent");
+      })
+      .catch(function () {
+        appendMessage("Sorry, chat isn't available right now.", "agent");
+      });
   }
 
   function sendMessage(text) {
@@ -280,6 +307,9 @@
       input.value = "";
       sendMessage(text);
     });
+    // The visit is recorded here, at load — the greeting it answers with
+    // waits in `sessionRequest` until the visitor opens the panel.
+    ensureSession();
   }
 
   if (document.readyState === "loading") {
