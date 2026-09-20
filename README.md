@@ -98,7 +98,7 @@ the API boundary, so reconciliation arithmetic never rounds.
 ## Tests
 
 ```bash
-cd web && npm test    # 222 tests: unit and integration against Postgres
+cd web && npm test    # unit and integration, against Postgres
 ```
 
 The suite calls route handlers directly through `test/dispatch.ts`, a small
@@ -106,10 +106,15 @@ supertest-shaped client that opens the request context Next would normally
 provide. No server is started, so the tests stay fast, and the handlers under
 test are the same functions the build ships.
 
-The suite runs against its own database, `lipi_test`, created once with
-`createdb lipi_test`. Migrations are applied at the start of the run and the
-setup file refuses to run against anything not named `lipi_test`, so a stray
-`DATABASE_URL` cannot wipe development data.
+The suite runs against its own database, `lipi_test`, created by
+`npm run db:test:setup` in `web/` — idempotent, so it is also the command to
+run after pulling a migration. Migrations are applied again at the start of
+every run, and both the setup script and the setup file refuse anything not
+named `lipi_test`, so a stray `DATABASE_URL` cannot wipe development data.
+
+`.github/workflows/ci.yml` runs lint, typecheck and the same suite on every
+push and pull request, against a `postgres:15` service container. It needs no
+repository secret.
 
 What it covers, chosen because these are the things that have actually broken:
 

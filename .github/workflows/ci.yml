@@ -1,0 +1,75 @@
+name: CI
+
+# Every branch and every pull request. Until this existed the suite ran on one
+# laptop, so "it passes locally" was the only evidence any change ever had.
+on:
+  push:
+  pull_request:
+
+# A later push to the same branch makes the running job's answer stale.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: lint, typecheck, test
+    runs-on: ubuntu-latest
+
+    services:
+      # The suite talks to a real Postgres — vitest.config.mts sets
+      # `fileParallelism: false` for exactly that reason, and test/setup.ts
+      # refuses any database not named lipi_test. 15 is what the repo is
+      # developed against locally.
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # test/database-url.ts otherwise derives the role from the OS user, which
+      # on a runner is `runner` and does not exist in the service container.
+      # Not a secret: this cluster is created and destroyed with the job, and a
+      # workflow that needed a secret could not run on a fork's pull request.
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/lipi_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The app is in web/, and so is the only lockfile.
+      - name: Install dependencies
+        run: npm ci
+        working-directory: web
+
+      # The same command a developer runs. It creates lipi_test and applies the
+      # migrations; the service container starts with neither.
+      - name: Create lipi_test and apply migrations
+        run: npm run db:test:setup
+        working-directory: web
+
+      # The three run at the repo root, through the scripts in the root
+      # package.json that forward into web/ — the entry point CLAUDE.md
+      # documents and every contributor uses. Running them inside web/ would
+      # leave that forwarding unproven, and it is the whole feedback loop.
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
