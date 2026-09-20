@@ -221,6 +221,62 @@ describe("voicing the reply", () => {
     expect(whatsapp).not.toContain("renders as markdown");
   });
 
+  /**
+   * Progressive contact capture (#16). The twin asks in words, so the ask is
+   * a fact in the briefing like every other: what to ask for is decided by
+   * the lead score before the model is called, and the model only words it.
+   */
+
+  /** The briefings the salesperson was handed, in order, with the model
+   *  answering `reply` every time. A turn calls the model more than once —
+   *  extraction has its own prompt — so the salesperson's is picked out by
+   *  the line it opens with. */
+  function capturedPrompts(reply: string) {
+    const prompts: string[] = [];
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      const system: string = JSON.parse(init.body).messages[0].content;
+      if (system.startsWith("You are a salesperson")) prompts.push(system);
+      return new Response(JSON.stringify({ choices: [{ message: { content: reply } }] }), { status: 200 });
+    });
+    return prompts;
+  }
+
+  it("tells the model what to ask for, once the lead is worth asking", async () => {
+    await setup();
+    const prompts = capturedPrompts("Reserved.");
+
+    const result = await sell({ workspaceId, channel: "webchat", handle: "web:v1", text: "I need 2 blue XL polos" });
+
+    expect(result.contactAsk).toBe("name");
+    expect(prompts[0]).toContain("ASK THEM FOR: their name");
+  });
+
+  it("says nothing about contact details on a cold first message", async () => {
+    await setup();
+    const prompts = capturedPrompts("Hello!");
+
+    const result = await sell({ workspaceId, channel: "webchat", handle: "web:v2", text: "hi" });
+
+    expect(result.contactAsk).toBeNull();
+    // The colon is the fact line. The rules block names the marker itself
+    // ("only when the block above says ASK THEM FOR"), and that sentence is
+    // in every prompt whether or not there is anything to ask for.
+    expect(prompts[0]).not.toContain("ASK THEM FOR:");
+  });
+
+  it("tells the model what it was just given, so it does not ask for it again", async () => {
+    await setup();
+    const prompts = capturedPrompts("Got it.");
+
+    const result = await sell({
+      workspaceId, channel: "webchat", handle: "web:v3",
+      text: "I need 2 blue XL polos, mail me at priya@shop.test",
+    });
+
+    expect(result.contactAsk).toBe("name");
+    expect(prompts[0]).toContain("THEY JUST GAVE YOU: their email");
+  });
+
   it("refuses a reply that uses a banned phrase", async () => {
     await setup();
     await prisma.twinVoice.update({ where: { workspaceId }, data: { neverSay: ["no problem"] } });

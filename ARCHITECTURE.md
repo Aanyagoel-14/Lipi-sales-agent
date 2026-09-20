@@ -285,6 +285,59 @@ the composed reply, with a `degraded` line saying which. An *authorised*
 discount is a separate path with its own approval; when it exists, this gate
 consults what it approved rather than refusing outright.
 
+## Reaching the lead: progressive contact capture
+
+A webchat visitor's `handle` is `web:<visitorId>` — an opaque token their own
+browser minted — so a qualified website lead used to be a conversation the
+operator could read and a person they could not contact. `Customer` now carries
+`email` and `phone`, each with the provenance it arrived by (`volunteered` in
+conversation, or `form` typed into the widget's own field) and the moment it
+landed.
+
+Recognition is a pattern, never a judgement. `detectContact()` in
+`services/extract.ts` runs on both extraction paths — the model's and the
+rules' — so what is captured does not depend on whether the model answered this
+turn, and a model is never asked whether a string is an email. An address or a
+number written onto the twin is treated downstream as fact: the operator rings
+it, the invoice goes to it. A regex is either right or silent, and silence costs
+nothing, because the widget's own labelled field is the path that always works.
+
+When to ask is `nextContactAsk()` in `services/leads.ts`, keyed on `leadScore`
+against a named threshold — the score is already the answer to "how close is
+this conversation to an order", and a second number for that question is a
+second number that can disagree with the first. It returns one field or none,
+never two: a reply ending in two questions gets one answer at best. A past
+buyer is always worth reaching, whatever this particular message scored.
+
+`services/contacts.ts` decides what a detail does to the twin, once, for both
+paths: a name only while the twin is still called by its handle, an address
+replaced when a different one arrives (a correction is the version worth
+keeping) and nothing written at all when the same value arrives twice.
+`ingest()` folds the plan into the customer update and the event batch it was
+already making, so a message still mutates the twin exactly once inside the one
+transaction (invariant 1); `POST /v1/webchat/:id/contact` writes the same plan
+in a transaction of its own, because pressing Save on a box is not sending a
+message and must not cost a model call. Every capture appends a `TwinEvent`
+naming the field and its source and never the value (invariant 6) — the event
+trail is published by `/v1/events` and posted to outbound webhook endpoints, and
+an address written into a payload is an address we cannot take back out of it.
+
+An email already on another twin in the same workspace is **flagged, not
+merged**: both rows keep the address, a `customer_twin.contact_conflict` event
+names the other twin, and the result carries `duplicateEmail`. One shared
+address is not evidence of one person — a colleague, a family inbox or a typo
+would all be folded silently into somebody else's history. Cross-channel
+identity resolution is its own problem with its own evidence.
+
+The ask itself is words: `sell()` puts `ASK THEM FOR:` in the briefing and the
+model phrases it, under a rule that it may ask only for what the block names.
+The widget renders a compact inline field beside those words — not a modal, and
+never a gate, because a chat that demands an address before it will help is the
+thing this widget exists instead of. "Not now" puts it away for the rest of the
+visit. A value typed into that field still goes through the same patterns: the
+label says what the box is for, the visitor is free to type anything into it,
+and a wrong address stored as fact is worse than an empty column.
+
 ## The public API
 
 `/v1` is one surface with two audiences. The dashboard reads it same-origin with

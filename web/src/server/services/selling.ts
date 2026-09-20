@@ -6,6 +6,7 @@ import { toRupees } from "../lib/money";
 import { buildGrounding } from "./briefing";
 import { ingest, type IngestResult } from "./ingest";
 import { invoiceForOrder } from "./invoicing";
+import type { ContactField } from "./leads";
 import type { Recommendation } from "./recommend";
 import { DEFAULT_VOICE, UNAUTHORISED_OFFER, voiceViolations, type Voice } from "./voice";
 import type { Channel } from "@/generated/prisma/client";
@@ -52,6 +53,15 @@ export type SellResult = {
    * stock and order history, never by the model.
    */
   recommended: Recommendation[];
+  /**
+   * The one contact detail the twin asked for on this turn, or null. The
+   * widget renders a field for it (`public/static/widget.js`); every other
+   * channel gets it as words, because there is no form in a WhatsApp thread.
+   */
+  contactAsk: IngestResult["contactAsk"];
+  /** What this turn gave the twin, and whether the address it gave is already
+   *  on another twin here — the operator's flag, never a merge. */
+  contact: IngestResult["contact"];
   order: (IngestResult["order"] & { stage: string }) | null;
   invoice: { number: string; amountInr: number; dueIso: string; url: string } | null;
   intent: string;
@@ -150,6 +160,14 @@ function voiceRules(voice: Voice) {
   return rules.join(" ");
 }
 
+/** What the twin may ask for this turn, in the only terms the model is
+ *  allowed to act on: one thing, or nothing. */
+const CONTACT_WORDING: Record<ContactField, string> = {
+  name: "their name — what to call them",
+  email: "their email address",
+  phone: "their phone number",
+};
+
 /**
  * What actually happened, in the model's own briefing. Only these numbers may
  * appear in the reply.
@@ -171,6 +189,25 @@ function outcome(result: IngestResult, invoice: SellResult["invoice"]) {
     lines.push(
       `Invoice ${invoice.number} has been raised for INR ${invoice.amountInr.toLocaleString("en-IN")}, ` +
         `due ${invoice.dueIso}. Tell them it is ready to download.`,
+    );
+  }
+
+  // Capture has already happened by the time the model speaks, so "they just
+  // gave you" is a fact about the twin, not an instruction to write anything
+  // down. Both lines exist to stop the same failure: asking a customer for
+  // something they have already handed over.
+  if (result.contact.captured.length) {
+    lines.push(
+      `THEY JUST GAVE YOU: ${result.contact.captured.map((f) => `their ${f}`).join(" and ")}. ` +
+        "It is saved. Acknowledge it in passing if it fits, and never ask for it again.",
+    );
+  }
+
+  if (result.contactAsk) {
+    lines.push(
+      `ASK THEM FOR: ${CONTACT_WORDING[result.contactAsk]}. Ask for this ONE thing, once, in a single short ` +
+        "sentence at the end, and say why it helps (so someone can follow up, so the invoice reaches them). " +
+        "Do not ask for anything else about them, and do not insist if they would rather not.",
     );
   }
 
@@ -199,6 +236,7 @@ How to reply:
 - WHAT YOU MAY RECOMMEND IS ALREADY CHOSEN. If there is a "WHAT TO PUT IN FRONT OF THEM" list above, the alternative, the companion or the step up comes from it, with its price and its count as written. Do not substitute a product of your own choosing, and if that list says nothing replaces what they wanted, say exactly that rather than reaching for something else.
 - HANDLING AN OBJECTION IS A MATTER OF WORDS, NOT OF PRICE. If they say it is too expensive, hesitate, or compare you to someone cheaper: you may say what makes it worth it, restate a policy written above, or put a cheaper in-stock option from the lists above in front of them. You may NEVER offer a discount, a percentage off, free delivery, a waived fee or a thrown-in extra — none of that is yours to give, and a reply that does it is thrown away. If they ask for a discount outright, tell them what the policy above says about pricing, if it says anything, and that anything beyond it needs a person.
 - BUT if an order was already created above, the sale is closed: do not ask "shall I reserve/proceed/go ahead". Confirm it, tell them the invoice is ready, and ask only whether they need anything else.
+- ASKING WHO THEY ARE IS NOT YOURS TO DECIDE EITHER. Ask for a contact detail only when the block above says "ASK THEM FOR", and only for that one thing. Never ask for two, never ask for something the block says they have already given, and never make answering a condition of helping them.
 - Put the closing question on its own line, after any list. Never let it run onto the end of a list item.
 - When you are showing more than one option, lay them out as a list with a real newline before each "- ", one product per line with its price. Never bury choices in a paragraph.
 - Only offer things with stock above. If something is sold out, say so plainly and put the nearest available option in front of them.
@@ -323,6 +361,8 @@ export async function sell(input: {
     invoice,
     intent: result.extracted.intent,
     held: !result.replySent,
+    contactAsk: result.contactAsk,
+    contact: result.contact,
     // What grounded the composed reply: `findKnowledge`'s single entry, which
     // is the first row of the ranking the grounding block below uses, so the
     // two never contradict each other.

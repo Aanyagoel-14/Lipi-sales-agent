@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractWithRules, vocabularyFor } from "@/server/services/extract";
+import { detectContact, extractWithRules, vocabularyFor } from "@/server/services/extract";
 
 const apparel = vocabularyFor("apparel");
 const parts = vocabularyFor("auto_parts");
@@ -135,5 +135,70 @@ describe("ways of saying buy", () => {
 
   it("still treats a price question as a quote, not a buy", () => {
     expect(extractWithRules("how much to give me 4 polos", apparel, AUG).intent).toBe("quote_request");
+  });
+});
+
+/**
+ * Contact details are read by pattern, never by the model (issue #16): a
+ * wrong phone number written into the twin as fact is worse than no phone
+ * number, and a model asked "is this an email" will eventually say yes to
+ * something that is not one. So these cases run against `detectContact`
+ * directly — it is the same function on both extraction paths.
+ */
+describe("contact details a visitor types in passing", () => {
+  it.each([
+    ["mail me at priya@shop.test", "priya@shop.test"],
+    ["my email's Priya.Sharma+polos@Shop.co.in, send the invoice there", "priya.sharma+polos@shop.co.in"],
+    ["write to ops@lipi.test.", "ops@lipi.test"],
+  ])("reads the address out of %j", (text, expected) => {
+    expect(detectContact(text).email).toBe(expected);
+  });
+
+  it.each([
+    ["call me on 9876543210", "9876543210"],
+    ["+91 98765 43210 is my number", "+919876543210"],
+    ["reach me at 098765-43210", "09876543210"],
+  ])("reads the number out of %j", (text, expected) => {
+    expect(detectContact(text).phone).toBe(expected);
+  });
+
+  it("gives a name only when the visitor says it is one", () => {
+    expect(detectContact("my name is Priya Sharma").name).toBe("Priya Sharma");
+    expect(detectContact("this is Arjun from Kochi Traders").name).toBe("Arjun");
+  });
+
+  // The rest of the extractor already has to tell a quantity from a year;
+  // these are the numbers that must never be read as a way to reach someone.
+  it.each([
+    "need 3 olive L polos",
+    "brake pads for Swift 2018",
+    "the 2026 season polo, 12 units",
+    "order ord_4471 has not arrived",
+    "that came to 1,20,000 rupees",
+  ])("finds no phone number in %j", (text) => {
+    expect(detectContact(text).phone).toBeNull();
+  });
+
+  it("does not read the domain of an address as a phone number", () => {
+    expect(detectContact("mail me at priya1234567890@shop.test").phone).toBeNull();
+  });
+
+  it("does not mistake a sentence about looking for something for a name", () => {
+    expect(detectContact("I'm looking for olive polos").name).toBeNull();
+    expect(detectContact("call me back tomorrow").name).toBeNull();
+  });
+
+  it("finds nothing in an ordinary message", () => {
+    expect(detectContact("do you have olive polos in L")).toEqual({ name: null, email: null, phone: null });
+  });
+});
+
+describe("what the extractor carries the contact on", () => {
+  it("hands the rules path's result the contact it found", () => {
+    const out = extractWithRules("need 3 olive L polos, mail me at priya@shop.test", apparel, AUG);
+
+    expect(out.contact.email).toBe("priya@shop.test");
+    expect(out.intent).toBe("buy");
+    expect(out.quantity).toBe(3);
   });
 });

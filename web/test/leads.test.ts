@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createUser, createWorkspace, resetDatabase } from "./helpers";
 import { prisma } from "@/server/lib/prisma";
 import { ingest } from "@/server/services/ingest";
-import { scoreLead, type LeadSignal, type LeadStage } from "@/server/services/leads";
+import {
+  CONTACT_ASK_SCORE, nextContactAsk, scoreLead,
+  type ContactHeld, type LeadSignal, type LeadStage,
+} from "@/server/services/leads";
 
 /**
  * `scoreLead` is a pure function over one message's signals plus the score it
@@ -175,5 +178,55 @@ describe("the stage as ingest persists it", () => {
     const customer = await twin(asked.customer.id);
     expect(customer.leadStage).toBe("engaged");
     expect(customer.leadScore).toBeLessThan(55);
+  });
+});
+
+/**
+ * When the twin is allowed to ask for a way to reach someone (#16). The
+ * score is the trigger because it is already the answer to "how close is
+ * this conversation to an order" — a second number for the same question
+ * would only be a number that could disagree with the first.
+ */
+describe("asking for contact details", () => {
+  const held = (over: Partial<ContactHeld> = {}): ContactHeld =>
+    ({ name: false, email: false, phone: false, ...over });
+
+  it("asks for nothing on a cold first message", () => {
+    const { score, stage } = scoreLead(signal({ intent: "other" }));
+
+    expect(score).toBeLessThan(CONTACT_ASK_SCORE);
+    expect(nextContactAsk(score, stage, held())).toBeNull();
+  });
+
+  it("still asks for nothing from someone only browsing stock", () => {
+    const { score, stage } = scoreLead(signal({ intent: "inventory_request", matchedProduct: true }));
+
+    expect(nextContactAsk(score, stage, held())).toBeNull();
+  });
+
+  it("asks once the conversation is worth asking in", () => {
+    const { score, stage } = scoreLead(signal({ intent: "buy", matchedProduct: true }));
+
+    expect(score).toBeGreaterThanOrEqual(CONTACT_ASK_SCORE);
+    expect(nextContactAsk(score, stage, held())).toBe("name");
+  });
+
+  it("asks for one thing at a time, in order", () => {
+    expect(nextContactAsk(60, "qualified", held())).toBe("name");
+    expect(nextContactAsk(60, "qualified", held({ name: true }))).toBe("email");
+    expect(nextContactAsk(60, "qualified", held({ name: true, email: true }))).toBe("phone");
+  });
+
+  it("never asks again for something it already has", () => {
+    expect(nextContactAsk(100, "customer", held({ name: true, email: true, phone: true }))).toBeNull();
+  });
+
+  // A buyer is worth reaching whatever this particular message scored: they
+  // have an order with this business, and an order needs a human to chase.
+  it("asks a past buyer even on a low-scoring message", () => {
+    const { score, stage } = scoreLead(signal({ intent: "other", orderCount: 2 }));
+
+    expect(score).toBeLessThan(CONTACT_ASK_SCORE);
+    expect(nextContactAsk(score, stage, held())).toBe("name");
   });
 });

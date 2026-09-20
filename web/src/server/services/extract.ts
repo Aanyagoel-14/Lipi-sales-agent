@@ -32,7 +32,12 @@ export const extractedSchema = z.object({
 });
 
 export type Extracted = z.infer<typeof extractedSchema>;
-export type ExtractionResult = Extracted & { extractor: "rules" | "openrouter" };
+export type ExtractionResult = Extracted & {
+  extractor: "rules" | "openrouter";
+  /** Recognised by pattern on both paths, so what is captured does not
+   *  depend on whether the model answered this turn. */
+  contact: DetectedContact;
+};
 
 export type Vocabulary = {
   categories: Record<string, string>;
@@ -75,6 +80,115 @@ export function vocabularyFor(vertical: Vertical, live?: LiveCatalogue): Vocabul
     optionsB: [...new Set([...(live?.optionsB ?? []), ...catalogue.products.flatMap((p) => p.optionsB)])],
     axes: live?.axes ?? ((catalogue.products[0]?.axes ?? ["Option A", "Option B"]) as [string, string]),
   };
+}
+
+/**
+ * Contact details, recognised by pattern rather than by judgement (#16).
+ *
+ * This deliberately does NOT go through the model, on either extraction
+ * path. An address or a number written into the customer twin is treated by
+ * everything downstream as fact — the operator rings it, the invoice goes to
+ * it — and a model that is 97% right about "is this an email" is a model
+ * that eventually writes a stranger's address onto a lead. A regex is either
+ * right or silent, and silence costs nothing: the widget's own field (see
+ * `public/static/widget.js`) is the path that always works.
+ */
+export type DetectedContact = {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+};
+
+const EMAIL = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/i;
+
+/** The same pattern, for striking every address out of the text before the
+ *  phone search runs over what is left. */
+const EVERY_EMAIL = new RegExp(EMAIL.source, "gi");
+
+/**
+ * A run of digits with the separators people actually type between them.
+ * Bounded by non-word characters so the digits inside a token ("ord_4471",
+ * "priya1234567890@…") are never read as a way to reach someone; the trailing
+ * boundary allows a full stop so a number ending a sentence still matches.
+ */
+const PHONE_RUN = /(?<![\w@])\+?\d[\d ().-]{6,18}\d(?![\w@])/g;
+
+/** E.164 allows 15 digits; nothing shorter than 10 is a number you can ring.
+ *  A quantity, a year, a PIN code and an order number all fall below it. */
+const PHONE_DIGITS = { min: 10, max: 15 };
+
+/**
+ * "my name is X" says what X is; "this is X" only suggests it. The strong
+ * leads are trusted whatever case the visitor typed in, the weak ones only
+ * when the words after them are capitalised like a name — which is what
+ * keeps "I'm looking for olive polos" from introducing a customer called
+ * Looking.
+ */
+const STRONG_NAME_LEAD = /\b(?:my name(?:'s| is)|name\s*[:-])\s*/i;
+const WEAK_NAME_LEAD = /\b(?:this is|i am|i'm|call me)\s+/i;
+
+/** Words that follow a lead often enough to be caught by it, and are never
+ *  somebody's name. */
+const NOT_A_NAME = new Set([
+  "a", "about", "after", "an", "and", "asap", "at", "back", "calling", "fine",
+  "for", "from", "going", "here", "i", "in", "interested", "is", "just",
+  "looking", "my", "need", "no", "not", "of", "ok", "okay", "on", "sorry",
+  "still", "sure", "thanks", "the", "there", "to", "trying", "urgent",
+  "waiting", "want", "was", "with", "wondering", "yes", "your",
+]);
+
+/** At most three words: a longer run is a sentence that happened to start
+ *  with a name, not a longer name. */
+const NAME_WORDS = 3;
+
+/** As much of a token as can be part of a name: letters, and the apostrophes,
+ *  hyphens and initials' full stops that sit inside real ones. */
+const NAME_WORD = /^[a-z][a-z'\u2019.-]*/i;
+
+function nameAfter(rest: string, needsCapital: boolean): string | null {
+  const words: string[] = [];
+
+  for (const token of rest.split(/\s+/).slice(0, NAME_WORDS)) {
+    const word = NAME_WORD.exec(token)?.[0];
+    if (!word) break;
+    if (NOT_A_NAME.has(word.toLowerCase())) break;
+
+    const first = word[0]!;
+    if (needsCapital && first !== first.toUpperCase()) break;
+    words.push(word);
+  }
+
+  return words.length ? words.join(" ") : null;
+}
+
+/** The normalised number, or null when the run is not one. `+` is kept
+ *  because it is the difference between a country code and a local prefix. */
+function normalisePhone(run: string): string | null {
+  const plus = run.trimStart().startsWith("+");
+  const digits = run.replace(/\D/g, "");
+  if (digits.length < PHONE_DIGITS.min || digits.length > PHONE_DIGITS.max) return null;
+  return plus ? `+${digits}` : digits;
+}
+
+export function detectContact(text: string): DetectedContact {
+  const email = EMAIL.exec(text)?.[0]?.toLowerCase() ?? null;
+
+  // Addresses are struck out before the number search: the local part of
+  // an address is free to be ten digits long, and the domain carries dots.
+  const withoutEmails = text.replace(EVERY_EMAIL, " ");
+
+  let phone: string | null = null;
+  for (const run of withoutEmails.match(PHONE_RUN) ?? []) {
+    phone = normalisePhone(run);
+    if (phone) break;
+  }
+
+  const strong = STRONG_NAME_LEAD.exec(text);
+  const weak = strong ? null : WEAK_NAME_LEAD.exec(text);
+  const lead = strong ?? weak;
+  const name = lead ? nameAfter(text.slice(lead.index + lead[0].length), Boolean(weak)) : null;
+
+  return { name, email, phone };
 }
 
 const NUMBER_WORDS: Record<string, number> = {
@@ -189,6 +303,7 @@ export function extractWithRules(text: string, vocab: Vocabulary, now = new Date
     deadline,
     priority: urgent ? "high" : intent === "complaint" ? "high" : "normal",
     extractor: "rules",
+    contact: detectContact(text),
   };
 }
 
@@ -263,6 +378,7 @@ async function extractWithOpenRouter(
     optionA: parsed.optionA && vocab.optionsA.includes(parsed.optionA) ? parsed.optionA : null,
     optionB: parsed.optionB && vocab.optionsB.includes(parsed.optionB) ? parsed.optionB : null,
     extractor: "openrouter",
+    contact: detectContact(text),
   };
 }
 

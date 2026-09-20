@@ -561,3 +561,127 @@ describe("what a webchat message still does to the twins", () => {
     expect(await prisma.order.count({ where: { workspaceId } })).toBe(1);
   });
 });
+
+/**
+ * Progressive contact capture, from the widget's side (#16).
+ *
+ * `services/contacts.ts` decides what is captured and `nextContactAsk` when
+ * to ask; the rest — what the widget is told, and what happens to a value
+ * typed into a labelled box rather than said in a sentence — lands here,
+ * because the widget is the only surface with a box to type into.
+ */
+describe("the contact field the widget shows", () => {
+  const post = (field: string, value: string, visitorId = VISITOR) =>
+    agent().post(`/v1/webchat/${workspaceId}/contact`).send({ visitorId, field, value });
+
+  /** A message that scores high enough for the twin to want a way back. */
+  const buy = () => sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "I need 2 blue XL polos" });
+
+  /** The customer twin a visitor's messages and saves both land on. */
+  const twin = (visitorId = VISITOR) =>
+    prisma.customer.findFirstOrThrow({ where: { workspaceId, handle: `web:${visitorId}` } });
+
+  it("tells the widget what to put a field on screen for", async () => {
+    const res = await agent().post(`/v1/webchat/${workspaceId}/message`)
+      .send({ visitorId: VISITOR, text: "I need 2 blue XL polos" })
+      .expect(201);
+
+    expect(res.body.contactAsk).toBe("name");
+  });
+
+  it("asks for nothing while the visitor is only looking", async () => {
+    const res = await agent().post(`/v1/webchat/${workspaceId}/message`)
+      .send({ visitorId: VISITOR, text: "hi" })
+      .expect(201);
+
+    expect(res.body.contactAsk).toBeNull();
+  });
+
+  // The field belongs beside the sentence that asked for it. Under a policy
+  // that holds replies there is no sentence yet, so there is no field.
+  it("asks for nothing on a turn whose reply an operator is still holding", async () => {
+    workspaceId = await setup("everything", "Holding Co");
+
+    const res = await agent().post(`/v1/webchat/${workspaceId}/message`)
+      .send({ visitorId: VISITOR, text: "I need 2 blue XL polos" })
+      .expect(201);
+
+    expect(res.body.held).toBe(true);
+    expect(res.body.contactAsk).toBeNull();
+  });
+
+  it("stores what was typed into the labelled field, as typed, with form provenance", async () => {
+    await buy();
+
+    const res = await post("name", "Priya Sharma").expect(200);
+
+    const customer = await twin();
+    expect(customer.name).toBe("Priya Sharma");
+    expect(res.body.captured).toEqual(["name"]);
+  });
+
+  it("answers with the next thing to ask, so the widget shows one field at a time", async () => {
+    await buy();
+
+    expect((await post("name", "Priya Sharma").expect(200)).body.contactAsk).toBe("email");
+    expect((await post("email", "priya@shop.test").expect(200)).body.contactAsk).toBe("phone");
+    expect((await post("phone", "9876543210").expect(200)).body.contactAsk).toBeNull();
+
+    const customer = await twin();
+    expect(customer.emailSource).toBe("form");
+    expect(customer.phoneSource).toBe("form");
+    expect(customer.phone).toBe("9876543210");
+  });
+
+  // The label says what the box is for; the visitor is still free to type
+  // anything into it, and a wrong address written into the twin as fact is
+  // worse than no address at all.
+  it("refuses a value that is not what the label asked for", async () => {
+    await buy();
+
+    await post("email", "priya at shop dot test").expect(422);
+    await post("phone", "soon").expect(422);
+    await post("shoe_size", "11").expect(422);
+
+    const customer = await twin();
+    expect(customer.email).toBeNull();
+    expect(customer.phone).toBeNull();
+  });
+
+  // Invariant 6, on this path too: the field is named, the value never is.
+  it("records the capture as a TwinEvent naming the field and the form", async () => {
+    await buy();
+    await post("email", "priya@shop.test").expect(200);
+
+    const event = await prisma.twinEvent.findFirstOrThrow({
+      where: { workspaceId, type: "customer_twin.contact_captured" },
+    });
+    expect(event.payload).toContain("field=email source=form");
+    expect(event.payload).not.toContain("priya@shop.test");
+  });
+
+  it("flags an address already on another twin here rather than merging the two", async () => {
+    await buy();
+    await post("email", "shared@shop.test").expect(200);
+
+    await sendVisitorMessage({ workspaceId, visitorId: "visitor-web-0002", text: "I need 2 blue XL polos" });
+    const res = await post("email", "shared@shop.test", "visitor-web-0002").expect(200);
+
+    expect(res.body.duplicateEmail).toBe(true);
+    expect(await prisma.customer.count({ where: { workspaceId } })).toBe(2);
+  });
+
+  // The handle is workspace-scoped, so a visitorId known elsewhere is not a
+  // visitor here and there is no twin of theirs to write onto (invariant 5).
+  it("404s a visitor this workspace has never heard from", async () => {
+    await post("email", "priya@shop.test", "visitor-web-9999").expect(404);
+  });
+
+  it("answers the browser's preflight, like the other three", async () => {
+    const route = await import("@/app/v1/webchat/[workspaceId]/contact/route");
+
+    const res = route.OPTIONS();
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+});

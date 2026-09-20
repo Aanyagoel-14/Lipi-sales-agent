@@ -117,6 +117,25 @@ model Customer {
   leadScore Int       @default(0)
   leadStage LeadStage @default(visitor)
 
+  /// How to reach this person outside the thread they arrived in. A webchat
+  /// visitor's `handle` is `web:<visitorId>` — an opaque token their browser
+  /// minted — so without these a qualified website lead is unreachable.
+  ///
+  /// Each carries its own provenance and the moment it landed, because the
+  /// two ways they arrive are not equally trustworthy: `volunteered` was
+  /// pattern-matched out of something the visitor typed in conversation,
+  /// `form` was typed into the widget's own field with a label on it. Null
+  /// means nobody has given it, which is what stops the twin asking twice.
+  ///
+  /// Not unique. An email already on another twin in this workspace is a
+  /// flag for the operator, never a merge — see `services/contacts.ts`.
+  email       String?
+  emailSource ContactSource?
+  emailAt     DateTime?
+  phone       String?
+  phoneSource ContactSource?
+  phoneAt     DateTime?
+
   orders            Order[]
   conversations     Conversation[]
   invoices          Invoice[]
@@ -128,7 +147,20 @@ model Customer {
   @@index([workspaceId])
   @@index([workspaceId, leadStage])
   @@index([workspaceId, utmCampaign])
+  @@index([workspaceId, email])
   @@map("customers")
+}
+
+/**
+ * Where a contact detail came from. `volunteered` was recognised by pattern
+ * in a message the visitor wrote for some other reason ("mail me at x@y.com");
+ * `form` was typed into the widget's own labelled field. The operator reading
+ * a lead list needs to tell them apart: one is an address the person chose to
+ * give, the other is one we read out of their prose.
+ */
+enum ContactSource {
+  volunteered
+  form
 }
 
 /**
