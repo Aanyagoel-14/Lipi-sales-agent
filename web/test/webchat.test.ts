@@ -308,6 +308,9 @@ describe("a reply the approval policy held", () => {
  * `fetch` because the suite must never reach OpenRouter (see test/setup.ts).
  */
 describe("the salesperson's own voice", () => {
+  /** As much of an OpenRouter request body as these cases read. */
+  type VoicingRequest = { messages: { role: string; content: string }[] };
+
   /**
    * One canned reply per turn, and the requests that asked for them, in
    * order. The last reply stands in for any turn beyond the ones named.
@@ -318,7 +321,7 @@ describe("the salesperson's own voice", () => {
    * rules — deterministically, exactly as it does with no key set.
    */
   const answers = (...replies: string[]) => {
-    const asked: { messages: { role: string; content: string }[] }[] = [];
+    const asked: VoicingRequest[] = [];
     vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
       const request = JSON.parse(init.body);
       if (request.response_format?.json_schema?.name !== "reply") {
@@ -335,7 +338,7 @@ describe("the salesperson's own voice", () => {
   };
 
   /** Everything but the system briefing: the conversation the model was given. */
-  const turnsOf = (request: { messages: { role: string; content: string }[] }) => request.messages.slice(1);
+  const turnsOf = (request: VoicingRequest) => request.messages.slice(1);
 
   beforeEach(() => { env.OPENROUTER_API_KEY = "test-key"; });
   afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); });

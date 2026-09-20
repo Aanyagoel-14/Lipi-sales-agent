@@ -84,23 +84,25 @@ export type MessageInput = {
  * read by conversation: the agent's reply is stamped a second after the
  * message it answers, so ordering every row by `sentAt` alone would slot the
  * next question in front of the answer to the last one.
+ *
+ * The newest `HISTORY_TURNS` conversations are more than enough to fill the
+ * window, since every one of them holds at least the visitor's own message.
  */
 async function historyFor(workspaceId: string, customerId: string): Promise<SellTurn[]> {
-  const conversations = await prisma.conversation.findMany({
+  const newestFirst = await prisma.conversation.findMany({
     where: { workspaceId, customerId },
     orderBy: { lastAt: "desc" },
     take: HISTORY_TURNS,
     select: { messages: { orderBy: { sentAt: "asc" }, select: { from: true, text: true } } },
   });
 
-  return conversations
+  return newestFirst
     .reverse()
-    .flatMap((conversation) =>
-      conversation.messages.map((message) => ({
-        role: message.from === "agent" ? ("assistant" as const) : ("user" as const),
-        content: message.text,
-      })),
-    )
+    .flatMap((conversation) => conversation.messages)
+    .map((message): SellTurn => ({
+      role: message.from === "agent" ? "assistant" : "user",
+      content: message.text,
+    }))
     .slice(-HISTORY_TURNS);
 }
 
