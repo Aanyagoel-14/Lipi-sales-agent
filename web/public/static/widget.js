@@ -231,32 +231,39 @@
    * controls; `greet()` below is the only thing that puts it on screen.
    */
   var sessionRequest = null;
+
   function ensureSession() {
     if (!sessionRequest) {
       sessionRequest = api("/v1/webchat/" + WORKSPACE_ID + "/session", {
         method: "POST",
         body: JSON.stringify({ visitorId: visitorId, touch: readTouch() }),
       });
-      // Nothing is waiting on this at load, and an unhandled rejection would
-      // surface in the host page's own error tracking rather than ours.
-      sessionRequest.catch(function () { /* handled by whoever awaits it */ });
+      // Nobody is waiting on this at load, and a rejection with no handler
+      // would surface in the host page's own error tracking rather than
+      // ours. This one does nothing; `greet()` attaches the real handling.
+      sessionRequest.catch(function () {});
     }
     return sessionRequest;
   }
 
+  // Put the held greeting on screen — the first time the panel opens, and
+  // only then.
   function greet() {
     if (greeted) return;
     greeted = true;
-    ensureSession()
-      // A blip at page load must not cost this visitor the chat, so the one
-      // retry happens here — the moment they have actually asked for it.
-      .catch(function () { sessionRequest = null; return ensureSession(); })
-      .then(function (data) {
-        if (data && data.greeting) appendMessage(data.greeting, "agent");
-      })
-      .catch(function () {
-        appendMessage("Sorry, chat isn't available right now.", "agent");
-      });
+
+    // A blip at page load must not cost this visitor the chat, so the one
+    // retry happens here — the moment they have actually asked for it.
+    var answered = ensureSession().catch(function () {
+      sessionRequest = null;
+      return ensureSession();
+    });
+
+    answered.then(function (data) {
+      if (data && data.greeting) appendMessage(data.greeting, "agent");
+    }).catch(function () {
+      appendMessage("Sorry, chat isn't available right now.", "agent");
+    });
   }
 
   function sendMessage(text) {
@@ -307,8 +314,8 @@
       input.value = "";
       sendMessage(text);
     });
-    // The visit is recorded here, at load — the greeting it answers with
-    // waits in `sessionRequest` until the visitor opens the panel.
+    // Record the visit now, while the campaign is still on the URL; the
+    // greeting it answers with waits in `sessionRequest` for `greet()`.
     ensureSession();
   }
 

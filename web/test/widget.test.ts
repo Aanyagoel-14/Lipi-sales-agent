@@ -23,7 +23,7 @@ type Call = { url: string; method: string; body: Record<string, unknown> };
 /** The endpoints the widget calls, and what they answer. `sessionFails`
  *  stands in for an offline visitor or a 500, both of which the widget must
  *  swallow rather than throw into the host page. */
-function api(options: { sessionFails?: boolean } = {}) {
+function fakeServer(options: { sessionFails?: boolean } = {}) {
   const calls: Call[] = [];
   let sessionFails = options.sessionFails ?? false;
 
@@ -49,7 +49,7 @@ function api(options: { sessionFails?: boolean } = {}) {
 
 describe("what the widget does on page load", () => {
   it("creates the session before the visitor has touched anything", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({ fetch: server.fetch, url: PAID_URL, referrer: "https://www.google.com/" });
 
     page.domContentLoaded();
@@ -74,7 +74,7 @@ describe("what the widget does on page load", () => {
   // The launcher and the panel exist from load, but the call that records
   // the visit waits for the page to finish parsing, exactly as before.
   it("calls nothing until the page has loaded", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({ fetch: server.fetch });
 
     await page.settle();
@@ -84,7 +84,7 @@ describe("what the widget does on page load", () => {
   });
 
   it("holds the greeting until the visitor opens the panel", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -99,7 +99,7 @@ describe("what the widget does on page load", () => {
   });
 
   it("does not record a second visit when the panel opens", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -112,7 +112,7 @@ describe("what the widget does on page load", () => {
   });
 
   it("greets once, however many times the panel is opened and closed", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -129,7 +129,7 @@ describe("what the widget does on page load", () => {
   // The second page view of the same browser is the same visitor, so the
   // server sees one row whose lastSeenAt moves — not a second visitor.
   it("sends the visitorId it minted on the first page view again on the second", async () => {
-    const server = api();
+    const server = fakeServer();
     const storage = fakeStorage();
 
     const first = loadWidget({ fetch: server.fetch, localStorage: storage, url: PAID_URL });
@@ -148,7 +148,7 @@ describe("what the widget does on page load", () => {
   });
 
   it("starts polling only once the panel is open", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -170,7 +170,7 @@ describe("what the widget does on page load", () => {
 
 describe("when the session call fails", () => {
   it("says nothing to a visitor who never opened the panel", async () => {
-    const server = api({ sessionFails: true });
+    const server = fakeServer({ sessionFails: true });
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -184,7 +184,7 @@ describe("when the session call fails", () => {
   // A page load that hits a blip must not cost this visitor the chat: the
   // retry happens at the moment they actually ask for it.
   it("tries again when the panel opens, and greets on the second answer", async () => {
-    const server = api({ sessionFails: true });
+    const server = fakeServer({ sessionFails: true });
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -199,7 +199,7 @@ describe("when the session call fails", () => {
   });
 
   it("tells the visitor once when the retry fails too", async () => {
-    const server = api({ sessionFails: true });
+    const server = fakeServer({ sessionFails: true });
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -212,7 +212,7 @@ describe("when the session call fails", () => {
 
   // The host page is somebody else's: our failures belong in our own logs.
   it("never warns a workspace's own site about a call of ours", async () => {
-    const server = api({ sessionFails: true });
+    const server = fakeServer({ sessionFails: true });
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -228,7 +228,7 @@ describe("when the session call fails", () => {
 
 describe("the visitor who does talk", () => {
   it("sends the message and shows the reply", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({ fetch: server.fetch });
 
     page.domContentLoaded();
@@ -247,7 +247,7 @@ describe("the visitor who does talk", () => {
 
 describe("the script tag itself", () => {
   it("does nothing at all without a data-workspace attribute", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({ fetch: server.fetch, workspaceId: null });
 
     page.domContentLoaded();
@@ -259,7 +259,7 @@ describe("the script tag itself", () => {
   });
 
   it("takes the API origin from its own src, not from the host page", async () => {
-    const server = api();
+    const server = fakeServer();
     const page = loadWidget({
       fetch: server.fetch,
       scriptSrc: "https://lipi.example.com/static/widget.js",
