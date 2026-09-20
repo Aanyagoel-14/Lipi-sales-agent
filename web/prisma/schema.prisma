@@ -526,6 +526,9 @@ model Workspace {
   growthSuggestions GrowthSuggestion[]
   apiKeys           ApiKey[]
 
+  webhookSubscriptions WebhookSubscription[]
+  webhookDeliveries    WebhookDelivery[]
+
   @@map("workspaces")
 }
 
@@ -988,4 +991,106 @@ model ApiKey {
 
   @@index([workspaceId, revokedAt])
   @@map("api_keys")
+}
+
+/**
+ * Where a workspace wants its twin events delivered.
+ *
+ * The event log is already the record of every mutation, so outbound
+ * integration is a *reader* of it rather than a second stream — nothing here
+ * writes a `TwinEvent`, and nothing here may update one (invariant 6). What a
+ * subscription owns is its own position in that log and its own delivery
+ * attempts, both of which live outside the event.
+ *
+ * `secret` is the signing secret, encrypted at rest through `lib/crypto` like
+ * a channel credential. It is shown once at creation; no endpoint returns it
+ * again, because a signature the subscriber can verify is only worth anything
+ * while both sides are the only two who know the key.
+ */
+model WebhookSubscription {
+  id     String  @id @default(cuid())
+  url    String
+  /// Exact `TwinEvent.type` values this endpoint wants. Empty means every
+  /// type, which is also the default: an integrator who has not said
+  /// otherwise is better served by too much than by silence.
+  eventTypes String[] @default([])
+  /// AES-256-GCM ciphertext of the HMAC signing secret. Never returned.
+  secret String
+  /// Paused rather than deleted. A subscription that is off stops receiving
+  /// but keeps its cursor, so resuming does not replay a month of events.
+  active Boolean @default(true)
+
+  /// Position in the append-only log: the `occurredAt` of the newest event
+  /// already queued, with `cursorId` as the tiebreak that makes the order
+  /// total. Set to the moment of creation, so a new endpoint starts with
+  /// what happens next rather than with the whole history.
+  cursorAt DateTime
+  cursorId String   @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  deliveries WebhookDelivery[]
+
+  @@index([workspaceId])
+  @@index([active])
+  @@map("webhook_subscriptions")
+}
+
+enum WebhookDeliveryStatus {
+  /// Queued, or waiting out a backoff. `nextAttemptAt` says when it is due.
+  pending
+  /// The endpoint answered 2xx. Terminal unless an operator redelivers.
+  delivered
+  /// Attempts exhausted. Terminal, and the thing an operator has to look at.
+  dead
+}
+
+/**
+ * One event owed to one subscription.
+ *
+ * Delivery is at-least-once: the row is queued before it is attempted, and an
+ * attempt that fails ambiguously (a timeout, a 500 after the handler ran) is
+ * retried. `eventId` is the `TwinEvent` id and travels in the body, so the
+ * subscriber de-duplicates on it exactly as `ProcessedMessage` lets us
+ * de-duplicate an inbound provider retry.
+ *
+ * `@@unique([subscriptionId, eventId])` is what makes the queue idempotent:
+ * a second enqueue pass over the same events cannot owe an endpoint the same
+ * event twice, whatever the cursor did.
+ */
+model WebhookDelivery {
+  id String @id @default(cuid())
+
+  /// The `TwinEvent` this carries. Not a foreign key: events are evidence and
+  /// a delivery must never be able to cascade one away.
+  eventId   String
+  eventType String
+
+  status        WebhookDeliveryStatus @default(pending)
+  attempts      Int                   @default(0)
+  /// When this becomes due. Backoff is expressed by pushing it forward.
+  nextAttemptAt DateTime
+  /// What the endpoint last answered — a status code, or null for a transport
+  /// failure, where `lastError` carries the reason instead.
+  lastStatus    Int?
+  lastError     String?
+  lastAttemptAt DateTime?
+  deliveredAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  subscriptionId String
+  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, eventId])
+  @@index([workspaceId, createdAt])
+  @@index([status, nextAttemptAt])
+  @@map("webhook_deliveries")
 }

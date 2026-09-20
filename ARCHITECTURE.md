@@ -220,6 +220,40 @@ What makes it a contract rather than whatever the dashboard happened to need:
 Integration notes live in `docs/api.md`, `docs/integrations/react.md` and
 `docs/integrations/wordpress.md`.
 
+### Outbound webhooks
+
+Integration is bidirectional, and the other direction needs no new stream. Every
+mutation already appends to `TwinEvent`, so delivering events to a customer's own
+system is a *reader* of that log rather than a second record of what happened.
+
+- **Nothing runs inside `ingest()`.** `server/services/webhooks.ts` is reached
+  only from `POST /v1/webhooks/dispatch`, which is the tick — the same
+  arrangement the Shopify poll has, for the same reason: Lipi has no scheduler,
+  and a customer's server being slow is not a reason to hold a transaction open.
+- **Two passes.** `enqueue()` walks each subscription's `(occurredAt, id)` cursor
+  forward over the log and owes it a `WebhookDelivery` per matching event;
+  `deliverDue()` posts the ones that are due. Splitting them is what makes the
+  second safe to fail — the debt is recorded before the first attempt is made, so
+  an endpoint that is down loses nothing.
+- **Delivery state lives beside the event, never on it.** A `TwinEvent` is
+  evidence and is never updated (invariant 6); attempts, backoff and the dead
+  letter are columns of `webhook_deliveries`. The cursor advances over events the
+  subscription filtered out as well as the ones it wanted, or a narrow filter
+  would rescan the log's whole tail on every tick.
+- **At-least-once, de-duplicated by event id.** `@@unique(subscriptionId,
+  eventId)` means a repeated enqueue pass is free rather than a double delivery,
+  and the subscriber de-duplicates on the same id — the contract
+  `ProcessedMessage` gives us on the inbound side.
+- **Signed the way inbound is verified.** `X-Lipi-Signature` is
+  `sha256=HMAC-SHA256(secret, "<timestamp>.<raw body>")`, which is Meta's
+  spelling with the timestamp folded into the signed message so a delivery
+  cannot be replayed at a new time. The secret is encrypted at rest through
+  `lib/crypto` and returned by exactly one response.
+- **Backoff, then a human.** 30s, 2m, 10m, 30m, 2h — six attempts — then `dead`.
+  Deliveries are independent, so one endpoint's backoff cannot hold up another's
+  queue. A `4xx` that is not `408` or `429` is dead at once: a wrong path does
+  not become right in three hours.
+
 ## Channel delivery status
 
 | Channel | Current capability | Production requirement |
@@ -255,6 +289,10 @@ dashboard.
   allowed with it, so no third-party page can ride an operator's cookie.
 - Events posted from outside are namespaced under `external.`, so nothing a
   caller writes can pose as something the ingest path observed.
+- A webhook subscription's URL must be `https` and must not be a private or
+  link-local host — loopback is allowed outside production only — so an operator
+  cannot aim a signed delivery at the deployment's own neighbours. Deliveries do
+  not follow redirects, which would re-post a signed body to a host nobody named.
 
 ## Near-term priorities
 

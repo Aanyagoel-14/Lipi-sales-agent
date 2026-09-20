@@ -84,6 +84,12 @@ One envelope, at every status:
 | `GET /v1/events` | The append-only twin event log, newest first |
 | `POST /v1/events` | Record something that happened on your own site |
 | `GET /v1/conversions` | Orders as conversions: exact paise plus first-touch attribution |
+| `GET /v1/webhooks` | Endpoints this workspace delivers events to |
+| `POST /v1/webhooks` | Subscribe an endpoint. The signing secret is in this response only |
+| `GET`/`PATCH`/`DELETE /v1/webhooks/{id}` | One subscription: read, pause, repoint, remove |
+| `POST /v1/webhooks/dispatch` | Run one pass of the outbound queue |
+| `GET /v1/webhooks/deliveries` | Delivery log, newest first. `?status=dead` for the dead letter |
+| `POST /v1/webhooks/deliveries/{id}/redeliver` | Queue a finished delivery again |
 
 ### Starting a conversation
 
@@ -123,6 +129,57 @@ curl "https://your-lipi-host/v1/conversions?stage=Paid&stage=Shipped" \
 so it is a parameter rather than something decided here. Each row carries `valuePaise` and the
 customer's first-touch `attribution` — the UTM parameters and click id captured at their very
 first visit and never overwritten — so a campaign can be credited without a second call per row.
+
+### Receiving events
+
+Everything above is you calling Lipi. A webhook subscription is Lipi calling you: every twin
+event the workspace records — an order created, stock reserved, a lead scored — is POSTed to
+your URL as it happens, so nothing has to poll `/v1/events`.
+
+```bash
+curl -X POST https://your-lipi-host/v1/webhooks \
+  -H "Authorization: Bearer $LIPI_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://your-crm.example.com/hooks/lipi","eventTypes":["order_twin.created"]}'
+```
+
+`eventTypes` is a list of exact `type` values, as `GET /v1/events` reports them. Omit it for
+every type. The URL must be `https` and resolve on the public internet. The response carries
+`secret` once and never again — store it before you close the terminal.
+
+A delivery looks like this:
+
+```http
+POST /hooks/lipi HTTP/1.1
+Content-Type: application/json
+X-Lipi-Workspace: cl…
+X-Lipi-Event-Id: evt_m2x9k1a3
+X-Lipi-Event-Type: order_twin.created
+X-Lipi-Delivery-Id: cl…
+X-Lipi-Attempt: 1
+X-Lipi-Timestamp: 1758393600
+X-Lipi-Signature: sha256=8f2c…
+
+{"workspaceId":"cl…","deliveryId":"cl…","event":{"id":"evt_m2x9k1a3","atIso":"2026-09-20T18:00:00.000Z","type":"order_twin.created","twin":"order","payload":"ord_7 status=quoted value=4980"}}
+```
+
+**Verify before you trust it.** Recompute `HMAC-SHA256(secret, "<X-Lipi-Timestamp>.<raw body>")`,
+hex-encode it, prefix `sha256=` and compare it constant-time to `X-Lipi-Signature`. Sign the raw
+bytes, not a re-serialised object. Reject a timestamp older than your own tolerance — five
+minutes is a reasonable one — which is what stops a delivery anyone once saw being replayed for
+ever.
+
+**De-duplicate on `event.id`.** Delivery is at-least-once: an attempt that fails ambiguously is
+retried, so the same event id can arrive twice and the second one is not a second order.
+
+Answer `2xx` as soon as you have durably accepted it, and do your own work afterwards. Anything
+else and Lipi retries — after 30s, 2m, 10m, 30m and 2h, six attempts in all, and then the
+delivery is **dead** and waits for a human. A `4xx` that is not `408` or `429` is not retried at
+all: a wrong path does not become right in three hours. `GET /v1/webhooks/deliveries?status=dead`
+is the dead letter, and `POST /v1/webhooks/deliveries/{id}/redeliver` puts one back in the queue.
+
+Lipi has no scheduler of its own, so something has to run the queue: `POST /v1/webhooks/dispatch`
+is the tick, and an API key is what lets a cron call it.
 
 ## Calling from a browser
 

@@ -32,6 +32,12 @@ setComposioClient(fakeComposio);
 const { setShopifyClient } = await import("@/server/lib/shopify");
 const { fakeShopify } = await import("./fakes/shopify");
 setShopifyClient(fakeShopify);
+// Nor a customer's own server. Outbound webhooks are the one path that POSTs
+// to a URL an operator typed, so the poster is swapped for the whole suite
+// rather than only in the file that tests it.
+const { setWebhookPoster } = await import("@/server/lib/webhook-endpoint");
+const { fakeEndpoint } = await import("./fakes/webhook-endpoint");
+setWebhookPoster(fakeEndpoint.poster);
 
 beforeAll(() => {
   if (!process.env.DATABASE_URL?.includes("lipi_test")) {
@@ -42,4 +48,5 @@ beforeAll(() => {
 beforeEach(() => {
   fakeComposio.reset();
   fakeShopify.reset();
+  fakeEndpoint.reset();
 });

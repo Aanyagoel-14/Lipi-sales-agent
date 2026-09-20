@@ -4,6 +4,7 @@ import { prisma } from "@/server/lib/prisma";
 import { _resetRateLimitsForTests } from "@/server/lib/rate-limit";
 import { responses } from "@/app/v1/contract";
 import { endpoints, openapiDocument } from "@/app/v1/openapi";
+import { subscribe } from "@/server/services/webhooks";
 
 /**
  * The public contract, exercised the way an integrator meets it: through an
@@ -36,7 +37,8 @@ async function keyed(opts: { email?: string; scopes?: string[] } = {}) {
   return { get: call("get"), post: call("post") };
 }
 
-/** One customer, one thread and one order, so every read has something to return. */
+/** One customer, one thread, one order and one webhook subscription, so every
+ *  documented read has something to return. */
 async function seed(workspaceId: string) {
   const owner = await signedIn();
   await owner
@@ -65,6 +67,8 @@ async function seed(workspaceId: string) {
     },
   });
 
+  await subscribe(workspaceId, { url: "https://buyer.example.com/hooks/lipi" });
+
   const conversation = await prisma.conversation.findFirstOrThrow({ where: { workspaceId } });
   return { customer, product, order, conversation };
 }
@@ -89,6 +93,9 @@ describe("the documented surface", () => {
       return { id: (await prisma.conversation.findFirstOrThrow()).id };
     }
     if (path.startsWith("/v1/products")) return { id: (await prisma.product.findFirstOrThrow()).id };
+    if (path.startsWith("/v1/webhooks")) {
+      return { id: (await prisma.webhookSubscription.findFirstOrThrow()).id };
+    }
     return {};
   }
 
@@ -123,6 +130,7 @@ describe("one pagination convention", () => {
     { path: "/v1/events", key: "events" },
     { path: "/v1/conversions", key: "conversions" },
     { path: "/v1/orders", key: "orders" },
+    { path: "/v1/webhooks/deliveries", key: "deliveries" },
   ];
 
   beforeEach(async () => {

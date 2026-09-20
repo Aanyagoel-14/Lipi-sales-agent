@@ -145,6 +145,54 @@ export const eventShape = z.object({
 });
 
 /**
+ * Where this workspace's events are delivered. The signing secret is not a
+ * field: it appears in the create response and in no read, ever.
+ */
+export const webhookSubscriptionShape = z.object({
+  id: z.string(),
+  url: z.string(),
+  /** Empty means every type. */
+  eventTypes: z.array(z.string()),
+  active: z.boolean(),
+  createdIso: isoString,
+  updatedIso: isoString,
+});
+
+/** `pending` covers both "not tried yet" and "waiting out a backoff". */
+export const webhookDeliveryStatus = z.enum(["pending", "delivered", "dead"]);
+
+/**
+ * One event owed to one endpoint, and what became of it. `nextAttemptIso`
+ * tells the two kinds of `pending` apart. `dead` is the dead letter and waits
+ * for a person.
+ */
+export const webhookDeliveryShape = z.object({
+  id: z.string(),
+  subscriptionId: z.string(),
+  /** The `Event.id` this carries. De-duplicate on it: delivery is at-least-once. */
+  eventId: z.string(),
+  eventType: z.string(),
+  status: webhookDeliveryStatus,
+  attempts: z.number().int(),
+  nextAttemptIso: isoString,
+  /** What the endpoint answered, or null where it never answered at all. */
+  lastStatus: z.number().int().nullable(),
+  lastError: z.string().nullable(),
+  lastAttemptIso: isoString.nullable(),
+  deliveredIso: isoString.nullable(),
+  createdIso: isoString,
+});
+
+/** What one pass of the outbound queue did. */
+export const webhookDispatchShape = z.object({
+  queued: z.number().int(),
+  delivered: z.number().int(),
+  /** Failed this time, due again later. */
+  retrying: z.number().int(),
+  dead: z.number().int(),
+});
+
+/**
  * An order, seen as the business outcome a conversation produced.
  *
  * It is a projection of the same `Order` rows `/v1/orders` serves, not a
@@ -216,6 +264,30 @@ export const createEventBody = z.object({
 /** `?stage=Paid&stage=Shipped`. Absent means every stage. */
 export const conversionStageQuery = z.array(orderStage);
 
+/* The two fields a subscription is made and remade from, so the limits a
+ * create is held to are the same ones a PATCH is held to. */
+const webhookUrl = z.string().trim().min(1).max(2048);
+const webhookEventTypes = z.array(z.string().trim().min(1).max(80)).max(50);
+
+/**
+ * Subscribes an endpoint to this workspace's twin events.
+ *
+ * `eventTypes` are exact `Event.type` values as `/v1/events` reports them;
+ * an empty list means every type, which is the default — an integrator who
+ * has not said otherwise is better served by too much than by silence.
+ */
+export const createWebhookBody = z.object({
+  url: webhookUrl,
+  eventTypes: webhookEventTypes.default([]),
+});
+
+/** Every field optional: a PATCH that names only `active` pauses and nothing else. */
+export const updateWebhookBody = z.object({
+  url: webhookUrl.optional(),
+  eventTypes: webhookEventTypes.optional(),
+  active: z.boolean().optional(),
+});
+
 /* ---------- responses ---------- */
 
 export const responses = {
@@ -233,4 +305,15 @@ export const responses = {
   eventList: pagedShape("events", eventShape),
   event: z.object({ event: eventShape }),
   conversionList: pagedShape("conversions", conversionShape),
+  webhookList: z.object({ subscriptions: z.array(webhookSubscriptionShape) }),
+  webhookCreated: z.object({
+    subscription: webhookSubscriptionShape,
+    /** Shown once. No read returns it, because a shared secret two parties hold
+     *  stops being one the moment a third can ask for it. */
+    secret: z.string(),
+  }),
+  webhook: z.object({ subscription: webhookSubscriptionShape }),
+  webhookDeliveryList: pagedShape("deliveries", webhookDeliveryShape),
+  webhookDelivery: z.object({ delivery: webhookDeliveryShape }),
+  webhookDispatch: webhookDispatchShape,
 } as const;

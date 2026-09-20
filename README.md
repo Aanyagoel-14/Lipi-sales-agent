@@ -208,13 +208,21 @@ surface, documented and internal alike.
 | GET    | `/v1/inventory/exceptions` | Rows a connector could not apply |
 | POST   | `/v1/inventory/exceptions/:id/resolve` | Map the SKU, or dismiss it |
 | POST   | `/v1/inventory/:id/sync`   | Where the source pushes stock (token auth) |
+| GET    | `/v1/webhooks`         | Endpoints this workspace delivers events to |
+| POST   | `/v1/webhooks`         | Subscribe one; returns the signing secret once |
+| GET    | `/v1/webhooks/:id`     | One subscription              |
+| PATCH  | `/v1/webhooks/:id`     | Repoint, refilter or pause it |
+| DELETE | `/v1/webhooks/:id`     | Remove it                     |
+| POST   | `/v1/webhooks/dispatch` | Run one pass of the outbound queue |
+| GET    | `/v1/webhooks/deliveries` | Delivery log and dead letter, paged |
+| POST   | `/v1/webhooks/deliveries/:id/redeliver` | Queue a finished delivery again |
 
 The lists that grow without bound are keyset-paginated — customers,
-conversations, products, events, conversions, orders, inventory exceptions and
-connector runs. Each takes `?limit=` (default 50, max 200) and `?cursor=`, and
-answers with `nextCursor`, `null` on the last page. The dashboard
-server-renders the first page and appends the rest, so a table that grows
-forever is never fetched whole.
+conversations, products, events, conversions, orders, webhook deliveries,
+inventory exceptions and connector runs. Each takes `?limit=` (default 50, max
+200) and `?cursor=`, and answers with `nextCursor`, `null` on the last page.
+The dashboard server-renders the first page and appends the rest, so a table
+that grows forever is never fetched whole.
 
 ## The ingest loop
 
