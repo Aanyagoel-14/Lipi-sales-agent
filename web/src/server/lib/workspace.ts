@@ -28,17 +28,11 @@ export type ResolveOptions = {
 /**
  * Resolves the tenant for a request from its credential, never from client input.
  *
- * Two credentials reach here and there is deliberately one function for both,
- * because a second resolver is how one of them ends up missing a check the
- * other has:
- *
- * - A **session cookie**. The `x-workspace-id` header may *choose* between
- *   workspaces the signed-in user belongs to, but membership is checked on
- *   every request. Trusting the header alone would let anyone read any tenant
- *   by editing one value.
- * - An **API key** in `Authorization: Bearer`, for a caller with no browser.
- *   A key names its own workspace and cannot be pointed at another, so the
- *   header is only ever allowed to agree with it.
+ * Two credentials reach here — a **session cookie** from a browser, or an
+ * **API key** in `Authorization: Bearer` from a caller that has no browser —
+ * and there is deliberately one entry point for both, because a second
+ * resolver is how one of them ends up missing a check the other has. This
+ * function only picks the branch; each branch below states its own rules.
  *
  * A request carrying both is rejected rather than resolved by precedence.
  * Either choice of winner silently acts on a tenant the caller did not mean —
@@ -49,25 +43,33 @@ export type ResolveOptions = {
 export async function resolveWorkspaceId(options: ResolveOptions = {}): Promise<string> {
   const requestHeaders = await headers();
   const presented = bearerToken(requestHeaders);
+  const requested = requestHeaders.get("x-workspace-id");
 
   if (presented && (await hasSessionCookie())) {
     throw new HttpError(400, "Send a session cookie or an API key, not both");
   }
 
-  if (presented) {
-    if (options.sessionOnly) {
-      throw new HttpError(403, "An API key cannot manage API keys. Sign in instead.");
-    }
-    return resolveFromApiKey(presented, requestHeaders.get("x-workspace-id"));
-  }
+  if (!presented) return resolveFromSession(requested);
 
+  if (options.sessionOnly) {
+    throw new HttpError(403, "An API key cannot manage API keys. Sign in instead.");
+  }
+  return resolveFromApiKey(presented, requested);
+}
+
+/**
+ * The `x-workspace-id` header may *choose* between the workspaces the
+ * signed-in user belongs to, but membership is checked on every request.
+ * Trusting the header alone would let anyone read any tenant by editing one
+ * value.
+ */
+async function resolveFromSession(requested: string | null): Promise<string> {
   const user = await requireUser();
 
   if (!user.workspaceIds.length) {
     throw new HttpError(409, "No workspace yet. Finish onboarding first.");
   }
 
-  const requested = requestHeaders.get("x-workspace-id");
   if (requested && !user.workspaceIds.includes(requested)) {
     // Distinguish a stale client cookie from a genuine cross-tenant attempt.
     // A workspace that no longer exists is the former: hard-failing every page
@@ -87,6 +89,11 @@ export async function resolveWorkspaceId(options: ResolveOptions = {}): Promise<
   return first!.id;
 }
 
+/**
+ * A key authenticates and names its tenant in the same value, so there is no
+ * membership to consult: the checks here are the key's own — that it is live,
+ * within its budget, and scoped to the method it is being spent on.
+ */
 async function resolveFromApiKey(presented: string, requested: string | null): Promise<string> {
   const key = await authenticateApiKey(presented);
   // Unknown, malformed and revoked are one answer. A 401 that distinguished
@@ -117,7 +124,7 @@ function requireScope(scopes: ApiScope[]) {
   // No request in flight means no method to judge, which happens only outside
   // a `route()` wrapper. Assume the stricter of the two rather than the one
   // that would let a read-only key through a mutation unnoticed.
-  const method = requestInFlight()?.method?.toUpperCase();
+  const method = requestInFlight()?.method.toUpperCase();
   const needed: ApiScope = method && READ_METHODS.has(method) ? "read" : "write";
 
   if (!scopes.includes(needed)) {

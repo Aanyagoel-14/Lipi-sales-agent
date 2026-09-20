@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ApiScope } from "@/generated/prisma/client";
 import { body, json, route } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
 import { newApiKey } from "@/server/lib/api-key";
@@ -7,15 +8,16 @@ import { resolveWorkspaceId } from "@/server/lib/workspace";
 import { apiKeyView } from "./view";
 
 /**
- * Key management is session-only, in both directions: `sessionOnly` refuses a
- * Bearer credential here even when it is valid, so a leaked key cannot mint a
- * replacement for itself and outlive being revoked.
+ * Managing keys is session-only: every handler in this folder passes
+ * `sessionOnly`, which refuses a Bearer credential even when it is valid, so
+ * a leaked key cannot mint a replacement for itself and outlive being revoked.
  */
-const sessionOnly = { sessionOnly: true } as const;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Every key the workspace has, revoked ones included — a revocation is history. */
 export const GET = route(async () => {
-  const workspaceId = await resolveWorkspaceId(sessionOnly);
+  const workspaceId = await resolveWorkspaceId({ sessionOnly: true });
   const keys = await prisma.apiKey.findMany({
     where: { workspaceId },
     orderBy: { createdAt: "desc" },
@@ -32,20 +34,18 @@ const createSchema = z.object({
 });
 
 export const POST = route(async (req) => {
-  const workspaceId = await resolveWorkspaceId(sessionOnly);
+  const workspaceId = await resolveWorkspaceId({ sessionOnly: true });
   const data = await body(req, createSchema, "Check the key");
 
   // Write implies read. A key that could POST an order but not GET it back
   // would be a trap rather than a tighter grant.
-  const scopes = data.scopes.includes("write") ? (["read", "write"] as const) : (["read"] as const);
+  const scopes: ApiScope[] = data.scopes.includes("write") ? ["read", "write"] : ["read"];
 
-  const expiresAt = data.expiresInDays
-    ? new Date(Date.now() + data.expiresInDays * 24 * 60 * 60 * 1000)
-    : null;
+  const expiresAt = data.expiresInDays ? new Date(Date.now() + data.expiresInDays * DAY_MS) : null;
 
   const { secret, prefix, hash } = newApiKey();
   const key = await prisma.apiKey.create({
-    data: { workspaceId, name: data.name, prefix, hash, scopes: [...scopes], expiresAt },
+    data: { workspaceId, name: data.name, prefix, hash, scopes, expiresAt },
   });
 
   await recordEvent(workspaceId, "api_key.created", "operations", `${key.name} (${key.prefix}…)`);

@@ -26,7 +26,7 @@ const PREFIX = "lipi_sk_";
 /** Enough of the secret to tell two keys apart, too little to guess the rest. */
 const PREFIX_LENGTH = PREFIX.length + 8;
 
-export const hashApiKey = (secret: string) => createHash("sha256").update(secret).digest("hex");
+const hashApiKey = (secret: string) => createHash("sha256").update(secret).digest("hex");
 
 /** Mints a key. The secret exists in memory here and nowhere else, ever again. */
 export function newApiKey() {

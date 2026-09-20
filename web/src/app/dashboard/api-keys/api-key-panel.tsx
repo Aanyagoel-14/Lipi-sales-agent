@@ -33,7 +33,7 @@ const field =
   "h-10 w-full rounded-full border border-line-strong bg-surface px-4 text-[0.8125rem] placeholder:text-ink-subtle focus-visible:border-violet focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-violet";
 
 /** Live, expired and revoked are three different answers to "can I call with this". */
-function state(key: ApiKey): { label: string; tone: "teal" | "amber" | "neutral" } {
+function statusOf(key: ApiKey): { label: string; tone: "teal" | "amber" | "neutral" } {
   if (key.revokedIso) return { label: "revoked", tone: "neutral" };
   if (key.expiresIso && new Date(key.expiresIso) <= new Date()) return { label: "expired", tone: "amber" };
   return { label: "live", tone: "teal" };
@@ -146,16 +146,15 @@ export function ApiKeyPanel({ baseUrl }: { baseUrl: string }) {
         ) : (
           <ul className="divide-y divide-line/60">
             {keys.map((key) => {
-              const status = state(key);
+              const status = statusOf(key);
+              const writes = key.scopes.includes("write");
               return (
                 <li key={key.id} className="px-5 py-4">
                   <div className="flex flex-wrap items-baseline gap-2">
                     <p className="text-[0.875rem] font-medium">{key.name}</p>
                     <span className="font-mono text-[0.75rem] text-ink-subtle">{key.prefix}…</span>
                     <span className="ml-auto flex flex-wrap items-center gap-2">
-                      <Tag tone={key.scopes.includes("write") ? "violet" : "neutral"}>
-                        {key.scopes.includes("write") ? "read + write" : "read"}
-                      </Tag>
+                      <Tag tone={writes ? "violet" : "neutral"}>{writes ? "read + write" : "read"}</Tag>
                       <Tag tone={status.tone}>{status.label}</Tag>
                     </span>
                   </div>
@@ -204,8 +203,8 @@ export function ApiKeyPanel({ baseUrl }: { baseUrl: string }) {
               onChange={(e) => setScope(e.target.value as "read" | "write")}
               className={`${field} sm:w-48`}
             >
-              {SCOPES.map((s) => (
-                <option key={s.id} value={s.id}>{s.label}</option>
+              {SCOPES.map((option) => (
+                <option key={option.id} value={option.id}>{option.label}</option>
               ))}
             </select>
             <label htmlFor="key-expiry" className="sr-only">Expiry</label>
@@ -215,8 +214,8 @@ export function ApiKeyPanel({ baseUrl }: { baseUrl: string }) {
               onChange={(e) => setExpiryDays(Number(e.target.value))}
               className={`${field} sm:w-40`}
             >
-              {EXPIRIES.map((e) => (
-                <option key={e.days} value={e.days}>{e.label}</option>
+              {EXPIRIES.map((expiry) => (
+                <option key={expiry.days} value={expiry.days}>{expiry.label}</option>
               ))}
             </select>
             <Button size="sm" chevron={false} disabled={busy || name.trim().length < 2} onClick={create}>
