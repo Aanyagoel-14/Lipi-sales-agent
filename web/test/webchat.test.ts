@@ -22,6 +22,16 @@ import { _resetRateLimitsForTests } from "@/server/lib/rate-limit";
 
 const VISITOR = "visitor-web-0001";
 
+/** A visitor who arrived on a paid click — what the widget reads off the
+ *  URL on the first page it loads on. */
+const PAID_TOUCH = {
+  ...EMPTY_TOUCH,
+  utmSource: "google", utmMedium: "cpc", utmCampaign: "polos-aw",
+  adClickId: "gclid-abc123",
+  landingPage: "https://shop.test/polos?gclid=gclid-abc123",
+  referrer: "https://www.google.com/",
+};
+
 let workspaceId: string;
 
 /** A workspace with an owner of its own: the email is derived from the name
@@ -53,6 +63,55 @@ describe("the visitor session", () => {
     expect(sessions[0]!.visitorId).toBe(VISITOR);
     expect(sessions[0]!.customerId).toBeNull(); // a page load is not yet a customer
     expect(result.sessionId).toBe(sessions[0]!.id);
+  });
+
+  // The whole point of capturing at page load: the campaign that brought
+  // this visitor is on the row before they have clicked anything, which is
+  // the only state most ad traffic ever reaches.
+  it("records the campaign the visitor arrived on before they interact at all", async () => {
+    await upsertSession({ workspaceId, visitorId: VISITOR, touch: PAID_TOUCH });
+
+    const session = await sessionOf();
+    expect(session.utmSource).toBe("google");
+    expect(session.utmCampaign).toBe("polos-aw");
+    expect(session.adClickId).toBe("gclid-abc123");
+    expect(session.landingPage).toBe("https://shop.test/polos?gclid=gclid-abc123");
+    expect(session.referrer).toBe("https://www.google.com/");
+    expect(session.engagedAt).toBeNull(); // loaded, not engaged
+    expect(session.customerId).toBeNull();
+  });
+
+  // Invariant 3. A page load is now every page load, so a visitor who comes
+  // back on a retargeting ad a week later meets this path routinely.
+  it("leaves first touch where it landed when a later page load carries another campaign", async () => {
+    await upsertSession({ workspaceId, visitorId: VISITOR, touch: PAID_TOUCH });
+    const first = await sessionOf();
+
+    await tick();
+    await upsertSession({
+      workspaceId, visitorId: VISITOR,
+      touch: { ...EMPTY_TOUCH, utmSource: "facebook", utmCampaign: "retarget", landingPage: "https://shop.test/" },
+    });
+
+    const after = await sessionOf();
+    expect(after.utmSource).toBe("google");
+    expect(after.utmCampaign).toBe("polos-aw");
+    expect(after.landingPage).toBe(first.landingPage);
+    expect(after.lastSeenAt.getTime()).toBeGreaterThan(first.lastSeenAt.getTime());
+    expect(after.engagedAt).toBeNull(); // still browsing
+  });
+
+  // Two tabs opening at once is ordinary traffic once capture happens at
+  // page load. Read-then-create has both find nothing, both insert, and one
+  // of them die on the unique index.
+  it("survives two page loads landing at the same moment", async () => {
+    const [a, b] = await Promise.all([
+      upsertSession({ workspaceId, visitorId: VISITOR, touch: PAID_TOUCH }),
+      upsertSession({ workspaceId, visitorId: VISITOR, touch: PAID_TOUCH }),
+    ]);
+
+    expect(a.sessionId).toBe(b.sessionId);
+    expect(await prisma.visitorSession.count({ where: { workspaceId } })).toBe(1);
   });
 
   it("only bumps lastSeenAt on the second, rather than starting a new visit", async () => {

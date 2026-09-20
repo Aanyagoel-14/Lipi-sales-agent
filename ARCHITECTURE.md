@@ -150,6 +150,17 @@ extracts intent, updates the customer Twin, matches a variant, applies allowed
 inventory/order effects, creates agent runs and approvals, composes a grounded
 reply, and appends events for each effect.
 
+The website widget is the one inbound path with a step before any message: it
+records the visitor at **page load**, not when the chat panel opens, because
+that is the only moment the `utm_*` parameters and the referrer are reliably
+still on the URL — and because a visitor who arrives on a paid click, reads the
+page and leaves is the majority of ad traffic. One `VisitorSession` per visitor
+per workspace is upserted per page view: first touch is written at creation and
+never rewritten, `lastSeenAt` moves on every later view, and `engagedAt` is
+stamped only when they first say something. That is the line between a visit and
+a lead. The greeting the call answers with is held by the widget until the
+visitor opens the panel; nothing opens itself at anybody.
+
 ## Grounding the salesperson
 
 `sell()` decides what is said; `ingest()` has already decided what is true.

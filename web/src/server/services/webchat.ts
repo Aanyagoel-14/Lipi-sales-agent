@@ -37,25 +37,35 @@ export type SessionInput = {
   touch: AttributionTouch;
 };
 
+/**
+ * The visitor, recorded at page load — before they open the panel, and
+ * whether or not they ever do. That is the only moment the ad platform's
+ * own query parameters are reliably still on the URL, and a visitor who
+ * arrives from a paid click and reads the page without clicking is the
+ * majority of ad traffic (Req 3).
+ *
+ * "Loaded" is not "engaged": this writes `createdAt`/`lastSeenAt` and never
+ * `engagedAt`, which `sendVisitorMessage` stamps when the visitor first
+ * says something. The greeting comes back with the row but is the widget's
+ * to hold until the panel opens — nothing here shows anybody anything.
+ */
 export async function upsertSession(input: SessionInput) {
-  const existing = await prisma.visitorSession.findUnique({
-    where: { workspaceId_visitorId: { workspaceId: input.workspaceId, visitorId: input.visitorId } },
-  });
-
+  // One statement rather than a read and then a write: capture happens on
+  // every page load, so two tabs opening at the same moment is ordinary
+  // traffic and a read-then-create would race them onto the unique index.
+  //
   // First touch is written once, at creation, and never overwritten by a
-  // later page load — see attribution.ts's own note on why a retargeting
-  // click a month later must not re-attribute an existing visitor.
-  const session = existing
-    ? await prisma.visitorSession.update({
-        where: { id: existing.id },
-        data: { lastSeenAt: new Date() },
-      })
-    : await prisma.visitorSession.create({
-        data: {
-          id: id("vst"), workspaceId: input.workspaceId, visitorId: input.visitorId,
-          ...(hasAttribution(input.touch) ? input.touch : EMPTY_TOUCH),
-        },
-      });
+  // later page load — `update` moves `lastSeenAt` and nothing else. See
+  // attribution.ts's own note on why a retargeting click a month later must
+  // not re-attribute an existing visitor (invariant 3).
+  const session = await prisma.visitorSession.upsert({
+    where: { workspaceId_visitorId: { workspaceId: input.workspaceId, visitorId: input.visitorId } },
+    create: {
+      id: id("vst"), workspaceId: input.workspaceId, visitorId: input.visitorId,
+      ...(hasAttribution(input.touch) ? input.touch : EMPTY_TOUCH),
+    },
+    update: { lastSeenAt: new Date() },
+  });
 
   const workspace = await prisma.workspace.findUnique({
     where: { id: input.workspaceId },

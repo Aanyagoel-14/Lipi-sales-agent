@@ -16,7 +16,7 @@ import { _resetRateLimitsForTests, checkRateLimit, clientIp } from "@/server/lib
 // `corsRoute`'s own constants, asserted against rather than imported: they
 // are deliberately private to cors.ts, and a change to either should show up
 // here as a failure rather than pass silently.
-const WEBCHAT_LIMIT = 30;
+const WEBCHAT_LIMIT = 60;
 const WEBCHAT_WINDOW_MS = 60_000;
 
 beforeEach(_resetRateLimitsForTests);
@@ -114,10 +114,17 @@ describe("the budget as a webchat caller meets it", () => {
   });
 
   /** A cheap `corsRoute` call from one source address. */
-  const poll = (ip: string, ws = workspaceId) =>
+  const poll = (ip: string, ws = workspaceId, visitorId = "visitor-rate-1") =>
     agent()
       .get(`/v1/webchat/${ws}/updates`)
-      .query({ visitorId: "visitor-rate-1", conversationId: "cnv_nothing" })
+      .query({ visitorId, conversationId: "cnv_nothing" })
+      .set("x-forwarded-for", ip);
+
+  /** The call the widget now makes on every page load, chat or no chat. */
+  const load = (ip: string, visitorId = "visitor-rate-2") =>
+    agent()
+      .post(`/v1/webchat/${workspaceId}/session`)
+      .send({ visitorId })
       .set("x-forwarded-for", ip);
 
   /** The endpoint the budget exists for: every one of these runs a full
@@ -134,7 +141,7 @@ describe("the budget as a webchat caller meets it", () => {
     for (let i = alreadySpent + 1; i <= WEBCHAT_LIMIT; i++) await poll(ip).expect(200);
   };
 
-  it("refuses the 31st request in the window with a Retry-After the widget can obey", async () => {
+  it("refuses the request past the budget with a Retry-After the widget can obey", async () => {
     await spendBudget("198.51.100.10");
 
     const refused = await poll("198.51.100.10").expect(429);
@@ -172,10 +179,7 @@ describe("the budget as a webchat caller meets it", () => {
 
     const refused = await say("198.51.100.20").expect(429);
     expect(refused.headers["access-control-allow-origin"]).toBe("*");
-    await agent().post(`/v1/webchat/${workspaceId}/session`)
-      .send({ visitorId: "visitor-rate-2" })
-      .set("x-forwarded-for", "198.51.100.20")
-      .expect(429);
+    await load("198.51.100.20").expect(429);
 
     // The refusal lands ahead of the handler, which is the whole point:
     // no ingest ran, so the flood bought no LLM call and no fake lead.
@@ -190,6 +194,22 @@ describe("the budget as a webchat caller meets it", () => {
 
     await poll("198.51.100.21").expect(429);
     expect(await prisma.message.count({ where: { conversation: { workspaceId }, from: "customer" } })).toBe(spent);
+  });
+
+  // Capture happens at page load now, so every visitor spends requests and
+  // not only the ones who chat — and an office or carrier NAT puts all of
+  // them behind one address. Three visitors, each loading a page and then
+  // polling for a minute, is 48 requests the old budget of 30 refused.
+  it("leaves room for several visitors behind one shared address", async () => {
+    const office = "198.51.100.30";
+    const POLLS_PER_MINUTE = 15; // widget.js polls every 4 seconds
+
+    for (const visitorId of ["visitor-office-1", "visitor-office-2", "visitor-office-3"]) {
+      await load(office, visitorId).expect(201);
+      for (let i = 0; i < POLLS_PER_MINUTE; i++) {
+        await poll(office, workspaceId, visitorId).expect(200);
+      }
+    }
   });
 
   // The bucket key is the source address and nothing else. The workspace id
