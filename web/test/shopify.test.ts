@@ -11,7 +11,7 @@ beforeEach(resetDatabase);
 const SHOP = "acme.myshopify.com";
 
 /** A workspace with no catalogue of its own, so every product here is imported. */
-async function workspace(opts: { email?: string; shop?: string } = {}) {
+async function workspace(opts: { email?: string } = {}) {
   const email = opts.email ?? "owner@test.local";
   const { user } = await createUser(email);
   const ws = await createWorkspace({ userId: user.id, withCatalogue: false });
@@ -30,7 +30,7 @@ function callback(params: Record<string, string>) {
 
 /** Install a store and come back from consent, the whole round trip. */
 async function connected(opts: { email?: string; shop?: string } = {}) {
-  const { workspace: ws, a } = await workspace(opts);
+  const { workspace: ws, a } = await workspace({ email: opts.email });
   const shop = opts.shop ?? SHOP;
 
   const started = await a.post("/v1/inventory/shopify/install").send({ shop }).expect(201);
@@ -140,8 +140,8 @@ describe("shopify install", () => {
 
     try {
       const { a, connector } = await connected();
-      fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 42 })] }));
-      fakeShopify.orders_.push(orderFixture({ id: 5900, line_items: [{ id: 1, variant_id: 42, sku: "s", quantity: 1, price: "1.00" }] }));
+      fakeShopify.storeProducts.push(productFixture({ variants: [variantFixture({ id: 42 })] }));
+      fakeShopify.storeOrders.push(orderFixture({ id: 5900, line_items: [{ id: 1, variant_id: 42, sku: "s", quantity: 1, price: "1.00" }] }));
       await sync(a).expect(200);
       // Including the paths that log on purpose: an unroutable delivery, and
       // a disconnect whose provider calls are best-effort.
@@ -215,7 +215,7 @@ describe("shopify disconnect", () => {
 
   it("a delivery for a store that is gone is acknowledged and written nowhere", async () => {
     const { a, connector, workspace: ws } = await connected();
-    fakeShopify.products_.push(productFixture());
+    fakeShopify.storeProducts.push(productFixture());
     await sync(a).expect(200);
 
     await a.delete(`/v1/inventory/connectors/${connector.id}`).expect(204);
@@ -232,7 +232,7 @@ describe("shopify product import", () => {
   it("imports products, maps both of Shopify's handles, and moves stock through applySync", async () => {
     const { a, workspace: ws } = await connected();
     const variant = variantFixture({ id: 4001, option1: "M", option2: "Cobalt", inventory_quantity: 12 });
-    fakeShopify.products_.push(productFixture({ id: 9001, title: "Cotton Polo", variants: [variant] }));
+    fakeShopify.storeProducts.push(productFixture({ id: 9001, title: "Cotton Polo", variants: [variant] }));
 
     const res = await sync(a).expect(200);
     expect(res.body.products).toMatchObject({ products: 1, variants: 1, skipped: 0 });
@@ -260,7 +260,7 @@ describe("shopify product import", () => {
 
   it("folds a third option axis into the second rather than losing it", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(
+    fakeShopify.storeProducts.push(
       productFixture({
         options: [
           { name: "Size", position: 1 },
@@ -283,7 +283,7 @@ describe("shopify product import", () => {
 
   it("raises an exception for a variant it cannot map instead of failing the run", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(
+    fakeShopify.storeProducts.push(
       productFixture({
         variants: [
           variantFixture({ id: 21, option1: "M", option2: "Cobalt" }),
@@ -312,7 +312,7 @@ describe("shopify product import", () => {
 
   it("re-running a sync duplicates nothing and double-counts nothing", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(productFixture({ id: 9001, variants: [variantFixture({ id: 4001 })] }));
+    fakeShopify.storeProducts.push(productFixture({ id: 9001, variants: [variantFixture({ id: 4001 })] }));
 
     await sync(a).expect(200);
     const second = await sync(a).expect(200);
@@ -328,7 +328,7 @@ describe("shopify product import", () => {
 
   it("carries the watermark forward and holds it when a poll finds nothing", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(
+    fakeShopify.storeProducts.push(
       productFixture({ id: 1, updated_at: "2026-09-18T09:00:00Z", variants: [variantFixture({ id: 31 })] }),
       productFixture({ id: 2, updated_at: "2026-09-19T09:00:00Z", variants: [variantFixture({ id: 32 })] }),
     );
@@ -340,7 +340,7 @@ describe("shopify product import", () => {
     expect(after.cursor).toBe("2026-09-19T09:00:00Z");
 
     // The store goes quiet. The position must not move backwards or forwards.
-    fakeShopify.products_ = [];
+    fakeShopify.storeProducts = [];
     const quiet = await sync(a).expect(200);
     expect(fakeShopify.calls.products[1]!.options.updatedAtMin).toBe("2026-09-19T09:00:00Z");
     expect(quiet.body.stock).toBeNull();
@@ -358,7 +358,7 @@ describe("shopify product import", () => {
       [3, "2026-09-12T00:00:00Z"],
       [4, "2026-09-30T00:00:00Z"],
     ] as const) {
-      fakeShopify.products_.push(productFixture({ id, updated_at: updatedAt }));
+      fakeShopify.storeProducts.push(productFixture({ id, updated_at: updatedAt }));
     }
 
     const pulled = await pullAll(
@@ -386,17 +386,18 @@ describe("shopify product import", () => {
 describe("shopify webhooks", () => {
   it("rejects a body whose signature does not check out", async () => {
     const { a } = await connected();
-    fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 41, inventory_quantity: 4 })] }));
+    const variant = variantFixture({ id: 41, inventory_quantity: 4 });
+    fakeShopify.storeProducts.push(productFixture({ variants: [variant] }));
     await sync(a).expect(200);
 
-    const item = String(variantFixture({ id: 41 }).inventory_item_id);
-    await deliver("inventory_levels/update", { inventory_item_id: Number(item), available: 99 }, { hmac: "nope" })
-      .expect(401);
+    const level = { inventory_item_id: variant.inventory_item_id, available: 99 };
+    await deliver("inventory_levels/update", level, { hmac: "nope" }).expect(401);
+    // And a delivery carrying no signature at all.
     await agent()
       .post("/webhooks/shopify")
       .set("x-shopify-topic", "inventory_levels/update")
       .set("x-shopify-shop-domain", SHOP)
-      .send({ inventory_item_id: Number(item), available: 99 })
+      .send(level)
       .expect(401);
 
     // Nothing moved on a body we could not prove came from Shopify.
@@ -407,7 +408,7 @@ describe("shopify webhooks", () => {
   it("applies a level change to the mapped variant, through applySync", async () => {
     const { a, workspace: ws } = await connected();
     const variant = variantFixture({ id: 51, inventory_quantity: 9 });
-    fakeShopify.products_.push(productFixture({ variants: [variant] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variant] }));
     await sync(a).expect(200);
 
     await deliver("inventory_levels/update", {
@@ -423,7 +424,7 @@ describe("shopify webhooks", () => {
   it("replays a redelivered level rather than applying it twice", async () => {
     const { a } = await connected();
     const variant = variantFixture({ id: 52, inventory_quantity: 9 });
-    fakeShopify.products_.push(productFixture({ variants: [variant] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variant] }));
     await sync(a).expect(200);
 
     const level = { inventory_item_id: variant.inventory_item_id, available: 3, updated_at: "2026-09-20T08:00:00Z" };
@@ -436,7 +437,7 @@ describe("shopify webhooks", () => {
 
   it("raises unmapped_sku for an inventory item nobody has imported", async () => {
     const { a } = await connected();
-    fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 61 })] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variantFixture({ id: 61 })] }));
     await sync(a).expect(200);
 
     await deliver("inventory_levels/update", { inventory_item_id: 777_000, available: 5 }).expect(200);
@@ -449,7 +450,7 @@ describe("shopify webhooks", () => {
     const { a, workspace: ws } = await connected();
     const variant = variantFixture({ id: 71, inventory_quantity: 6 });
     const product = productFixture({ id: 9101, title: "Cotton Polo", variants: [variant] });
-    fakeShopify.products_.push(product);
+    fakeShopify.storeProducts.push(product);
     await sync(a).expect(200);
 
     await deliver("products/update", {
@@ -461,6 +462,16 @@ describe("shopify webhooks", () => {
 
     expect((await prisma.product.findFirstOrThrow({ where: { workspaceId: ws.id } })).name).toBe("Cotton Polo V2");
     expect((await variantsOf(ws.id))[0]!.stock).toBe(1);
+  });
+
+  it("refuses a signed body that is not a product or a level", async () => {
+    await connected();
+
+    // Signed, and still unusable: neither handler has anything to read.
+    await deliver("inventory_levels/update", null).expect(400);
+    await deliver("products/update", "not-a-product").expect(400);
+    await deliver("inventory_levels/update", { available: 5 }).expect(400);
+    await deliver("products/update", { id: 1 }).expect(400);
   });
 
   it("acknowledges a topic it does not serve and a shop it does not know", async () => {
@@ -486,8 +497,8 @@ describe("shopify order import", () => {
 
   it("brings an order in with its customer, its money in paise, and its first touch", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 81 })] }));
-    fakeShopify.orders_.push(orderFixture({ id: 5001, line_items: [lineFor(81)] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variantFixture({ id: 81 })] }));
+    fakeShopify.storeOrders.push(orderFixture({ id: 5001, line_items: [lineFor(81)] }));
 
     const res = await sync(a).expect(200);
     expect(res.body.orders).toMatchObject({ orders: 1, lines: 1, skipped: 0 });
@@ -511,11 +522,11 @@ describe("shopify order import", () => {
 
   it("never re-credits a returning buyer to the campaign that brought them back", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 82 })] }));
-    fakeShopify.orders_.push(orderFixture({ id: 5002, line_items: [lineFor(82, 1)] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variantFixture({ id: 82 })] }));
+    fakeShopify.storeOrders.push(orderFixture({ id: 5002, line_items: [lineFor(82, 1)] }));
     await sync(a).expect(200);
 
-    fakeShopify.orders_.push(
+    fakeShopify.storeOrders.push(
       orderFixture({
         id: 5003,
         updated_at: "2026-09-19T15:00:00Z",
@@ -535,9 +546,9 @@ describe("shopify order import", () => {
 
   it("re-importing corrects where an order stands and adds nothing", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 83 })] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variantFixture({ id: 83 })] }));
     const order = orderFixture({ id: 5004, financial_status: "pending", line_items: [lineFor(83, 3)] });
-    fakeShopify.orders_.push(order);
+    fakeShopify.storeOrders.push(order);
 
     await sync(a).expect(200);
     expect((await prisma.order.findFirstOrThrow({ where: { workspaceId: ws.id } })).stage).toBe("Quoted");
@@ -555,8 +566,8 @@ describe("shopify order import", () => {
 
   it("does not touch stock: Shopify already counted the sale", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 84, inventory_quantity: 7 })] }));
-    fakeShopify.orders_.push(orderFixture({ id: 5005, line_items: [lineFor(84, 4)] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variantFixture({ id: 84, inventory_quantity: 7 })] }));
+    fakeShopify.storeOrders.push(orderFixture({ id: 5005, line_items: [lineFor(84, 4)] }));
 
     await sync(a).expect(200);
 
@@ -567,8 +578,8 @@ describe("shopify order import", () => {
 
   it("skips a line whose variant this connector has never mapped", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 85 })] }));
-    fakeShopify.orders_.push(orderFixture({ id: 5006, line_items: [lineFor(85), lineFor(999_999)] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variantFixture({ id: 85 })] }));
+    fakeShopify.storeOrders.push(orderFixture({ id: 5006, line_items: [lineFor(85), lineFor(999_999)] }));
 
     const res = await sync(a).expect(200);
 
@@ -578,9 +589,9 @@ describe("shopify order import", () => {
 
   it("a refunded order stops counting towards lifetime value", async () => {
     const { a, workspace: ws } = await connected();
-    fakeShopify.products_.push(productFixture({ variants: [variantFixture({ id: 86 })] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variantFixture({ id: 86 })] }));
     const order = orderFixture({ id: 5007, line_items: [lineFor(86, 1)] });
-    fakeShopify.orders_.push(order);
+    fakeShopify.storeOrders.push(order);
     await sync(a).expect(200);
 
     order.financial_status = "refunded";
@@ -598,8 +609,8 @@ describe("shopify order import", () => {
 describe("shopify tenancy", () => {
   it("keeps one store's import inside its own workspace", async () => {
     const first = await connected();
-    fakeShopify.products_.push(productFixture({ id: 9500, variants: [variantFixture({ id: 91 })] }));
-    fakeShopify.orders_.push(orderFixture({ id: 5100, line_items: [{ id: 1, variant_id: 91, sku: "s", quantity: 1, price: "10.00" }] }));
+    fakeShopify.storeProducts.push(productFixture({ id: 9500, variants: [variantFixture({ id: 91 })] }));
+    fakeShopify.storeOrders.push(orderFixture({ id: 5100, line_items: [{ id: 1, variant_id: 91, sku: "s", quantity: 1, price: "10.00" }] }));
     await sync(first.a).expect(200);
 
     const second = await connected({ email: "other@test.local", shop: "beta.myshopify.com" });
@@ -616,7 +627,7 @@ describe("shopify tenancy", () => {
   it("a delivery for one store never moves another store's stock", async () => {
     const first = await connected();
     const variant = variantFixture({ id: 92, inventory_quantity: 5 });
-    fakeShopify.products_.push(productFixture({ variants: [variant] }));
+    fakeShopify.storeProducts.push(productFixture({ variants: [variant] }));
     await sync(first.a).expect(200);
 
     await deliver("inventory_levels/update", { inventory_item_id: variant.inventory_item_id, available: 0 }, {

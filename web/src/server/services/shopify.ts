@@ -16,6 +16,7 @@ import {
   type ShopifyOrder,
   type ShopifyProduct,
   type ShopifyVariant,
+  type ShopifyWebhook,
 } from "../lib/shopify";
 import { applySync, newConnectorSecret, type SyncOutcome, type SyncRow } from "./inventory";
 
@@ -165,14 +166,18 @@ export async function disconnect(connector: InventoryConnector) {
   });
 }
 
-/** Best effort, both ways: the operator asked to be unplugged, not for a report. */
+/**
+ * Subscribing and withdrawing are both best effort: a store that will not
+ * answer must not fail an install that otherwise worked, nor stand between an
+ * operator and the disconnect they asked for.
+ */
 async function subscribe(connector: InventoryConnector, token: string) {
   if (!connector.externalId) return;
   const address = webhookUrl();
 
   const existing = await shopify()
     .listWebhooks(connector.externalId, token)
-    .catch(() => [] as { id: number; topic: string; address: string }[]);
+    .catch(() => [] as ShopifyWebhook[]);
 
   for (const topic of WEBHOOK_TOPICS) {
     if (existing.some((w) => w.topic === topic && w.address === address)) continue;
@@ -288,16 +293,22 @@ export async function importProducts(
       // averaging into a number no customer was ever charged.
       const price = toPaise(Number(sellable[0]!.price) || 0);
 
+      // Everything the store has a say over, written the same way whether the
+      // product is new or already here.
+      const fromStore = {
+        name,
+        category: incoming.product_type?.trim() || "Shopify",
+        axes: [axisA, axisB],
+        attributes: { vendor: incoming.vendor ?? "", shopifyHandle: incoming.handle ?? "" },
+        price,
+      };
+
       await tx.product.upsert({
         where: { id: productId },
         create: {
           id: productId,
           workspaceId: connector.workspaceId,
-          name,
-          category: incoming.product_type?.trim() || "Shopify",
-          axes: [axisA, axisB],
-          attributes: { vendor: incoming.vendor ?? "", shopifyHandle: incoming.handle ?? "" },
-          price,
+          ...fromStore,
           marginPct: 0,
           leadTimeDays: 0,
           supplierId: supplier,
@@ -305,13 +316,7 @@ export async function importProducts(
         },
         // `id` and `workspaceId` are not in the update: a re-import corrects
         // what the store says about a product, never which tenant owns it.
-        update: {
-          name,
-          category: incoming.product_type?.trim() || "Shopify",
-          axes: [axisA, axisB],
-          attributes: { vendor: incoming.vendor ?? "", shopifyHandle: incoming.handle ?? "" },
-          price,
-        },
+        update: fromStore,
       });
       summary.products += 1;
 
@@ -319,11 +324,16 @@ export async function importProducts(
       for (const variant of sellable) {
         const [optionA, optionB] = optionsOf(variant);
         const pair = `${optionA}|||${optionB}`;
+        // The two handles Shopify identifies one sellable thing by: sold as
+        // `variant.id`, stocked as `inventory_item_id`.
+        const externalSku = String(variant.id);
+        const externalRef = String(variant.inventory_item_id);
+
         // Two variants that fold onto the same pair would fight over one row.
         // The first wins and the rest become visible work, not a silent
         // overwrite of a stock figure.
         if (claimed.has(pair)) {
-          await raise(tx, connector, String(variant.id), "ambiguous_sku",
+          await raise(tx, connector, externalSku, "ambiguous_sku",
             `${name} sends "${optionA} / ${optionB}" more than once`, variant);
           summary.skipped += 1;
           continue;
@@ -340,14 +350,9 @@ export async function importProducts(
         summary.variants += 1;
 
         await tx.inventoryMapping.upsert({
-          where: { connectorId_externalSku: { connectorId: connector.id, externalSku: String(variant.id) } },
-          create: {
-            connectorId: connector.id,
-            externalSku: String(variant.id),
-            externalRef: String(variant.inventory_item_id),
-            variantId: row.id,
-          },
-          update: { externalRef: String(variant.inventory_item_id), variantId: row.id },
+          where: { connectorId_externalSku: { connectorId: connector.id, externalSku } },
+          create: { connectorId: connector.id, externalSku, externalRef, variantId: row.id },
+          update: { externalRef, variantId: row.id },
         });
       }
 

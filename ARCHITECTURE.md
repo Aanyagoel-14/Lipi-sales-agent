@@ -100,6 +100,10 @@ to sign in as. Corrections land through the same path and append the same
 | Reconciliation | Per-connector health separates *stale* (not heard from) from *failing* (rows rejected), and reports how many variants no connector covers — those silently keep their import-day figure. |
 | Failure state | A row that cannot be applied becomes an operator-visible exception, resolved by mapping the SKU or dismissing it. A connector reporting success while discarding unmapped SKUs is worse than one reporting failure. |
 
+A correction below a variant's reserved units is refused rather than clamped:
+those units are already promised to a customer, and accepting the lower figure
+would let the twin sell them twice.
+
 ### Shopify
 
 Shopify does not push, so it is the one source Lipi calls. The operator
@@ -120,10 +124,6 @@ paralleling it:
 | Webhooks | One URL for the deployment, `POST /webhooks/shopify`, HMAC-verified against `SHOPIFY_API_SECRET` over the raw bytes; the tenant comes from `X-Shopify-Shop-Domain`, which is why a shop resolves to exactly one connector. Same shape as `/webhooks/meta`, for the same reason. |
 | Orders | Imported so revenue that happened in Shopify is visible to attribution: the buyer's `landing_site` supplies `utm_*` and the click id, stamped on first touch only. An imported order reserves and deducts nothing — Shopify already counted the sale, and the next sync carries that number. |
 | Cadence | Lipi has no scheduler. `POST /v1/inventory/shopify/sync` is the tick, driven by a cron or an API key. |
-
-A correction below a variant's reserved units is refused rather than clamped:
-those units are already promised to a customer, and accepting the lower figure
-would let the twin sell them twice.
 
 ## Training and evaluation
 

@@ -17,16 +17,16 @@ import type {
  * the network — the suite must never touch a real store, and a fake that can
  * only be reached through `setShopifyClient` is how that stays true.
  *
- *   fake.products.push(productFixture(...))     what a sync will find
- *   fake.orders.push(orderFixture(...))         what an order import will find
- *   fake.calls.products / .orders / …           what happened, in order
- *   fake.sign(body)                             a valid webhook signature
+ *   fake.storeProducts.push(productFixture(...))   what a sync will find
+ *   fake.storeOrders.push(orderFixture(...))       what an order import will find
+ *   fake.calls.products / .orders / …              what happened, in order
+ *   fake.sign(body)                                a valid webhook signature
  */
 export class FakeShopify implements ShopifyClient {
   /** The one Shopify app the deployment owns, as the suite configures it. */
   apiSecret = "test-shopify-api-secret";
-  products_: ShopifyProduct[] = [];
-  orders_: ShopifyOrder[] = [];
+  storeProducts: ShopifyProduct[] = [];
+  storeOrders: ShopifyOrder[] = [];
   webhooks: ShopifyWebhook[] = [];
   /** Codes the fake will trade for a token, and what it hands back. */
   token = "shpat_test_token";
@@ -47,8 +47,8 @@ export class FakeShopify implements ShopifyClient {
 
   reset() {
     this.apiSecret = "test-shopify-api-secret";
-    this.products_ = [];
-    this.orders_ = [];
+    this.storeProducts = [];
+    this.storeOrders = [];
     this.webhooks = [];
     this.token = "shpat_test_token";
     this.scope = "read_products,read_inventory,read_orders";
@@ -76,13 +76,13 @@ export class FakeShopify implements ShopifyClient {
   async products(shop: string, token: string, options: PullOptions) {
     this.check();
     this.calls.products.push({ shop, token, options });
-    return since(this.products_, options);
+    return since(this.storeProducts, options);
   }
 
   async orders(shop: string, token: string, options: PullOptions) {
     this.check();
     this.calls.orders.push({ shop, token, options });
-    return since(this.orders_, options);
+    return since(this.storeOrders, options);
   }
 
   async listWebhooks(shop: string) {

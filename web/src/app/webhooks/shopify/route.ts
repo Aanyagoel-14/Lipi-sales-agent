@@ -22,6 +22,20 @@ export const dynamic = "force-dynamic";
 
 const status = (code: number) => new Response(null, { status: code });
 
+/**
+ * Shape checks rather than schema parses: each handler reads a handful of
+ * fields and tolerates the rest being absent, but a body missing the ones it
+ * is keyed on is not that topic's payload at all. Written as type guards so
+ * the narrowed body is what gets handed on, with nothing asserted away.
+ */
+const isProduct = (body: Record<string, unknown>): body is ShopifyProduct =>
+  Number.isFinite(body.id) && Array.isArray(body.variants);
+
+type InventoryLevel = { inventory_item_id: number; available: number; updated_at?: string };
+
+const isInventoryLevel = (body: Record<string, unknown>): body is InventoryLevel =>
+  Number.isInteger(body.inventory_item_id) && Number.isFinite(body.available);
+
 export async function POST(req: Request) {
   const raw = Buffer.from(await req.arrayBuffer());
 
@@ -44,32 +58,27 @@ export async function POST(req: Request) {
     return status(200);
   }
 
-  let payload: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    payload = JSON.parse(raw.toString("utf8")) as Record<string, unknown>;
+    parsed = JSON.parse(raw.toString("utf8"));
   } catch {
     return status(400);
   }
+  // JSON that is not an object — `null`, a number, a bare array — is as
+  // unusable to the handlers below as bytes that would not parse at all.
+  if (!parsed || typeof parsed !== "object") return status(400);
+  const payload = parsed as Record<string, unknown>;
 
   switch (req.headers.get("x-shopify-topic")) {
     case "products/update": {
-      // Shape-checked rather than schema-parsed: the import reads a handful
-      // of fields off the product and tolerates the rest being absent, but a
-      // body with no id and no variant list is not a product at all.
-      const product = payload as unknown as ShopifyProduct;
-      if (!Number.isFinite(product.id) || !Array.isArray(product.variants)) return status(400);
-      await onProductUpdate(connector, product);
+      if (!isProduct(payload)) return status(400);
+      await onProductUpdate(connector, payload);
       return status(200);
     }
 
     case "inventory_levels/update": {
-      const level = payload as { inventory_item_id?: number; available?: number; updated_at?: string };
-      if (!Number.isInteger(level.inventory_item_id) || !Number.isFinite(level.available)) return status(400);
-      await onInventoryLevel(connector, {
-        inventory_item_id: level.inventory_item_id!,
-        available: level.available!,
-        updated_at: level.updated_at,
-      });
+      if (!isInventoryLevel(payload)) return status(400);
+      await onInventoryLevel(connector, payload);
       return status(200);
     }
 
