@@ -21,6 +21,8 @@ enum Channel {
   instagram
   facebook
   telegram
+  /// X (formerly Twitter) direct messages.
+  x
   email
   webchat
 }

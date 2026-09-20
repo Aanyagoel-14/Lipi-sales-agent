@@ -1,5 +1,5 @@
 import { receive } from "@/server/channels/inbound";
-import { specFor, type Json } from "@/server/channels/registry";
+import { connectionView, specFor } from "@/server/channels/registry";
 import { secretsMatch } from "@/server/lib/crypto";
 import { prisma } from "@/server/lib/prisma";
 
@@ -40,11 +40,5 @@ export async function POST(req: Request, ctx: Params) {
   }
 
   const spec = specFor("telegram")!;
-  return receive(connection, spec.parse(payload, {
-    id: connection.id,
-    workspaceId: connection.workspaceId,
-    channel: connection.channel,
-    externalId: connection.externalId,
-    config: (connection.config ?? {}) as Json,
-  }));
+  return receive(connection, spec.parse(payload, connectionView(connection)));
 }

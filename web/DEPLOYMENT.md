@@ -40,16 +40,19 @@ secrets in your host — never commit `.env`):
 | `OPENROUTER_CHAT_MODEL` | no | Used only for the operator's own twin-chat, can be a stronger/slower model. |
 | `NODE_ENV` | no | Set to `production` in production. |
 | `COMPOSIO_API_KEY` | no | Composio holds every channel credential and runs every send. Without it no channel can be connected and only webchat works. |
-| `COMPOSIO_AUTH_CONFIG_*` | no | One auth config id per channel (`WHATSAPP`, `INSTAGRAM`, `FACEBOOK`, `TELEGRAM`, `GMAIL`). A channel with no id is listed as unavailable. |
+| `COMPOSIO_AUTH_CONFIG_*` | no | One auth config id per channel (`WHATSAPP`, `INSTAGRAM`, `FACEBOOK`, `TELEGRAM`, `X`, `GMAIL`). A channel with no id is listed as unavailable. |
 | `COMPOSIO_WEBHOOK_SECRET` | no | Signs Composio's own deliveries to `/webhooks/composio`. Printed once by `npm run composio:subscribe`. |
 | `META_APP_SECRET` | **when a Meta channel is offered** | Lipi's Meta app secret. Every inbound WhatsApp / Instagram / Messenger body is verified against it. |
 | `META_VERIFY_TOKEN` | **when a Meta channel is offered** | Any long random string. Meta echoes it once, when the callback URL is registered. |
+| `X_API_SECRET` | **when X is offered** | Lipi's X app consumer secret (API secret key). Verifies every inbound DM body and answers X's hourly challenge. |
+| `X_WEBHOOK_ID` | **when X is offered** | The id `POST /2/webhooks` returned for `PUBLIC_URL/webhooks/x`. Each tenant's activity is subscribed to it. |
 
-The last two are enforced: if any of `COMPOSIO_AUTH_CONFIG_WHATSAPP`,
+The last four are enforced: if any of `COMPOSIO_AUTH_CONFIG_WHATSAPP`,
 `COMPOSIO_AUTH_CONFIG_INSTAGRAM` or `COMPOSIO_AUTH_CONFIG_FACEBOOK` is set
-and either Meta key is missing, the app refuses to start. A Meta channel
-whose webhooks cannot be verified accepts nothing and reports nothing, and
-an empty inbox is a worse way to find that out than a failed boot.
+and either Meta key is missing — or `COMPOSIO_AUTH_CONFIG_X` is set and
+either X key is missing — the app refuses to start. A channel whose webhooks
+cannot be verified accepts nothing and reports nothing, and an empty inbox is
+a worse way to find that out than a failed boot.
 
 Generate `APP_SECRET`:
 ```bash
@@ -122,8 +125,8 @@ reverse proxy (Nginx, Caddy, or your host's own HTTPS termination) for TLS.
 
 ## 5. Channel webhooks
 
-Inbound is two URLs for the whole deployment, and the operator sets up
-neither of them.
+Inbound is three URLs for the whole deployment, and the operator sets up
+none of them.
 
 **Meta (WhatsApp, Instagram, Messenger)** — one callback for every tenant,
 configured once in Lipi's own Meta app, not per workspace:
@@ -154,6 +157,40 @@ secret instead, which makes every later delivery a 401 and writes nothing.
 To clear the webhook on Telegram's side as well, the operator runs
 `curl "https://api.telegram.org/bot<token>/deleteWebhook"` once, or simply
 reconnects the bot — `setWebhook` overwrites the stale one.
+
+**X** — one callback for every tenant, like Meta's, because X also registers
+a webhook against an *app* rather than an account. Unlike Meta's it is
+registered over the API, once, with the app's bearer token:
+
+```bash
+curl --request POST 'https://api.x.com/2/webhooks' \
+  --header "Authorization: Bearer $X_BEARER_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"url": "https://<PUBLIC_URL>/webhooks/x"}'
+```
+
+The app must be deployed and answering before this is run: X sends the
+challenge immediately and refuses to register a URL that fails it. Put the
+`id` from the response in `X_WEBHOOK_ID` and the app's **consumer secret**
+(API secret key, not the bearer token) in `X_API_SECRET`. X re-runs the
+challenge hourly and marks a webhook that stops answering invalid, so
+`X_API_SECRET` must not be rotated without re-validating
+(`PUT /2/webhooks/<id>`).
+
+Each tenant's own account is subscribed when the channel is connected, and a
+failure there leaves the channel **Not working** rather than silently
+one-directional — the same rule as Meta's.
+
+One caveat on disconnect, the mirror of Telegram's: removing a subscription
+(`DELETE /2/account_activity/webhooks/<id>/subscriptions/<user id>/all`)
+is authenticated with the app's bearer token, which Lipi does not hold at
+runtime. Disconnecting clears the account id inbound routes on instead, so a
+later delivery matches no connection and is dropped. To stop X sending it at
+all, run that DELETE once with the bearer token.
+
+Account Activity is a paid X tier and DMs bill per message; `X_API_SECRET`
+and `X_WEBHOOK_ID` are both required as soon as `COMPOSIO_AUTH_CONFIG_X` is
+set, and the app refuses to boot without them.
 
 ## 6. Post-deploy checklist
 

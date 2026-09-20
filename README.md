@@ -125,7 +125,8 @@ What it covers, chosen because these are the things that have actually broken:
   and the event trail.
 - **Auth and tenancy**: unauthenticated 401, cross-tenant 403, stale workspace
   ids falling back rather than locking a user out, logout revoking.
-- **Webhooks**: forged Meta signatures and wrong Telegram secrets rejected.
+- **Webhooks**: forged Meta and X signatures, and wrong Telegram secrets,
+  rejected.
 - **Billing**: owed and ageing derived from payments, buckets summing to the
   total.
 - **Module boundaries** in `web`: a client component importing anything that

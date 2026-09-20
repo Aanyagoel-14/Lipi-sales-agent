@@ -89,6 +89,16 @@ export function classify(channel: Channel, error: string): Failure {
       if (code(429) || /too many requests/.test(text)) return "transient";
       return "transient";
 
+    case "x":
+      // 32 "could not authenticate you", 89 "invalid or expired token".
+      if (code(401, 32, 89) || /unauthorized|invalid or expired token/.test(text)) return "auth";
+      // X refuses a DM to someone who does not take them from us at all —
+      // not following, blocked, or DMs off. Retrying is the same refusal.
+      if (/cannot send messages|not following|blocked|opted out|does not accept/.test(text)) return "policy";
+      // 88 is the v1.1 code for the same thing 429 says.
+      if (code(429, 88) || /too many requests|rate limit/.test(text)) return "transient";
+      return "transient";
+
     case "email":
       if (code(401, 403) || /invalid_grant|insufficient permission/.test(text)) return "auth";
       if (/invalid to header|recipient address rejected|mailbox unavailable|address not found/.test(text)) return "policy";

@@ -101,6 +101,9 @@ const CHANNEL_STYLE: Record<Channel, string> = {
   facebook:
     "This is a Messenger DM. One or two short sentences, at most three options, and plain text only — "
     + "asterisks and hashes arrive as punctuation, not formatting.",
+  x:
+    "This is a direct message on X. One or two short sentences, at most three options, and plain text "
+    + "only — asterisks and hashes arrive as punctuation, not formatting.",
   email:
     "This is a reply to an email, so a short paragraph is fine where a chat bubble would not be — but "
     + "still no more than a paragraph and a list. Write plain text; it is not rendered as markdown.",

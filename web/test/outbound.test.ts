@@ -40,7 +40,9 @@ async function connect(channel: Channel, options: {
     status: options.accountStatus ?? "ACTIVE",
     statusReason: null,
     userId: workspaceId,
-    toolkit: channel === "email" ? "gmail" : channel,
+    // The toolkit is not always the channel's own name: Gmail backs email,
+    // and the X toolkit is still called twitter.
+    toolkit: channel === "email" ? "gmail" : channel === "x" ? "twitter" : channel,
   });
   return prisma.channelConnection.create({
     data: {
@@ -113,6 +115,19 @@ describe("what reaches the provider", () => {
     expect(fakeComposio.calls.execute[0]).toMatchObject({
       slug: "INSTAGRAM_SEND_TEXT_MESSAGE",
       arguments: { recipient_id: "igsid_900", text: message.text },
+    });
+  });
+
+  it("sends an X DM to the participant id", async () => {
+    await setup();
+    await connect("x");
+    const { conversationId, message } = await conversationWith("x", "3001969357");
+
+    await sendReply({ workspaceId, conversationId, messageId: message.id });
+
+    expect(fakeComposio.calls.execute[0]).toMatchObject({
+      slug: "TWITTER_SEND_A_NEW_MESSAGE_TO_A_USER",
+      arguments: { participant_id: "3001969357", text: message.text },
     });
   });
 
@@ -277,6 +292,11 @@ describe("classifying a refusal", () => {
     expect(classify("telegram", "401 Unauthorized")).toBe("auth");
     expect(classify("telegram", "400 Bad Request: chat not found")).toBe("policy");
     expect(classify("instagram", "code 10 subcode 2534022")).toBe("policy");
+    expect(classify("x", "401 Unauthorized")).toBe("auth");
+    expect(classify("x", '{"errors":[{"code":89,"message":"Invalid or expired token"}]}')).toBe("auth");
+    expect(classify("x", "You cannot send messages to this user")).toBe("policy");
+    expect(classify("x", "403 Forbidden: the recipient is not following you")).toBe("policy");
+    expect(classify("x", "429 Too Many Requests")).toBe("transient");
     expect(classify("telegram", "something nobody has seen before")).toBe("transient");
   });
 });

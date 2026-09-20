@@ -1,9 +1,8 @@
 import { receive } from "@/server/channels/inbound";
-import { specForMetaObject, type ChannelSpec, type Json } from "@/server/channels/registry";
+import { connectionView, specForMetaObject, type Json } from "@/server/channels/registry";
 import { env } from "@/server/env";
 import { secretsMatch, verifyMetaSignature } from "@/server/lib/crypto";
 import { prisma } from "@/server/lib/prisma";
-import type { ChannelConnection } from "@/generated/prisma/client";
 
 /**
  * Every Meta message, for every tenant, arrives here.
@@ -84,7 +83,7 @@ export async function POST(req: Request) {
         continue;
       }
 
-      const answer = await receive(connection, spec.parse(slice, view(connection)));
+      const answer = await receive(connection, spec.parse(slice, connectionView(connection)));
       // A throttled tenant means its messages were not accepted, so Meta
       // should be told to come back rather than shown a 200 over a drop.
       // Idempotency makes the redelivery of the tenants that did land free.
@@ -96,12 +95,3 @@ export async function POST(req: Request) {
   // its own and the body as a whole is still acknowledged once.
   return throttled ?? status(200);
 }
-
-/** What a parser is allowed to know about the connection it is parsing for. */
-const view = (connection: ChannelConnection): Parameters<ChannelSpec["parse"]>[1] => ({
-  id: connection.id,
-  workspaceId: connection.workspaceId,
-  channel: connection.channel,
-  externalId: connection.externalId,
-  config: (connection.config ?? {}) as Json,
-});

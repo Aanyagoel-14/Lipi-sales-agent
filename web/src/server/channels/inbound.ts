@@ -4,18 +4,20 @@ import { prisma } from "@/server/lib/prisma";
 import { checkRateLimit } from "@/server/lib/rate-limit";
 import { sell } from "@/server/services/selling";
 import { sendReply } from "./outbound";
-import type { ParsedMessage } from "./registry";
+import { specFor, type ParsedMessage } from "./registry";
 
 /**
  * The one way a customer message enters the building.
  *
- * Three transports reach it — the single Meta callback, the per-connection
- * Telegram route, and (next phase) Composio's trigger webhook — and each of
- * them authenticates its own caller, because each is authenticated
- * differently: Meta signs the raw bytes, Telegram echoes a secret header,
- * Composio signs a Standard Webhooks envelope. What happens *after* that is
- * the same three steps every time, and they are here so there is one copy of
- * them to reason about rather than one per transport.
+ * Three transports reach it — the single Meta callback, the single X
+ * callback and the per-connection Telegram route — and Composio's trigger
+ * webhook is the fourth, once the trigger-channels phase routes it here
+ * rather than logging. Each authenticates its own caller, because each is
+ * authenticated differently: Meta signs the raw bytes, X signs them base64
+ * under its app's consumer secret, Telegram echoes a secret header, Composio
+ * signs a Standard Webhooks envelope. What happens *after* that is the same
+ * three steps every time, and they are here so there is one copy of them to
+ * reason about rather than one per transport.
  *
  * Nothing in this module decides whether a request is genuine. It is called
  * only once the caller has proved itself, and the rate limit below is placed
@@ -30,6 +32,11 @@ import type { ParsedMessage } from "./registry";
  * every Meta tenant now arrives on one URL from Meta's own address range, so
  * an IP bucket would be a single global bucket that one busy workspace could
  * close for everyone.
+ *
+ * This is the default. A channel whose provider imposes something tighter
+ * says so in its own spec (`inboundLimit`) rather than being named here:
+ * what a provider allows is a property of the channel, and a list of
+ * exceptions at the door is how one gets missed when a channel is added.
  */
 export const INBOUND_LIMIT = 120;
 export const INBOUND_WINDOW_MS = 60_000;
@@ -61,7 +68,9 @@ export async function receive(
   connection: ReceivingConnection,
   messages: ParsedMessage[],
 ): Promise<Response> {
-  const limited = checkRateLimit(rateLimitKey(connection.id), INBOUND_LIMIT, INBOUND_WINDOW_MS);
+  const ceiling = specFor(connection.channel)?.inboundLimit
+    ?? { max: INBOUND_LIMIT, windowMs: INBOUND_WINDOW_MS };
+  const limited = checkRateLimit(rateLimitKey(connection.id), ceiling.max, ceiling.windowMs);
   if (!limited.allowed) {
     return new Response(null, { status: 429, headers: { "Retry-After": String(limited.retryAfterSeconds) } });
   }

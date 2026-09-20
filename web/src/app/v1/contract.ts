@@ -28,7 +28,7 @@ import { inboundSchema } from "./messages/schema";
  *    place by `route()` in `lib/http.ts`.
  */
 
-export const channel = z.enum(["whatsapp", "instagram", "facebook", "telegram", "email", "webchat"]);
+export const channel = z.enum(["whatsapp", "instagram", "facebook", "telegram", "x", "email", "webchat"]);
 export const orderStage = z.enum(["Quoted", "Paid", "Packed", "Shipped", "Delivered", "Returned"]);
 
 const isoString = z.iso.datetime();

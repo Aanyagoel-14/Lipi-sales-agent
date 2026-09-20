@@ -1,13 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { env } from "@/server/env";
-import { catalog, channelSpecs, parseAddress, specFor, toolkitVersions } from "@/server/channels/registry";
+import { catalog, channelSpecs, connectionView, parseAddress, specFor, toolkitVersions } from "@/server/channels/registry";
+import type { Prisma } from "@/generated/prisma/client";
 
 const connection = { id: "cc_1", workspaceId: "ws_1", channel: "whatsapp" as const, externalId: null, config: {} };
-const spec = (channel: "whatsapp" | "telegram" | "instagram" | "facebook" | "email") => specFor(channel)!;
+const spec = (channel: "whatsapp" | "telegram" | "instagram" | "facebook" | "x" | "email") => specFor(channel)!;
+
+/** The connected X account: `4337869213` is the shop, and its own DMs are echoes. */
+const xConnection = { id: "cc_x", workspaceId: "ws_1", channel: "x" as const, externalId: "4337869213", config: {} };
+
+/** One Account Activity delivery, in the shape docs.x.com documents for DMs. */
+const xActivity = ({ senderId = "3001969357", text = "do you ship to Pune?" } = {}) => ({
+  for_user_id: "4337869213",
+  direct_message_events: [{
+    type: "message_create",
+    id: "954491830116155396",
+    created_timestamp: "1516403560557",
+    message_create: {
+      target: { recipient_id: "4337869213" },
+      sender_id: senderId,
+      message_data: { text, entities: { hashtags: [], urls: [] } },
+    },
+  }],
+  // Widened so a test can replace a user with one X named no handle for.
+  users: {
+    "3001969357": { id: "3001969357", name: "Deepa Rao", screen_name: "deepa_rao" },
+    "4337869213": { id: "4337869213", name: "Lipi Apparel", screen_name: "lipiapparel" },
+  } as Record<string, { id: string; name: string; screen_name?: string }>,
+});
 
 describe("the registry", () => {
   it("has one spec per connectable channel, each with a pinned version and its own toolkit", () => {
-    expect(channelSpecs.map((s) => s.channel)).toEqual(["whatsapp", "telegram", "instagram", "facebook", "email"]);
+    expect(channelSpecs.map((s) => s.channel)).toEqual(["whatsapp", "telegram", "instagram", "facebook", "x", "email"]);
     for (const s of channelSpecs) expect(s.toolkitVersion).toMatch(/^\d{8}_\d{2}$/);
     expect(new Set(channelSpecs.map((s) => s.toolkit)).size).toBe(channelSpecs.length);
   });
@@ -16,9 +40,11 @@ describe("the registry", () => {
     // Read from GET /toolkits/{slug} on 2026-09-19, when every send and identity
     // slug below was confirmed to exist with these argument names. Bumping a pin
     // without re-checking the arguments is how a rename reaches a customer.
+    // `twitter` is the one read from the toolkit's public page instead
+    // (2026-09-20), and its arguments are X's own — see the spec.
     expect(Object.fromEntries(channelSpecs.map((s) => [s.toolkit, s.toolkitVersion]))).toEqual({
       whatsapp: "20260915_00", telegram: "20260821_00", instagram: "20260915_00",
-      facebook: "20260902_00", gmail: "20260915_00",
+      facebook: "20260902_00", twitter: "20260812_00", gmail: "20260915_00",
     });
   });
 
@@ -31,7 +57,8 @@ describe("the registry", () => {
   });
 
   it("hands the SDK one version per toolkit", () => {
-    expect(Object.keys(toolkitVersions()).sort()).toEqual(["facebook", "gmail", "instagram", "telegram", "whatsapp"]);
+    expect(Object.keys(toolkitVersions()).sort())
+      .toEqual(["facebook", "gmail", "instagram", "telegram", "twitter", "whatsapp"]);
   });
 
   it("has no spec for webchat", () => {
@@ -80,6 +107,37 @@ describe("parsing provider payloads", () => {
     expect(spec("instagram").parse(body, connection)).toEqual([]);
   });
 
+  it("turns an X direct message into one message keyed by the event id", () => {
+    expect(spec("x").parse(xActivity(), xConnection)).toEqual([
+      { channel: "x", handle: "3001969357", text: "do you ship to Pune?", name: "@deepa_rao", externalId: "954491830116155396" },
+    ]);
+  });
+
+  it("ignores the copy of our own outgoing DM that X delivers back", () => {
+    // X delivers both directions of a conversation to the same webhook, so
+    // the reply just sent arrives as an event whose sender is the connected
+    // account itself.
+    const echo = xActivity({ senderId: "4337869213", text: "Yes, we do." });
+    expect(spec("x").parse(echo, xConnection)).toEqual([]);
+  });
+
+  it("ignores typing indicators, read receipts and message deletions", () => {
+    expect(spec("x").parse({
+      for_user_id: "4337869213",
+      direct_message_indicate_typing_events: [{ sender_id: "3001969357", target: { recipient_id: "4337869213" } }],
+    }, xConnection)).toEqual([]);
+    expect(spec("x").parse({
+      for_user_id: "4337869213",
+      direct_message_events: [{ type: "message_delete", id: "954491830116155396" }],
+    }, xConnection)).toEqual([]);
+  });
+
+  it("names an X sender by handle, falling back to their display name", () => {
+    const delivery = xActivity();
+    delivery.users["3001969357"] = { id: "3001969357", name: "Deepa Rao" };
+    expect(spec("x").parse(delivery, xConnection)[0]).toMatchObject({ name: "Deepa Rao" });
+  });
+
   it("turns Gmail trigger data into one message with the thread id", () => {
     const data = {
       message_id: "18f0a", thread_id: "18f09", sender: "Deepa Rao <Deepa@Example.com>", to: "shop@lipi.test",
@@ -123,6 +181,12 @@ describe("send builders", () => {
     });
   });
 
+  it("builds an X DM addressed to the participant", () => {
+    expect(spec("x").send({ to: "3001969357", text: "hi", config: {} })).toEqual({
+      slug: "TWITTER_SEND_A_NEW_MESSAGE_TO_A_USER", arguments: { participant_id: "3001969357", text: "hi" },
+    });
+  });
+
   it("replies in-thread on Gmail when there is a thread, and starts one otherwise", () => {
     expect(spec("email").send({ to: "d@example.com", text: "They run true to size.", config: {}, threadId: "18f09" })).toEqual({
       slug: "GMAIL_REPLY_TO_THREAD", arguments: { thread_id: "18f09", message_body: "They run true to size.", recipient_email: "d@example.com" },
@@ -133,11 +197,28 @@ describe("send builders", () => {
   });
 });
 
+describe("the limits a channel imposes", () => {
+  it("states each provider's own longest message", () => {
+    expect(Object.fromEntries(channelSpecs.map((s) => [s.channel, s.textLimit]))).toEqual({
+      whatsapp: 4096, telegram: 4096, instagram: 1000, facebook: 2000, x: 10000, email: null,
+    });
+  });
+
+  it("lets a channel carry its own inbound ceiling rather than inbound.ts knowing about it", () => {
+    // X takes 15 DMs per 15 minutes from one account and delivers our own
+    // replies back on the same webhook, so a connection is allowed twice
+    // that in deliveries and no more: past it there is no reply to send.
+    expect(spec("x").inboundLimit).toEqual({ max: 30, windowMs: 15 * 60_000 });
+    // Everything else runs on the shared default.
+    expect(channelSpecs.filter((s) => s.inboundLimit).map((s) => s.channel)).toEqual(["x"]);
+  });
+});
+
 describe("identity tools", () => {
   it("name the documented read tool per channel", () => {
     expect(channelSpecs.map((s) => s.identity.slug)).toEqual([
       "WHATSAPP_GET_PHONE_NUMBERS", "TELEGRAM_GET_ME", "INSTAGRAM_GET_USER_INFO",
-      "FACEBOOK_GET_USER_PAGES", "GMAIL_GET_PROFILE",
+      "FACEBOOK_GET_USER_PAGES", "TWITTER_USER_LOOKUP_ME", "GMAIL_GET_PROFILE",
     ]);
   });
 
@@ -148,6 +229,8 @@ describe("identity tools", () => {
       .toEqual({ externalId: "987", displayName: "@lipi_bot" });
     expect(spec("instagram").identity.pick({ id: "app-scoped", user_id: "1784", username: "lipi.apparel" }))
       .toEqual({ externalId: "1784", displayName: "@lipi.apparel" });
+    expect(spec("x").identity.pick({ data: { id: "4337869213", name: "Lipi Apparel", username: "lipiapparel" } }))
+      .toEqual({ externalId: "4337869213", displayName: "@lipiapparel" });
     expect(spec("email").identity.pick({ emailAddress: "Shop@Lipi.test", messagesTotal: 10 }))
       .toEqual({ externalId: "shop@lipi.test", displayName: "Shop@Lipi.test" });
   });
@@ -155,13 +238,14 @@ describe("identity tools", () => {
   it("throw rather than invent an id", () => {
     expect(() => spec("whatsapp").identity.pick({ data: [] })).toThrow();
     expect(() => spec("telegram").identity.pick({ ok: false })).toThrow();
+    expect(() => spec("x").identity.pick({ data: {} })).toThrow();
   });
 });
 
 describe("catalog()", () => {
   it("lists exactly the specs with their inbound kind", () => {
     const entries = catalog();
-    expect(entries.map((e) => e.channel)).toEqual(["whatsapp", "telegram", "instagram", "facebook", "email"]);
+    expect(entries.map((e) => e.channel)).toEqual(["whatsapp", "telegram", "instagram", "facebook", "x", "email"]);
     expect(entries.find((e) => e.channel === "email")?.inbound).toEqual({ kind: "composio_trigger", slug: "GMAIL_NEW_GMAIL_MESSAGE" });
     expect(entries.find((e) => e.channel === "whatsapp")?.inbound).toEqual({ kind: "meta" });
     expect(entries.find((e) => e.channel === "telegram")?.connect).toEqual({
@@ -195,5 +279,33 @@ describe("catalog()", () => {
     for (const entry of catalog()) {
       expect(JSON.parse(JSON.stringify(entry))).toEqual(entry);
     }
+  });
+});
+
+describe("the view a parser is given of the connection it parses for", () => {
+  /** A stored row, with every column a parser has no business reading. */
+  const row = {
+    id: "cc_x", workspaceId: "ws_1", channel: "x" as const, externalId: "4337869213",
+    config: { webhookId: "wh_1" } as Prisma.JsonValue, status: "connected" as const,
+    displayName: "@lipiapparel", composioAccountId: "ca_1", composioAuthConfigId: "ac_1",
+    composioTriggerIds: [], connectedAt: new Date(), webhookSecret: "the-telegram-secret",
+    lastEventAt: null, lastError: null, createdAt: new Date(), updatedAt: new Date(),
+  };
+
+  it("narrows a row to the five fields a spec may see, and nothing beside them", () => {
+    // Written once and shared by all three inbound routes: a view that could
+    // reach the whole row is a view that could reach a credential.
+    expect(connectionView(row)).toEqual({
+      id: "cc_x", workspaceId: "ws_1", channel: "x", externalId: "4337869213",
+      config: { webhookId: "wh_1" },
+    });
+    expect(Object.keys(connectionView(row)).sort())
+      .toEqual(["channel", "config", "externalId", "id", "workspaceId"]);
+  });
+
+  it("gives a spec an object for a config no operator has written to yet", () => {
+    // `config` is non-null in the schema, but a row read through a partial
+    // select is not, and `spec.send` indexes into whatever it is handed.
+    expect(connectionView({ ...row, config: null }).config).toEqual({});
   });
 });

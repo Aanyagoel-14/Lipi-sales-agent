@@ -15,6 +15,7 @@ import { prisma } from "@/server/lib/prisma";
 const AUTH = {
   whatsapp: "ac_test_whatsapp",
   telegram: "ac_test_telegram",
+  x: "ac_test_x",
   instagram: "ac_test_instagram",
   facebook: "ac_test_facebook",
   gmail: "ac_test_gmail",
@@ -24,6 +25,7 @@ const original = {
   key: env.COMPOSIO_API_KEY,
   whatsapp: env.COMPOSIO_AUTH_CONFIG_WHATSAPP,
   telegram: env.COMPOSIO_AUTH_CONFIG_TELEGRAM,
+  x: env.COMPOSIO_AUTH_CONFIG_X,
   instagram: env.COMPOSIO_AUTH_CONFIG_INSTAGRAM,
   facebook: env.COMPOSIO_AUTH_CONFIG_FACEBOOK,
   gmail: env.COMPOSIO_AUTH_CONFIG_GMAIL,
@@ -33,6 +35,7 @@ beforeAll(() => {
   env.COMPOSIO_API_KEY = "ck_test";
   env.COMPOSIO_AUTH_CONFIG_WHATSAPP = AUTH.whatsapp;
   env.COMPOSIO_AUTH_CONFIG_TELEGRAM = AUTH.telegram;
+  env.COMPOSIO_AUTH_CONFIG_X = AUTH.x;
   env.COMPOSIO_AUTH_CONFIG_INSTAGRAM = AUTH.instagram;
   env.COMPOSIO_AUTH_CONFIG_FACEBOOK = AUTH.facebook;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = AUTH.gmail;
@@ -42,6 +45,7 @@ afterAll(() => {
   env.COMPOSIO_API_KEY = original.key;
   env.COMPOSIO_AUTH_CONFIG_WHATSAPP = original.whatsapp;
   env.COMPOSIO_AUTH_CONFIG_TELEGRAM = original.telegram;
+  env.COMPOSIO_AUTH_CONFIG_X = original.x;
   env.COMPOSIO_AUTH_CONFIG_INSTAGRAM = original.instagram;
   env.COMPOSIO_AUTH_CONFIG_FACEBOOK = original.facebook;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = original.gmail;
@@ -72,6 +76,10 @@ let workspaceId: string;
 
 const TELEGRAM_IDENTITY = { successful: true, data: { result: { id: 42, username: "lipibot" } }, error: null };
 const GMAIL_IDENTITY = { successful: true, data: { emailAddress: "sales@acme.test" }, error: null };
+const X_IDENTITY = {
+  successful: true, error: null,
+  data: { data: { id: "4337869213", name: "Acme Apparel", username: "acmeapparel" } },
+};
 /**
  * The WABA id Composio collected when the account was created. It is not in
  * any tool's response — `afterConnect` reads it off the connected account —
@@ -94,10 +102,11 @@ beforeEach(async () => {
   // The fake resets before every test, so the auth configs it maps to
   // toolkits are registered here rather than once.
   for (const [channel, id] of Object.entries(AUTH)) {
-    fakeComposio.authConfigs.set(id, channel === "gmail" ? "gmail" : channel);
+    fakeComposio.authConfigs.set(id, channel === "x" ? "twitter" : channel);
   }
   fakeComposio.execute.respond("TELEGRAM_GET_ME", TELEGRAM_IDENTITY);
   fakeComposio.execute.respond("GMAIL_GET_PROFILE", GMAIL_IDENTITY);
+  fakeComposio.execute.respond("TWITTER_USER_LOOKUP_ME", X_IDENTITY);
 });
 
 const connection = (channel: string) =>
@@ -423,6 +432,57 @@ describe("turning inbound on at connect time", () => {
     expect(JSON.stringify(row?.config)).not.toContain("EAA-never-stored");
   });
 
+  it("subscribes the account to the deployment's X webhook when X connects", async () => {
+    await link("x", "twitter");
+
+    // X registers a webhook per app, so the per-tenant part of turning
+    // inbound on is the subscription, and it names the deployment's webhook.
+    expect(fakeComposio.calls.execute.map((call) => call.slug))
+      .toEqual(["TWITTER_USER_LOOKUP_ME", "TWITTER_CREATE_ACTIVITY_SUBSCRIPTION"]);
+    expect(fakeComposio.calls.execute[1]!.arguments).toEqual({ webhook_id: env.X_WEBHOOK_ID });
+
+    expect(await connection("x")).toMatchObject({
+      status: "connected", externalId: "4337869213", displayName: "@acmeapparel",
+      config: { webhookId: env.X_WEBHOOK_ID },
+    });
+  });
+
+  it("clears the X row on disconnect, which is what stops a delivery it cannot unsubscribe", async () => {
+    // Removing the subscription needs the app's bearer token, which Composio
+    // does not hold, so disconnect drops the id inbound routes on instead: a
+    // later delivery for that account matches no connection and is dropped.
+    const { app } = await link("x", "twitter");
+    await app.delete("/v1/channels/x").expect(204);
+
+    expect(await connection("x")).toMatchObject({
+      status: "disconnected", externalId: null, displayName: null, composioAccountId: null,
+    });
+  });
+
+  it("never calls X connected when the activity subscription is refused", async () => {
+    fakeComposio.execute.respond("TWITTER_CREATE_ACTIVITY_SUBSCRIPTION", {
+      successful: false, data: {}, error: "SubscriptionLimitExceeded",
+    });
+    await link("x", "twitter");
+
+    const row = await connection("x");
+    expect(row).toMatchObject({ status: "error", connectedAt: null });
+    expect(row?.lastError).toContain("SubscriptionLimitExceeded");
+  });
+
+  it("refuses to call X connected when the deployment has registered no webhook", async () => {
+    const before = env.X_WEBHOOK_ID;
+    env.X_WEBHOOK_ID = undefined;
+    try {
+      await link("x", "twitter");
+      const row = await connection("x");
+      expect(row).toMatchObject({ status: "error" });
+      expect(row?.lastError).toContain("X_WEBHOOK_ID");
+    } finally {
+      env.X_WEBHOOK_ID = before;
+    }
+  });
+
   it("registers the Telegram webhook against this connection, with a secret only it knows", async () => {
     const app = await signedIn();
     const token = "1234567890:AAH-this-looks-like-a-bot-token";
@@ -486,7 +546,7 @@ describe("the list", () => {
         .map((row) => [row.channel, row]),
     );
     expect(Object.keys(byChannel).sort()).toEqual(
-      ["email", "facebook", "instagram", "telegram", "webchat", "whatsapp"],
+      ["email", "facebook", "instagram", "telegram", "webchat", "whatsapp", "x"],
     );
     expect(byChannel.telegram).toMatchObject({
       label: "Telegram", connectKind: "api_key", available: true, status: "disconnected",
