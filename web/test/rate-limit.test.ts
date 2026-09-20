@@ -59,6 +59,25 @@ describe("the fixed window", () => {
     }
   });
 
+  // Fixed window, not rolling: a caller who keeps hammering a spent budget
+  // does not push their own reset further away with every refused request,
+  // so the window they are told to wait out is the one they actually wait.
+  it("does not extend the window when it refuses", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-17T12:00:00.000Z"));
+      checkRateLimit("k", 1, 60_000);
+
+      vi.setSystemTime(new Date("2026-09-17T12:00:59.000Z"));
+      expect(checkRateLimit("k", 1, 60_000)).toEqual({ allowed: false, retryAfterSeconds: 1 });
+
+      vi.setSystemTime(new Date("2026-09-17T12:01:00.001Z"));
+      expect(checkRateLimit("k", 1, 60_000)).toEqual({ allowed: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("counts each key separately, so one caller cannot spend another's budget", () => {
     checkRateLimit("a", 1, 60_000);
     expect(checkRateLimit("a", 1, 60_000).allowed).toBe(false);
@@ -75,6 +94,13 @@ describe("which caller a request is charged to", () => {
 
   it("trims the whitespace a proxy leaves after the comma", () => {
     expect(clientIp(req({ "x-forwarded-for": " 203.0.113.7 , 70.41.3.18" }))).toBe("203.0.113.7");
+  });
+
+  // A proxy that sets the header but has nothing to put in it would otherwise
+  // charge every such request to one empty-string bucket — every visitor
+  // behind it sharing, and spending, one budget.
+  it("ignores an x-forwarded-for with nothing in it", () => {
+    expect(clientIp(req({ "x-forwarded-for": "", "x-real-ip": "198.51.100.4" }))).toBe("198.51.100.4");
   });
 
   it("falls back to x-real-ip, then to a single shared bucket", () => {
@@ -165,6 +191,22 @@ describe("the budget as a webchat caller meets it", () => {
 
     await poll("198.51.100.21").expect(429);
     expect(await prisma.message.count({ where: { conversation: { workspaceId }, from: "customer" } })).toBe(spent);
+  });
+
+  // The bucket key is the source address and nothing else. The workspace id
+  // is in the URL and is chosen by the caller, so keying by it would hand an
+  // abuser a fresh budget per id they type — see rate-limit.ts on why only
+  // the transport-level value is trusted here.
+  it("does not hand out a fresh budget per workspace id in the URL", async () => {
+    const { user } = await createUser("second@test.local");
+    const second = (await createWorkspace({ userId: user.id, name: "Second Co" })).id;
+
+    for (let i = 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.15").expect(200);
+
+    await agent().get(`/v1/webchat/${second}/updates`)
+      .query({ visitorId: "visitor-rate-1", conversationId: "cnv_nothing" })
+      .set("x-forwarded-for", "198.51.100.15")
+      .expect(429);
   });
 
   // The counter runs before the handler, so a flood aimed at a workspace id

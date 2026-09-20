@@ -75,6 +75,26 @@ describe("what counts as a touch", () => {
     const now = new Date("2026-09-17T10:00:00.000Z");
     expect(firstTouchData(GOOGLE, now)).toEqual({ ...GOOGLE, firstTouchAt: now });
   });
+
+  /**
+   * What keeps the divergence above cosmetic: `sendVisitorMessage` hands this
+   * a whole `VisitorSession` row, and it projects the eight touch keys rather
+   * than spreading what it was given. A spread would carry the session's own
+   * `id` and `workspaceId` into a `Customer.update()` — re-keying one tenant's
+   * customer row from another table's primary key.
+   */
+  it("projects the eight touch columns off a session row and none of its keys", () => {
+    const now = new Date("2026-09-17T10:00:00.000Z");
+    const sessionRow = {
+      ...GOOGLE, id: "vst_1", workspaceId: "ws_other", visitorId: "visitor-1",
+      customerId: "cus_other", engagedAt: now, createdAt: now, lastSeenAt: now,
+    };
+
+    const data = firstTouchData(sessionRow as unknown as AttributionTouch, now);
+
+    expect(Object.keys(data).sort()).toEqual([...Object.keys(EMPTY_TOUCH), "firstTouchAt"].sort());
+    expect(data).toEqual({ ...GOOGLE, firstTouchAt: now });
+  });
 });
 
 describe("first touch on the customer twin", () => {
@@ -140,6 +160,25 @@ describe("first touch on the customer twin", () => {
     const customer = await prisma.customer.findFirstOrThrow({ where: { workspaceId, id: result.customer.id } });
     expect(customer.firstTouchAt).toBeNull();
     expect(customer.utmSource).toBeNull();
+  });
+
+  // Invariant 5: the touch is read from the session in *this* workspace, so
+  // the same visitorId arriving in a second tenant brings no campaign with it.
+  it("does not carry a touch from one workspace's session into another's customer", async () => {
+    const { user } = await createUser("other@test.local");
+    const other = (await createWorkspace({ userId: user.id, name: "Other Co", policy: "nothing" })).id;
+
+    await upsertSession({ workspaceId, visitorId: "visitor-aaaa-6", touch: GOOGLE });
+    const result = await sendVisitorMessage({ workspaceId: other, visitorId: "visitor-aaaa-6", text: "hello" });
+
+    const customer = await prisma.customer.findFirstOrThrow({ where: { workspaceId: other, id: result.customer.id } });
+    expect(customer.utmSource).toBeNull();
+    expect(customer.firstTouchAt).toBeNull();
+
+    // And the first workspace's own session is untouched by the visit.
+    const origin = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: "visitor-aaaa-6" } });
+    expect(origin.utmSource).toBe("google");
+    expect(origin.customerId).toBeNull();
   });
 
   // EMPTY_TOUCH whole, rather than whichever subset of the eight columns the

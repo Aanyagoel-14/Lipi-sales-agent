@@ -107,6 +107,25 @@ describe("a message from a visitor", () => {
     expect(customer.name).toBe("Asha");
   });
 
+  // engagedAt is the moment this visitor stopped browsing and started
+  // talking — a first-touch-shaped fact, so a later message must not move it.
+  it("stamps engagedAt on the first message and leaves it where it landed", async () => {
+    await upsertSession({ workspaceId, visitorId: VISITOR, touch: EMPTY_TOUCH });
+    const browsing = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    expect(browsing.engagedAt).toBeNull(); // a page load is not engagement
+
+    await sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "hello" });
+    const engaged = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    expect(engaged.engagedAt).not.toBeNull();
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "do you have olive polos" });
+    const later = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+
+    expect(later.engagedAt).toEqual(engaged.engagedAt);
+    expect(later.lastSeenAt.getTime()).toBeGreaterThan(engaged.lastSeenAt.getTime());
+  });
+
   it("keeps the one session row across a whole conversation", async () => {
     await upsertSession({ workspaceId, visitorId: VISITOR, touch: EMPTY_TOUCH });
     await sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "hello" });
@@ -134,6 +153,16 @@ describe("what the widget is allowed to read back", () => {
     await sendVisitorMessage({ workspaceId, visitorId: "visitor-web-0002", text: "hello too" });
 
     expect(await listAgentMessagesSince(workspaceId, "visitor-web-0002", sent.conversationId, null)).toEqual([]);
+  });
+
+  // The other half of the same guard: a visitor who loaded the widget but
+  // never typed has a session row and no customer, so there is no
+  // conversation of theirs to match — and someone else's must not do.
+  it("returns nothing to a visitor who has a session but has never messaged", async () => {
+    const sent = await sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "hello" });
+    await upsertSession({ workspaceId, visitorId: "visitor-web-0003", touch: EMPTY_TOUCH });
+
+    expect(await listAgentMessagesSince(workspaceId, "visitor-web-0003", sent.conversationId, null)).toEqual([]);
   });
 
   it("returns nothing to a visitorId with no session at all", async () => {

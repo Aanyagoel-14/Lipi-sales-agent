@@ -61,6 +61,34 @@ describe("the customer stage is sticky", () => {
     expect(scoreLead(strong).stage).toBe("qualified");
     expect(scoreLead({ ...strong, previousScore: 0 }).stage).toBe("engaged");
   });
+
+  // 55 is the line an operator's lead list is filtered on, so which side of
+  // it a score exactly on the boundary falls is a business-visible answer,
+  // not an implementation detail.
+  it("qualifies at exactly 55, and not at 54", () => {
+    const at = (previousScore: number) => scoreLead(signal({ previousScore, intent: "buy" }));
+
+    expect(at(31)).toEqual({ score: 55, stage: "qualified" });
+    expect(at(30)).toEqual({ score: 54, stage: "engaged" });
+  });
+});
+
+describe("what a single message is worth", () => {
+  // The bulk bonus is for a wholesale-sized ask; nine units is still retail.
+  it("pays the bulk bonus from ten units up, not below", () => {
+    const buying = (quantity: number | null) => scoreLead(signal({ intent: "buy", quantity })).score;
+
+    expect(buying(null)).toBe(24);
+    expect(buying(9)).toBe(24);
+    expect(buying(10)).toBe(34);
+  });
+
+  // A recognised negative intent is a decision, not an undecided contact, so
+  // it takes its own weight and not the unrecognised-intent drift as well.
+  it("weighs a recognised complaint without also charging the drift", () => {
+    expect(scoreLead(signal({ previousScore: 40, intent: "complaint" })).score).toBe(34);
+    expect(scoreLead(signal({ previousScore: 40, intent: "return" })).score).toBe(39);
+  });
 });
 
 /**
