@@ -14,6 +14,7 @@ export async function resetDatabase() {
       inventory_exceptions, inventory_sync_runs, inventory_mappings,
       inventory_connectors,
       processed_messages,
+      webhook_deliveries, webhook_subscriptions,
       orders, variants, products, suppliers, customers, twin_events,
       knowledge_entries, voice_examples, twin_voice, channel_connections,
       api_keys, sessions, memberships, workspaces, users, waitlist_entries

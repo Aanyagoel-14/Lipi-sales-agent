@@ -2,8 +2,9 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
   conversationShape, conversationSummaryShape, conversionShape, createConversationBody,
-  createEventBody, customerShape, errorShape, eventShape, messageShape, orderStage,
-  productShape, quoteShape, responses, supplierShape, variantShape,
+  createEventBody, createWebhookBody, customerShape, errorShape, eventShape, messageShape,
+  orderStage, productShape, quoteShape, responses, supplierShape, updateWebhookBody,
+  variantShape, webhookDeliveryShape, webhookSubscriptionShape,
 } from "./contract";
 
 /**
@@ -25,7 +26,7 @@ export const OPENAPI_PATH = join(process.cwd(), "..", "docs", "openapi.json");
 
 /** One documented endpoint. The table below is the whole public surface. */
 type Endpoint = {
-  method: "get" | "post";
+  method: "get" | "post" | "patch" | "delete";
   path: string;
   operationId: string;
   summary: string;
@@ -112,6 +113,76 @@ export const endpoints: Endpoint[] = [
       schema: { type: "array", items: { type: "string", enum: orderStage.options } },
     }],
   },
+  {
+    method: "get", path: "/v1/webhooks", operationId: "listWebhooks",
+    summary: "List webhook subscriptions",
+    description: "The endpoints this workspace delivers events to. The signing secrets are not here.",
+    status: 200, response: responses.webhookList,
+  },
+  {
+    method: "post", path: "/v1/webhooks", operationId: "createWebhook",
+    summary: "Subscribe an endpoint to this workspace's events",
+    description:
+      "The response carries the signing secret once and no read returns it again. The URL must be " +
+      "https and resolve on the public internet.",
+    requestBody: createWebhookBody, status: 201, response: responses.webhookCreated,
+  },
+  {
+    method: "get", path: "/v1/webhooks/{id}", operationId: "getWebhook",
+    summary: "Fetch one webhook subscription",
+    params: ["id"], description: "404 for an id in another workspace.",
+    status: 200, response: responses.webhook,
+  },
+  {
+    method: "patch", path: "/v1/webhooks/{id}", operationId: "updateWebhook",
+    summary: "Repoint or pause a subscription",
+    description:
+      "Pausing keeps the subscription's place in the event log, so resuming hands over the backlog " +
+      "rather than replaying from the beginning or skipping it.",
+    params: ["id"], requestBody: updateWebhookBody, status: 200, response: responses.webhook,
+  },
+  {
+    method: "delete", path: "/v1/webhooks/{id}", operationId: "deleteWebhook",
+    summary: "Remove a subscription",
+    description: "Its delivery history goes with it. Pause instead to keep the history.",
+    params: ["id"], status: 200, response: responses.webhook,
+  },
+  {
+    method: "post", path: "/v1/webhooks/dispatch", operationId: "dispatchWebhooks",
+    summary: "Run one pass of the outbound queue",
+    description:
+      "Lipi has no scheduler of its own, so this is the tick — call it from a cron. Safe to call " +
+      "twice: a delivery already owed cannot be owed again, and one that is not yet due is left alone.",
+    status: 200, response: responses.webhookDispatch,
+  },
+  {
+    method: "get", path: "/v1/webhooks/deliveries", operationId: "listWebhookDeliveries",
+    summary: "List webhook deliveries",
+    description:
+      "Newest first. `?status=dead` is the dead letter; `?subscription=` narrows to one endpoint.",
+    paged: true, status: 200, response: responses.webhookDeliveryList,
+    query: [
+      {
+        name: "status",
+        description: "Repeatable. Absent means every status.",
+        schema: { type: "array", items: { type: "string", enum: ["pending", "delivered", "dead"] } },
+      },
+      {
+        name: "subscription",
+        description: "Restricts to one subscription id.",
+        schema: { type: "string" },
+      },
+    ],
+  },
+  {
+    method: "post", path: "/v1/webhooks/deliveries/{id}/redeliver", operationId: "redeliverWebhook",
+    summary: "Queue a finished delivery again",
+    description:
+      "Only a delivery that is delivered or dead can be redelivered; one still pending is already " +
+      "owed, so re-sending it would be a second copy rather than a second try — that answers 409. " +
+      "It queues; `/v1/webhooks/dispatch` is what sends.",
+    params: ["id"], status: 200, response: responses.webhookDelivery,
+  },
 ];
 
 /** Named components, so a customer is one definition referenced everywhere. */
@@ -126,9 +197,13 @@ const components = {
   Supplier: supplierShape,
   Event: eventShape,
   Conversion: conversionShape,
+  WebhookSubscription: webhookSubscriptionShape,
+  WebhookDelivery: webhookDeliveryShape,
   Error: errorShape,
   CreateConversation: createConversationBody,
   CreateEvent: createEventBody,
+  CreateWebhook: createWebhookBody,
+  UpdateWebhook: updateWebhookBody,
   ...Object.fromEntries(
     Object.entries(responses).map(([name, schema]) => [`${name[0]!.toUpperCase()}${name.slice(1)}Response`, schema]),
   ),

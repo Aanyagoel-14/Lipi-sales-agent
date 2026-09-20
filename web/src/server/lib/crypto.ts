@@ -83,6 +83,26 @@ export function verifyShopifyCallback(search: string, apiSecret: string): boolea
 
 export const newWebhookSecret = () => randomBytes(24).toString("base64url");
 
+/**
+ * The signature Lipi puts on a webhook it *sends*.
+ *
+ * Meta and Shopify both sign the raw bytes with a shared secret and hand over
+ * the digest in a header, and `verifyMetaSignature` above is how we check
+ * theirs — so outbound is the same convention turned around rather than a
+ * second one. Two differences, both deliberate:
+ *
+ * The timestamp is inside the signed message, not only beside it. Signing the
+ * body alone makes every delivery replayable for ever by anyone who once saw
+ * one; signing `<timestamp>.<body>` lets the subscriber refuse anything older
+ * than its own tolerance, and it cannot be moved without breaking the digest.
+ *
+ * The digest is hex and prefixed `sha256=`, which is Meta's spelling, so a
+ * subscriber who has already written a Meta verifier changes only the secret.
+ */
+export function signWebhookBody(secret: string, timestamp: number, body: string): string {
+  return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
+}
+
 /** Constant-time compare for shared secrets that arrive in a header. */
 export function secretsMatch(a: string, b: string): boolean {
   const x = Buffer.from(a, "utf8");
