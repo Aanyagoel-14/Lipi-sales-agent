@@ -1,3 +1,4 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { body, json, route } from "@/server/lib/http";
 import { preflight } from "@/server/lib/origins";
 import { after, paged, pageOf } from "@/server/lib/page";
@@ -6,6 +7,18 @@ import { resolveWorkspaceId } from "@/server/lib/workspace";
 import { ingest } from "@/server/services/ingest";
 import { createConversationBody } from "../contract";
 import { conversationSummaryOut } from "../shapes";
+
+/** Enough for a preview line: the twin, the newest message, and how many. */
+const summaryInclude = {
+  customer: true,
+  messages: { orderBy: { sentAt: "desc" }, take: 1 },
+  _count: { select: { messages: true } },
+} as const satisfies Prisma.ConversationInclude;
+
+type SummaryRow = Prisma.ConversationGetPayload<{ include: typeof summaryInclude }>;
+
+const summaryOf = (c: SummaryRow) =>
+  conversationSummaryOut({ ...c, messageCount: c._count.messages, lastMessage: c.messages[0] });
 
 /**
  * The thread list carries a preview, not the thread.
@@ -22,11 +35,7 @@ export const GET = route(async (req) => {
     where: { workspaceId, ...after("lastAt", page) },
     // Ends in a unique column, or the anchor is ambiguous.
     orderBy: [{ lastAt: "desc" }, { id: "desc" }],
-    include: {
-      customer: true,
-      messages: { orderBy: { sentAt: "desc" }, take: 1 },
-      _count: { select: { messages: true } },
-    },
+    include: summaryInclude,
     take: page.take,
   });
 
@@ -34,12 +43,7 @@ export const GET = route(async (req) => {
   // under an open cursor. The client dedupes by id for that reason.
   const { rows, nextCursor } = paged(found, page, (c) => c.lastAt);
 
-  return json({
-    nextCursor,
-    conversations: rows.map((c) =>
-      conversationSummaryOut({ ...c, messageCount: c._count.messages, lastMessage: c.messages[0] }),
-    ),
-  });
+  return json({ nextCursor, conversations: rows.map(summaryOf) });
 });
 
 /**
@@ -61,20 +65,10 @@ export const POST = route(async (req) => {
 
   const conversation = await prisma.conversation.findFirstOrThrow({
     where: { id: result.conversationId, workspaceId },
-    include: { customer: true, messages: { orderBy: { sentAt: "desc" }, take: 1 }, _count: { select: { messages: true } } },
+    include: summaryInclude,
   });
 
-  return json(
-    {
-      conversation: conversationSummaryOut({
-        ...conversation,
-        messageCount: conversation._count.messages,
-        lastMessage: conversation.messages[0],
-      }),
-      reply: result.reply,
-    },
-    201,
-  );
+  return json({ conversation: summaryOf(conversation), reply: result.reply }, 201);
 });
 
 export const OPTIONS = route(preflight);

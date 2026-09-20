@@ -38,7 +38,8 @@ export const errorShape = z.object({
   details: z.unknown().optional(),
 });
 
-const pageOf = <T extends z.ZodTypeAny>(key: string, item: T) =>
+/** `{ <noun>s: [...], nextCursor }` — the shape every list answers with. */
+const pagedShape = <T extends z.ZodTypeAny>(key: string, item: T) =>
   z.object({ [key]: z.array(item), nextCursor: z.string().nullable() });
 
 export const customerShape = z.object({
@@ -212,28 +213,24 @@ export const createEventBody = z.object({
   occurredIso: isoString.optional(),
 });
 
-/* ---------- responses ---------- */
-
 /** `?stage=Paid&stage=Shipped`. Absent means every stage. */
 export const conversionStageQuery = z.array(orderStage);
 
+/* ---------- responses ---------- */
+
 export const responses = {
-  customerList: pageOf("customers", customerShape),
+  customerList: pagedShape("customers", customerShape),
   customer: z.object({ customer: customerShape }),
-  conversationList: pageOf("conversations", conversationSummaryShape),
+  conversationList: pagedShape("conversations", conversationSummaryShape),
   conversationCreated: z.object({
     conversation: conversationSummaryShape,
     /** What the salesperson said back, already delivered on the channel. */
     reply: z.string(),
   }),
   conversation: z.object({ conversation: conversationShape }),
-  productList: pageOf("products", productShape).extend({ suppliers: z.array(supplierShape) }),
+  productList: pagedShape("products", productShape).extend({ suppliers: z.array(supplierShape) }),
   product: z.object({ product: productShape }),
-  eventList: pageOf("events", eventShape),
+  eventList: pagedShape("events", eventShape),
   event: z.object({ event: eventShape }),
-  conversionList: pageOf("conversions", conversionShape),
+  conversionList: pagedShape("conversions", conversionShape),
 } as const;
-
-export type CustomerShape = z.infer<typeof customerShape>;
-export type MessageShape = z.infer<typeof messageShape>;
-export type EventShape = z.infer<typeof eventShape>;

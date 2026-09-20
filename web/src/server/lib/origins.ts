@@ -70,23 +70,21 @@ export async function allowedOriginHeaders(
  * bearer key and never a cookie, so a page on another origin has no ambient
  * authority to spend.
  */
-export function preflight(req: Request): Promise<Response> {
+export async function preflight(req: Request): Promise<Response> {
   const origin = req.headers.get("origin");
 
   // Not a preflight: nothing to allow, and `*` would contradict the
   // allow-list the real request is about to be held to.
-  if (!origin) return Promise.resolve(new Response(null, { status: 403 }));
+  if (!origin) return new Response(null, { status: 403 });
 
-  return Promise.resolve(
-    new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Workspace-Id",
-        "Access-Control-Max-Age": "600",
-        Vary: "Origin",
-      },
-    }),
-  );
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Workspace-Id",
+      "Access-Control-Max-Age": "600",
+      Vary: "Origin",
+    },
+  });
 }

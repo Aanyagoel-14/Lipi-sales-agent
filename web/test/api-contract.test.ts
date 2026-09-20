@@ -30,10 +30,10 @@ async function keyed(opts: { email?: string; scopes?: string[] } = {}) {
 
   const secret = res.body.secret as string;
   const client = agent();
-  const call = (method: "get" | "post" | "patch" | "delete") => (path: string) =>
+  const call = (method: "get" | "post") => (path: string) =>
     client[method](path).set("authorization", `Bearer ${secret}`);
 
-  return { get: call("get"), post: call("post"), patch: call("patch"), delete: call("delete"), secret };
+  return { get: call("get"), post: call("post") };
 }
 
 /** One customer, one thread and one order, so every read has something to return. */
@@ -83,6 +83,15 @@ describe("the documented surface", () => {
     ids = { id: seeded.customer.id };
   });
 
+  async function idsFor(path: string): Promise<Record<string, string>> {
+    if (path.startsWith("/v1/customers")) return ids;
+    if (path.startsWith("/v1/conversations")) {
+      return { id: (await prisma.conversation.findFirstOrThrow()).id };
+    }
+    if (path.startsWith("/v1/products")) return { id: (await prisma.product.findFirstOrThrow()).id };
+    return {};
+  }
+
   it("answers every documented GET with the shape the document publishes", async () => {
     const a = await keyed();
 
@@ -98,15 +107,6 @@ describe("the documented surface", () => {
         .toBe(true);
     }
   });
-
-  async function idsFor(path: string): Promise<Record<string, string>> {
-    if (path.startsWith("/v1/customers")) return ids;
-    if (path.startsWith("/v1/conversations")) {
-      return { id: (await prisma.conversation.findFirstOrThrow()).id };
-    }
-    if (path.startsWith("/v1/products")) return { id: (await prisma.product.findFirstOrThrow()).id };
-    return {};
-  }
 
   it("serves the document itself without a credential", async () => {
     const res = await agent().get("/v1/openapi.json").expect(200);

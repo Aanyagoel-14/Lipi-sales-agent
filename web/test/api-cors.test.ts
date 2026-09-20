@@ -20,7 +20,7 @@ const ORIGIN = "https://shop.example.com";
 /** A workspace whose key is write-scoped, with `origins` on its allow-list. */
 async function workspaceWithOrigins(email: string, origins: string[]) {
   const { user } = await createUser(email);
-  const workspace = await createWorkspace({ userId: user.id, name: email });
+  await createWorkspace({ userId: user.id, name: email });
 
   const owner = await signedIn(email);
   await owner.patch("/v1/workspaces/current").send({ allowedOrigins: origins }).expect(200);
@@ -29,7 +29,7 @@ async function workspaceWithOrigins(email: string, origins: string[]) {
     .send({ name: "Browser", scopes: ["read", "write"] })
     .expect(201);
 
-  return { workspace, secret: minted.body.secret as string };
+  return { secret: minted.body.secret as string };
 }
 
 const from = (secret: string, origin?: string) => {

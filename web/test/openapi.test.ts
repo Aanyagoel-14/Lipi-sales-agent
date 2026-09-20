@@ -13,6 +13,17 @@ import { endpoints, openapiDocument, OPENAPI_PATH } from "@/app/v1/openapi";
  */
 const checkedIn = () => readFileSync(OPENAPI_PATH, "utf8");
 
+/** Every route module under `/v1`, keyed by its path on disk. */
+const routeModules = import.meta.glob("../src/app/v1/**/route.ts") as Record<
+  string,
+  () => Promise<Record<string, unknown>>
+>;
+
+/** `/v1/customers/{id}` is `src/app/v1/customers/[id]/route.ts` on disk. */
+const moduleFor = (path: string) => `../src/app${path.replace(/\{(\w+)\}/g, "[$1]")}/route.ts`;
+
+const handlersFor = (path: string) => routeModules[moduleFor(path)]!();
+
 describe("the OpenAPI document", () => {
   it("is checked in", () => {
     expect(existsSync(OPENAPI_PATH), `${OPENAPI_PATH} is missing — run \`npm run openapi\``).toBe(true);
@@ -23,11 +34,9 @@ describe("the OpenAPI document", () => {
     expect(checkedIn(), "docs/openapi.json has drifted — run `npm run openapi`").toBe(generated);
   });
 
-  it("documents a route that exists, at every path", async () => {
-    const modules = import.meta.glob("../src/app/v1/**/route.ts");
-    // `/v1/customers/{id}` is `src/app/v1/customers/[id]/route.ts` on disk.
+  it("documents a route that exists, at every path", () => {
     const onDisk = new Set(
-      Object.keys(modules).map((file) =>
+      Object.keys(routeModules).map((file) =>
         file.replace("../src/app", "").replace(/\/route\.ts$/, "").replace(/\[(\w+)\]/g, "{$1}"),
       ),
     );
@@ -39,28 +48,16 @@ describe("the OpenAPI document", () => {
   });
 
   it("exports the method it documents, at every path", async () => {
-    const modules = import.meta.glob("../src/app/v1/**/route.ts") as Record<
-      string,
-      () => Promise<Record<string, unknown>>
-    >;
-
     for (const endpoint of endpoints) {
-      const file = `../src/app${endpoint.path.replace(/\{(\w+)\}/g, "[$1]")}/route.ts`;
-      const handlers = await modules[file]!();
+      const handlers = await handlersFor(endpoint.path);
       expect(handlers[endpoint.method.toUpperCase()], `${endpoint.path} exports no ${endpoint.method.toUpperCase()}`)
         .toBeTypeOf("function");
     }
   });
 
   it("answers a preflight at every documented path, so a browser can reach it", async () => {
-    const modules = import.meta.glob("../src/app/v1/**/route.ts") as Record<
-      string,
-      () => Promise<Record<string, unknown>>
-    >;
-
     for (const endpoint of endpoints) {
-      const file = `../src/app${endpoint.path.replace(/\{(\w+)\}/g, "[$1]")}/route.ts`;
-      const handlers = await modules[file]!();
+      const handlers = await handlersFor(endpoint.path);
       expect(handlers.OPTIONS, `${endpoint.path} exports no OPTIONS`).toBeTypeOf("function");
     }
   });
@@ -69,7 +66,7 @@ describe("the OpenAPI document", () => {
     const document = openapiDocument();
     const operation = document.paths["/v1/customers"]!.get as { responses: Record<string, unknown> };
 
-    // The four a caller has to branch on. A generated client that knows only
+    // The ones a caller has to branch on. A generated client that knows only
     // about 200 turns a revoked key into an unparseable body.
     for (const status of ["401", "403", "404", "422", "429"]) {
       expect(Object.keys(operation.responses)).toContain(status);

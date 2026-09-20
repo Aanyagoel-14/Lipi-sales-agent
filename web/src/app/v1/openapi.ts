@@ -134,7 +134,7 @@ const components = {
   ),
 } as const;
 
-const REF = (id: string) => `#/components/schemas/${id}`;
+const schemaRef = (id: string) => `#/components/schemas/${id}`;
 
 /** Every error this API can answer with, and why it would. */
 const ERRORS: Record<string, string> = {
@@ -165,12 +165,50 @@ const pageParameters = [
   },
 ];
 
+/** One path's worth of the document: its parameters, its body and its answers. */
+function operationOf(endpoint: Endpoint, ref: (schema: z.ZodType) => { $ref: string }) {
+  return {
+    operationId: endpoint.operationId,
+    summary: endpoint.summary,
+    description: endpoint.description,
+    parameters: [
+      ...(endpoint.params ?? []).map((name) => ({
+        name, in: "path", required: true, schema: { type: "string" },
+      })),
+      ...(endpoint.paged ? pageParameters : []),
+      ...(endpoint.query ?? []).map((q) => ({
+        name: q.name, in: "query", required: false, description: q.description, schema: q.schema,
+      })),
+    ],
+    ...(endpoint.requestBody
+      ? {
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: ref(endpoint.requestBody) } },
+          },
+        }
+      : {}),
+    responses: {
+      [String(endpoint.status)]: {
+        description: endpoint.summary,
+        content: { "application/json": { schema: ref(endpoint.response) } },
+      },
+      ...Object.fromEntries(
+        Object.entries(ERRORS).map(([status, description]) => [
+          status,
+          { description, content: { "application/json": { schema: { $ref: schemaRef("Error") } } } },
+        ]),
+      ),
+    },
+  };
+}
+
 export function openapiDocument() {
   const registry = z.registry<{ id: string }>();
   for (const [id, schema] of Object.entries(components)) registry.add(schema, { id });
 
   const generated = z.toJSONSchema(registry, {
-    uri: REF,
+    uri: schemaRef,
     target: "draft-2020-12",
     io: "output",
     unrepresentable: "any",
@@ -187,45 +225,17 @@ export function openapiDocument() {
   );
 
   const byId = new Map(Object.entries(components).map(([id, schema]) => [schema as z.ZodType, id]));
-  const ref = (schema: z.ZodType) => ({ $ref: REF(byId.get(schema)!) });
+  // A schema the table above forgot would otherwise ship as `$ref: …/undefined`,
+  // which no generator complains about and every client then breaks on.
+  const ref = (schema: z.ZodType) => {
+    const id = byId.get(schema);
+    if (!id) throw new Error("Endpoint uses a schema that is not a named component");
+    return { $ref: schemaRef(id) };
+  };
 
   const paths: Record<string, Record<string, unknown>> = {};
   for (const endpoint of endpoints) {
-    const operation: Record<string, unknown> = {
-      operationId: endpoint.operationId,
-      summary: endpoint.summary,
-      description: endpoint.description,
-      parameters: [
-        ...(endpoint.params ?? []).map((name) => ({
-          name, in: "path", required: true, schema: { type: "string" },
-        })),
-        ...(endpoint.paged ? pageParameters : []),
-        ...(endpoint.query ?? []).map((q) => ({
-          name: q.name, in: "query", required: false, description: q.description, schema: q.schema,
-        })),
-      ],
-      ...(endpoint.requestBody
-        ? {
-            requestBody: {
-              required: true,
-              content: { "application/json": { schema: ref(endpoint.requestBody) } },
-            },
-          }
-        : {}),
-      responses: {
-        [String(endpoint.status)]: {
-          description: endpoint.summary,
-          content: { "application/json": { schema: ref(endpoint.response) } },
-        },
-        ...Object.fromEntries(
-          Object.entries(ERRORS).map(([status, description]) => [
-            status,
-            { description, content: { "application/json": { schema: { $ref: REF("Error") } } } },
-          ]),
-        ),
-      },
-    };
-    paths[endpoint.path] = { ...paths[endpoint.path], [endpoint.method]: operation };
+    paths[endpoint.path] = { ...paths[endpoint.path], [endpoint.method]: operationOf(endpoint, ref) };
   }
 
   return {

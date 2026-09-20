@@ -1,4 +1,4 @@
-import { HttpError, json, route } from "@/server/lib/http";
+import { HttpError, json, route, searchParams } from "@/server/lib/http";
 import { preflight } from "@/server/lib/origins";
 import { after, paged, pageOf } from "@/server/lib/page";
 import { prisma } from "@/server/lib/prisma";
@@ -47,7 +47,7 @@ export const GET = route(async (req) => {
 
 /** `?stage=Paid&stage=Shipped`, or nothing at all for every stage. */
 function stageFilter(req: Request) {
-  const raw = new URL(req.url).searchParams.getAll("stage");
+  const raw = searchParams(req).getAll("stage");
   const parsed = conversionStageQuery.safeParse(raw);
   if (!parsed.success) {
     throw new HttpError(422, "Unknown order stage", { stage: raw });

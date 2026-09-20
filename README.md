@@ -209,10 +209,12 @@ surface, documented and internal alike.
 | POST   | `/v1/inventory/exceptions/:id/resolve` | Map the SKU, or dismiss it |
 | POST   | `/v1/inventory/:id/sync`   | Where the source pushes stock (token auth) |
 
-Every list endpoint is keyset-paginated: `?limit=` (default 50, max 200) and
-`?cursor=`, with `nextCursor` in the response and `null` on the last page. The dashboard server-renders the first
-page and appends the rest, so a table that grows forever is never fetched
-whole.
+The lists that grow without bound are keyset-paginated — customers,
+conversations, products, events, conversions, orders, inventory exceptions and
+connector runs. Each takes `?limit=` (default 50, max 200) and `?cursor=`, and
+answers with `nextCursor`, `null` on the last page. The dashboard
+server-renders the first page and appends the rest, so a table that grows
+forever is never fetched whole.
 
 ## The ingest loop
 

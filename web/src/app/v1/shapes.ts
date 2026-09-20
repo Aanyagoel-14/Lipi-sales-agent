@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import { toRupees } from "@/server/lib/money";
+import { type AttributionTouch, hasAttribution } from "@/server/services/attribution";
 import type {
   conversationShape, conversationSummaryShape, conversionShape, customerShape,
   eventShape, messageShape, productShape, quoteShape,
@@ -109,11 +110,8 @@ export const eventOut = (e: {
   id: e.id, atIso: e.occurredAt.toISOString(), type: e.type, twin: e.twin, payload: e.payload,
 });
 
-type AttributionRow = {
-  utmSource: string | null; utmMedium: string | null; utmCampaign: string | null;
-  utmTerm: string | null; utmContent: string | null; adClickId: string | null;
-  landingPage: string | null; referrer: string | null; firstTouchAt: Date | null;
-};
+/** The eight first-touch columns `services/attribution.ts` writes, plus when. */
+type AttributionRow = AttributionTouch & { firstTouchAt: Date | null };
 
 /**
  * An order as a conversion: the paise are exact, and the customer's
@@ -132,9 +130,11 @@ export const conversionOut = (o: {
   attribution: attributionOut(o.customer),
 });
 
-/** Null rather than nine nulls: a customer who never arrived via a tracked link. */
+/** Null rather than nine nulls: a customer who never arrived via a tracked link.
+ *  `hasAttribution` is the same test that decided whether to write the row, so
+ *  the two cannot disagree about what counts as a tracked arrival. */
 function attributionOut(c: AttributionRow): Out<typeof conversionShape>["attribution"] {
-  if (!c.firstTouchAt && !c.utmSource && !c.adClickId && !c.referrer && !c.landingPage) return null;
+  if (!c.firstTouchAt && !hasAttribution(c)) return null;
   return {
     utmSource: c.utmSource, utmMedium: c.utmMedium, utmCampaign: c.utmCampaign,
     utmTerm: c.utmTerm, utmContent: c.utmContent, adClickId: c.adClickId,
