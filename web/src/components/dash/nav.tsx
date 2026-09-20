@@ -16,6 +16,7 @@ const items = [
   { href: "/dashboard/invoices", label: "Invoices" },
   { href: "/dashboard/data", label: "Data onboarding" },
   { href: "/dashboard/channels", label: "Channels" },
+  { href: "/dashboard/api-keys", label: "API keys" },
   { href: "/dashboard/train", label: "Train the twin" },
   { href: "/dashboard/events", label: "Twin events" },
 ];
@@ -25,7 +26,7 @@ const items = [
  *
  * `sidebar` is the column on large screens. `bar` is the small-screen form: a
  * single horizontally scrolling row of pills directly under the header, rather
- * than the same vertical list stacked at the foot of the page — fourteen
+ * than the same vertical list stacked at the foot of the page — fifteen
  * full-width rows below the content is half a screen of dead space on every
  * page, and it puts navigation behind however long the page happens to be.
  *

@@ -144,6 +144,12 @@ dashboard.
 ## Security and reliability
 
 - Opaque server-side sessions and workspace membership checks protect tenancy.
+- Server-to-server callers present `Authorization: Bearer <key>` instead of a
+  session. Both credentials resolve through the same `resolveWorkspaceId()`, so a
+  key gains no route a session lacks and skips no check a session makes: it names
+  exactly one workspace, carries a read or read+write scope, is stored only as a
+  hash, and is throttled per key rather than per address. A request carrying both
+  a cookie and a key is refused rather than resolved by precedence.
 - Channel secrets are encrypted at rest and never returned to the browser.
 - Provider webhooks authenticate independently because they lack user sessions.
 - Approval policy gates replies/actions that affect money.

@@ -68,6 +68,15 @@ export async function currentUser(): Promise<Authed | null> {
   };
 }
 
+/**
+ * Whether the request carries a session cookie at all — not whether it is a
+ * live one. Used to catch a request that presents both credentials, which is
+ * a caller's bug rather than a choice for this app to resolve.
+ */
+export async function hasSessionCookie(): Promise<boolean> {
+  return Boolean((await cookies()).get(SESSION_COOKIE)?.value);
+}
+
 export async function requireUser(): Promise<Authed> {
   const user = await currentUser();
   if (!user) throw new HttpError(401, "Sign in to continue");
