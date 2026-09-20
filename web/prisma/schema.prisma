@@ -518,6 +518,7 @@ model Workspace {
   payments          Payment[]
   visitorSessions   VisitorSession[]
   growthSuggestions GrowthSuggestion[]
+  apiKeys           ApiKey[]
 
   @@map("workspaces")
 }
@@ -912,4 +913,45 @@ model InventoryException {
 
   @@index([connectorId, resolvedAt])
   @@map("inventory_exceptions")
+}
+
+enum ApiScope {
+  read
+  write
+}
+
+/**
+ * A server-to-server credential for `/v1`.
+ *
+ * The secret is minted once and stored only as a SHA-256 hash, the same shape
+ * `InventoryConnector.secretHash` already uses — the difference is that a key
+ * is looked up *by* its hash, so presenting one costs a single indexed read
+ * and a wrong one reveals nothing by timing. `prefix` is the first few
+ * characters of the secret: enough for an operator to tell two keys apart in
+ * the dashboard or in a log line, useless to anyone who finds it.
+ *
+ * A key belongs to exactly one workspace and cannot be pointed at another,
+ * which is what makes it safe to accept in place of a session.
+ */
+model ApiKey {
+  id     String     @id @default(cuid())
+  name   String
+  /// Displayable head of the secret, e.g. `lipi_sk_a1b2c3d4`. Never the secret.
+  prefix String
+  /// SHA-256 of the whole secret, hex. Unique so a presented key resolves in one read.
+  hash   String     @unique
+  scopes ApiScope[] @default([read])
+
+  createdAt DateTime @default(now())
+  /// Coalesced, written behind the response — never inside a request's own transaction.
+  lastUsedAt DateTime?
+  /// Optional. A key with no expiry lives until it is revoked.
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, revokedAt])
+  @@map("api_keys")
 }

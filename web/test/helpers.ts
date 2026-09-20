@@ -16,7 +16,7 @@ export async function resetDatabase() {
       processed_messages,
       orders, variants, products, suppliers, customers, twin_events,
       knowledge_entries, voice_examples, twin_voice, channel_connections,
-      sessions, memberships, workspaces, users, waitlist_entries
+      api_keys, sessions, memberships, workspaces, users, waitlist_entries
     RESTART IDENTITY CASCADE
   `);
 }
