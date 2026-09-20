@@ -15,6 +15,7 @@ type SellResponse = {
   customer: { id: string; name: string; isNew: boolean };
   matched: { product: string; variant: string } | null;
   knowledgeUsed: { title: string; kind: string }[];
+  recommended: { kind: string; product: string; variant: string | null; priceInr: number; available: number }[];
   order: { id: string; valueInr: number; stage: string } | null;
   invoice: { number: string; amountInr: number; dueIso: string; url: string } | null;
   intent: string;
@@ -267,6 +268,20 @@ export function Storefront() {
                     ))
                   ) : (
                     <span className="text-ink-subtle">the catalogue only</span>
+                  )}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-ink-subtle">Recommending</dt>
+                <dd className="flex flex-wrap justify-end gap-1">
+                  {last.recommended.length ? (
+                    last.recommended.map((r) => (
+                      <Tag key={`${r.kind}:${r.product}:${r.variant ?? ""}`} tone="teal">
+                        {r.variant ? `${r.product} ${r.variant}` : r.product}
+                      </Tag>
+                    ))
+                  ) : (
+                    <span className="text-ink-subtle">nothing extra</span>
                   )}
                 </dd>
               </div>

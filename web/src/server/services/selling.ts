@@ -5,6 +5,7 @@ import { toRupees } from "../lib/money";
 import { buildGrounding } from "./briefing";
 import { ingest, type IngestResult } from "./ingest";
 import { invoiceForOrder } from "./invoicing";
+import type { Recommendation } from "./recommend";
 import { DEFAULT_VOICE, voiceViolations, type Voice } from "./voice";
 import type { Channel } from "@/generated/prisma/client";
 
@@ -39,6 +40,12 @@ export type SellResult = {
    * dashboard can show why the twin said what it said.
    */
   knowledgeUsed: { title: string; kind: string }[];
+  /**
+   * What the system chose to put in front of them next -- alternatives to
+   * something sold out, what sells alongside it, the tier up. Computed from
+   * stock and order history, never by the model.
+   */
+  recommended: Recommendation[];
   order: (IngestResult["order"] & { stage: string }) | null;
   invoice: { number: string; amountInr: number; dueIso: string; url: string } | null;
   intent: string;
@@ -107,6 +114,8 @@ How to reply:
 - NUMBERS ARE NOT YOURS TO CHOOSE. Every price, quantity, stock count, order id and invoice number must appear verbatim above. Never add, total, estimate or round. If a number you want is not written above, leave it out.
 - If the system reserved something, created an order or raised an invoice, it is ALREADY DONE. Confirm it as done and say what happens next. Never ask permission for it ("shall I go ahead?") — the customer has been promised it, and asking makes the twin look like it did not do what it did.
 - Sell. Recommend something specific, say why, and end with a question that moves them forward — which size, how many, shall I reserve it.
+- WHAT YOU MAY RECOMMEND IS ALREADY CHOSEN. If there is a "WHAT TO PUT IN FRONT OF THEM" list above, the alternative, the companion or the step up comes from it, with its price and its count as written. Do not substitute a product of your own choosing, and if that list says nothing replaces what they wanted, say exactly that rather than reaching for something else.
+- HANDLING AN OBJECTION IS A MATTER OF WORDS, NOT OF PRICE. If they say it is too expensive, hesitate, or compare you to someone cheaper: you may say what makes it worth it, restate a policy written above, or put a cheaper in-stock option from the lists above in front of them. You may NEVER offer a discount, a percentage off, free delivery, a waived fee or a thrown-in extra — none of that is yours to give, and a reply that does it is thrown away. If they ask for a discount outright, tell them what the policy above says about pricing, if it says anything, and that anything beyond it needs a person.
 - BUT if an order was already created above, the sale is closed: do not ask "shall I reserve/proceed/go ahead". Confirm it, tell them the invoice is ready, and ask only whether they need anything else.
 - Put the closing question on its own line, after any list. Never let it run onto the end of a list item.
 - When you are showing more than one option, lay them out as a markdown list with a real newline before each "- ", one product per line, the name in **bold** and the price. Never bury choices in a paragraph.
@@ -223,6 +232,9 @@ export async function sell(input: {
     // is the first row of the ranking the grounding block below uses, so the
     // two never contradict each other.
     knowledgeUsed: result.knowledgeUsed ? [result.knowledgeUsed] : [],
+    // The template path voices `ingest()`'s outcome and offers nothing beyond
+    // it; candidates are generated for the model's turn, below.
+    recommended: [],
   };
 
   if (!env.OPENROUTER_API_KEY) return { ...base, reply: result.reply, voicedBy: "template" };
@@ -242,6 +254,9 @@ export async function sell(input: {
   const voice = workspace?.voice ?? DEFAULT_VOICE;
   // The model speaks from the whole ranked block, so that is what grounded the turn.
   base.knowledgeUsed = grounding.knowledge.map(({ title, kind }) => ({ title, kind }));
+  // Deterministic candidates, reported alongside the reply so the dashboard
+  // can show what the twin was offering and on what grounds.
+  base.recommended = grounding.recommendations;
 
   try {
     const spoken = await voiceReply(
@@ -253,9 +268,15 @@ export async function sell(input: {
     // not get to speak. Falling back is better than shipping a banned phrase.
     const violations = voiceViolations(spoken, voice);
     if (violations.length) {
+      // An invented discount is a different failure from a banned phrase, and
+      // the operator reading the degraded line needs to know which: one is a
+      // tone rule, the other is money the twin tried to give away.
+      const offered = violations.some((v) => v.startsWith("unauthorised"));
       return {
         ...base, reply: result.reply, voicedBy: "template",
-        degraded: `Model used banned phrases (${violations.join(", ")}), so the plain reply was sent`,
+        degraded: offered
+          ? `Model offered money off it is not authorised to give (${violations.join(", ")}), so the plain reply was sent`
+          : `Model used banned phrases (${violations.join(", ")}), so the plain reply was sent`,
       };
     }
 

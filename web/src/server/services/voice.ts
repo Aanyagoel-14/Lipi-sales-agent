@@ -67,11 +67,47 @@ export function composeReply(parts: ReplyParts, voice: Voice): string {
 }
 
 /**
- * Flags phrases the workspace has banned. Returned rather than silently
+ * Money off, in the forms a model reaches for when a customer pushes back on
+ * price. Deliberately narrow: what is caught is the twin *offering* it, not a
+ * taught policy that mentions it, because restating "discounts beyond 10%
+ * need owner approval" is exactly what the twin should do when asked.
+ */
+const MONEY_OFF = String.raw`\d+\s*(?:%|percent)|discount|off the (?:price|total|order)|off for you|free (?:shipping|delivery)|waive|on the house|no charge`;
+const SUBJECT = String.raw`\b(?:I|we|let me)\s*(?:'ll|'d|can|could|will|would|shall|am able to|are able to)?\s*`;
+/**
+ * Three shapes, because a concession is not always a number. The gap in the
+ * last two cannot cross a sentence boundary, so "I can do the Polo Classic.
+ * Discounts need owner approval." is two true sentences rather than an offer.
+ */
+const OFFERS_A_DISCOUNT = new RegExp(
+  [
+    // Verbs that are themselves the concession, whatever follows them.
+    String.raw`${SUBJECT}(?:waive|knock|throw in|match)\b`,
+    // Moving the price, said without ever naming a percentage.
+    String.raw`${SUBJECT}(?:drop|reduce|lower|bring down|cut)\b[^.!?]{0,20}\b(?:price|total|cost|rate)\b`,
+    // Offering money off in so many words.
+    String.raw`${SUBJECT}(?:offer|give|do|take|make it)\b[^.!?]{0,40}(?:${MONEY_OFF})`,
+  ].join("|"),
+  "i",
+);
+
+/**
+ * Flags what the twin may not say: the phrases the workspace has banned, and
+ * money it was never authorised to give away. Returned rather than silently
  * stripped: an operator needs to see that their twin tried to say it.
+ *
+ * The discount gate is not the workspace's to relax. A price is a fact
+ * `ingest()` computed from the catalogue (invariant 2), so a model that
+ * decides to take 15% off it has invented a number the business never agreed
+ * to and the customer cannot tell from a real one. An *authorised* discount is
+ * its own path, with its own approval -- when that exists this consults what
+ * it approved, rather than refusing outright.
  */
 export function voiceViolations(text: string, voice: Voice): string[] {
-  return voice.neverSay.filter((phrase) => phrase.trim() && text.toLowerCase().includes(phrase.toLowerCase()));
+  const banned = voice.neverSay.filter((phrase) => phrase.trim() && text.toLowerCase().includes(phrase.toLowerCase()));
+
+  const offer = text.match(OFFERS_A_DISCOUNT);
+  return offer ? [...banned, `unauthorised discount or waiver ("${offer[0].trim()}")`] : banned;
 }
 
 const KIND_FOR_INTENT: Record<string, KnowledgeEntry["kind"][]> = {

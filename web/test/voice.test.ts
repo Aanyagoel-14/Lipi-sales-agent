@@ -36,6 +36,35 @@ describe("composeReply", () => {
   });
 });
 
+describe("an offer the twin was never authorised to make", () => {
+  const caught = (reply: string) => voiceViolations(reply, DEFAULT_VOICE);
+
+  it.each([
+    "I can do 15% off if you order today.",
+    "We'll knock 10 percent off for you.",
+    "Let me give you a discount on that.",
+    "I could waive the handling fee this once.",
+    "We can throw in free delivery on this one.",
+    "I'll match their price for you.",
+    "We could lower the price a little on this one.",
+  ])("catches %j", (reply) => {
+    expect(caught(reply)).toHaveLength(1);
+    expect(caught(reply)[0]).toContain("unauthorised");
+  });
+
+  it.each([
+    "Orders above 100 units qualify for tiered pricing. Discounts beyond 10% need owner approval.",
+    "I can offer tiered pricing above 100 units, and I will confirm the rate.",
+    "One free size exchange per order is included.",
+    "I can do the Polo Classic in M / Cobalt, ₹1,196 each.",
+    "That is 15% lighter than the linen shirt.",
+    "I can do the XL / Cobalt at ₹1,196 each, 4 available.",
+    "Let me look into that and come back to you.",
+  ])("leaves %j alone", (reply) => {
+    expect(caught(reply)).toEqual([]);
+  });
+});
+
 describe("voiceViolations", () => {
   it("reports a banned phrase rather than silently stripping it", () => {
     const found = voiceViolations("This is guaranteed to arrive", { ...DEFAULT_VOICE, neverSay: ["guaranteed"] });
