@@ -10,6 +10,10 @@ import { checkRateLimit, clientIp } from "./rate-limit";
  * id in the URL is meant to be embedded in public page source, and these
  * two endpoints accept no cookie and touch no other tenant's data no
  * matter which origin calls them.
+ *
+ * A browser calling the rest of `/v1` with an API key is a different trust
+ * question and gets a different answer — a per-workspace allow-list, in
+ * `origins.ts`. Nothing here applies to it, and nothing there loosens this.
  */
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",

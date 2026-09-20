@@ -499,6 +499,12 @@ model Workspace {
   onboardedAt     DateTime?
   createdAt       DateTime       @default(now())
 
+  /// Browser origins allowed to call `/v1` with this workspace's API key.
+  /// Empty by default: a key-authenticated cross-origin call is a different
+  /// trust question from the anonymous widget, which stays `*`. See
+  /// `server/lib/cors.ts`.
+  allowedOrigins  String[]       @default([])
+
   voice               TwinVoice?
   knowledge           KnowledgeEntry[]
   examples            VoiceExample[]

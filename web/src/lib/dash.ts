@@ -30,8 +30,32 @@ async function get<T>(path: string, query: Record<string, string | number | unde
 export type Cursor = { cursor?: string; limit?: number };
 
 export const getOverview = () => get<Overview>("dashboard/overview");
-export const getCustomers = () => get<{ customers: Customer[] }>("customers");
-export const getProducts = () => get<{ products: Product[]; suppliers: Supplier[] }>("products");
+export const getCustomers = (page: Cursor = {}) => get<Paged<"customers", Customer>>("customers", page);
+
+/**
+ * The whole catalogue, not the first page.
+ *
+ * `/v1/products` pages like every other list, but the inventory grid, the
+ * connector mapping screen and the data screen each need every product at
+ * once — a stock table with a "load more" under it cannot be reconciled
+ * against a supplier's file. A catalogue is bounded by what a business
+ * sells, so following the cursor here costs a handful of queries.
+ */
+export async function getProducts(): Promise<{ products: Product[]; suppliers: Supplier[] }> {
+  const products: Product[] = [];
+  let cursor: string | undefined;
+  let suppliers: Supplier[] = [];
+
+  do {
+    const page = await get<Paged<"products", Product> & { suppliers: Supplier[] }>("products", { cursor, limit: 200 });
+    products.push(...page.products);
+    suppliers = page.suppliers;
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+
+  return { products, suppliers };
+}
+
 export const getApprovals = () => get<{ approvals: Approval[] }>("approvals");
 export const getInvoices = () => get<{ ageing: Ageing; invoices: Invoice[]; payments: Payment[] }>("invoices");
 
