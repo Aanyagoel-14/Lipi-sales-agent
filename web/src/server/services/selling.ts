@@ -42,7 +42,7 @@ export type SellResult = {
 };
 
 /** How much of the conversation the salesperson remembers. */
-const HISTORY_TURNS = 10;
+export const HISTORY_TURNS = 10;
 
 function voiceRules(voice: Voice) {
   const rules = [
