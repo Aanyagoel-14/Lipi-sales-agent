@@ -4,7 +4,7 @@ Here are the open issues in the repo:
 
 <issues-json>
 
-!`gh issue list -R Aanyagoel-14/Lipi-sales-agent --state open --label sandcastle --limit 100 --json number,title,body,labels,comments --jq '[.[] | select([.labels[].name] | index("needs-human-decision") | not) | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`
+!`cat .sandcastle/issues.json`
 
 </issues-json>
 
@@ -12,7 +12,7 @@ Here is the blocking graph GitHub itself holds, as open-blocker counts per issue
 
 <blockers-json>
 
-!`gh issue list -R Aanyagoel-14/Lipi-sales-agent --state open --label sandcastle --limit 100 --json number,labels --jq '.[] | select([.labels[].name] | index("needs-human-decision") | not) | .number' | while read n; do gh api repos/Aanyagoel-14/Lipi-sales-agent/issues/$n --jq '{number: .number, openBlockers: .issue_dependencies_summary.blocked_by}'; done | jq -s .`
+!`cat .sandcastle/blockers.json`
 
 </blockers-json>
 

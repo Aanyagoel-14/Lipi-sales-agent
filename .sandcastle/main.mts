@@ -78,6 +78,15 @@ const DECISION_SIGNAL = "<decision>NEEDS-HUMAN</decision>";
 const DECISION_LABEL = "needs-human-decision";
 const AGENT_SIGNALS = [COMPLETION_SIGNAL, DECISION_SIGNAL];
 
+// Ten minutes of silence is Sandcastle's default for calling an agent dead. It
+// is too short here: an agent running the full suite against Postgres can be
+// quiet for a while, and a host that sleeps mid-round comes back to a wall
+// clock that jumped — every in-flight agent trips the timer at once on resume,
+// which is exactly how the 2026-09-20 02:46 round died with three agents
+// mid-edit. Half an hour costs nothing when the agent is alive and saves the
+// round when the host merely blinked.
+const IDLE_TIMEOUT_SECONDS = 1800;
+
 // Where the loop writes the questions it stopped on, so they survive the
 // scrollback. Regenerated from GitHub on every stop — the issues are the
 // record, this file is a convenience.
@@ -116,6 +125,121 @@ const workerHooks = {
 // once per sandbox and is the difference between a working feedback loop and
 // a hundred iterations of the same native-module error.
 const copyToWorktree: string[] = [];
+
+function git(...args: string[]): string {
+  return execFileSync("git", args, { encoding: "utf8" }).trim();
+}
+
+// Does this branch hold work the current branch does not? Commits produced by
+// an earlier round survive on their branch, and `RunResult.commits` only ever
+// reports what the run in hand produced — so an agent that finishes, then loses
+// its round to a crashed sibling, leaves green work no later round can see.
+// Asking git instead of the run result closes that gap: the branch is the
+// record. The merger still runs the suite before it merges anything, so a
+// half-finished branch from a killed agent gets left behind rather than landed.
+function hasUnmergedWork(branch: string): boolean {
+  try {
+    return Number(git("rev-list", "--count", `HEAD..${branch}`)) > 0;
+  } catch {
+    // No such branch — the sandbox never got far enough to create one.
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Planner input
+// ---------------------------------------------------------------------------
+
+// The planner's two inputs, fetched here and written to disk rather than
+// expanded inside the prompt. Sandcastle gives a prompt's `!` shell expressions
+// 30 seconds and no retry, and the blocker graph alone is one API call per open
+// issue — twenty-five of them, on a network that had just come back from a
+// host sleep when it blew the budget and took the whole loop down with it.
+// Host-side, the fetch can be slow, can be retried, and can fail without
+// killing the run: `cat` of a file that already exists cannot time out.
+const ISSUES_FILE = ".sandcastle/issues.json";
+const BLOCKERS_FILE = ".sandcastle/blockers.json";
+
+function gh(args: string[]): string {
+  return execFileSync("gh", args, {
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+  });
+}
+
+// Issues carrying DECISION_LABEL are filtered out here, not in the prompt: a
+// parked issue is one an agent would have to guess at, and the planner should
+// never see it.
+function fetchIssues(): string {
+  return gh([
+    "issue",
+    "list",
+    "-R",
+    ISSUE_REPO,
+    "--state",
+    "open",
+    "--label",
+    "sandcastle",
+    "--limit",
+    "100",
+    "--json",
+    "number,title,body,labels,comments",
+    "--jq",
+    `[.[] | select([.labels[].name] | index("${DECISION_LABEL}") | not) | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]`,
+  ]);
+}
+
+// GitHub's own dependency graph, as an open-blocker count per issue. One call
+// per issue, six at a time — the planner treats a non-zero count as
+// authoritative, so this is worth the wait.
+function fetchBlockers(issueNumbers: number[]): string {
+  const results = [];
+  for (let i = 0; i < issueNumbers.length; i += 6) {
+    const batch = issueNumbers.slice(i, i + 6);
+    results.push(
+      ...batch.map((number) => {
+        try {
+          return JSON.parse(
+            gh([
+              "api",
+              `repos/${ISSUE_REPO}/issues/${number}`,
+              "--jq",
+              "{number: .number, openBlockers: .issue_dependencies_summary.blocked_by}",
+            ]),
+          );
+        } catch {
+          // A single unreadable issue must not cost us the graph. Reporting it
+          // as unblocked is the safe default: the planner's own file-overlap
+          // analysis still applies, and the issue body's `Blocked by:` line is
+          // in the issue JSON either way.
+          console.error(`  ! could not read blockers for #${number}`);
+          return { number, openBlockers: 0 };
+        }
+      }),
+    );
+  }
+  return JSON.stringify(results, null, 2);
+}
+
+// Two attempts, because the failure this guards against is a network that is
+// coming back rather than one that is down.
+function writePlannerInput(): boolean {
+  for (const attempt of [1, 2]) {
+    try {
+      const issues = fetchIssues();
+      const numbers = (JSON.parse(issues) as { number: number }[]).map(
+        (issue) => issue.number,
+      );
+      writeFileSync(ISSUES_FILE, issues);
+      writeFileSync(BLOCKERS_FILE, fetchBlockers(numbers));
+      console.log(`Planner input: ${numbers.length} open issue(s).`);
+      return true;
+    } catch (error) {
+      console.error(`  ! planner input fetch failed (attempt ${attempt}): ${error}`);
+    }
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Pending decisions
@@ -224,6 +348,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   //
   // It outputs a <plan> JSON block — Output.object parses and validates it.
   // -------------------------------------------------------------------------
+  if (!writePlannerInput()) {
+    console.error("Could not read the issue tracker. Stopping.");
+    break;
+  }
+
   const plan = await sandcastle.run({
     // No hooks: head mode, host checkout, read-only work. See `workerHooks`.
     sandbox: docker({ env: sandboxEnv }),
@@ -233,6 +362,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     maxIterations: 1,
     // Opus for planning: dependency analysis benefits from deeper reasoning.
     agent: sandcastle.claudeCode(MODEL),
+    idleTimeoutSeconds: IDLE_TIMEOUT_SECONDS,
     promptFile: "./.sandcastle/plan-prompt.md",
     // Extract and validate the <plan> JSON into a typed object. Throws
     // StructuredOutputError if the tag is missing, the JSON is malformed, or
@@ -285,6 +415,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           // Either signal ends the run. `completionSignal` on the result says
           // which one fired, and DECISION_SIGNAL is what stops the loop.
           completionSignal: AGENT_SIGNALS,
+          idleTimeoutSeconds: IDLE_TIMEOUT_SECONDS,
           promptFile: "./.sandcastle/implement-prompt.md",
           promptArgs: {
             TASK_ID: issue.id,
@@ -305,23 +436,34 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // parked, because polishing half a feature whose shape the pending
         // answer may change is work thrown away twice.
         if (implement.commits.length > 0 && !needsDecision) {
-          const review = await sandbox.run({
-            name: "reviewer",
-            maxIterations: 1,
-            agent: sandcastle.claudeCode(MODEL),
-            promptFile: "./.sandcastle/review-prompt.md",
-            promptArgs: {
-              BRANCH: issue.branch,
-            },
-          });
+          try {
+            const review = await sandbox.run({
+              name: "reviewer",
+              maxIterations: 1,
+              agent: sandcastle.claudeCode(MODEL),
+              idleTimeoutSeconds: IDLE_TIMEOUT_SECONDS,
+              promptFile: "./.sandcastle/review-prompt.md",
+              promptArgs: {
+                BRANCH: issue.branch,
+              },
+            });
 
-          // Merge commits from both runs so the merge phase sees all of them.
-          // Each sandbox.run() only returns commits from its own run.
-          return {
-            ...review,
-            commits: [...implement.commits, ...review.commits],
-            needsDecision,
-          };
+            // Merge commits from both runs so the merge phase sees all of them.
+            // Each sandbox.run() only returns commits from its own run.
+            return {
+              ...review,
+              commits: [...implement.commits, ...review.commits],
+              needsDecision,
+            };
+          } catch (error) {
+            // The review is a polish pass, not a gate. Letting it take the
+            // implementer's commits down with it is how a finished, green
+            // branch ends up looking like a round that produced nothing.
+            console.error(
+              `  ! ${issue.id} implemented, but the review failed: ${error}`,
+            );
+            return { ...implement, needsDecision };
+          }
         }
 
         return { ...implement, needsDecision };
@@ -340,16 +482,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     }
   }
 
-  // Only pass branches that actually produced commits to the merge phase.
-  // An agent that ran successfully but made no commits has nothing to merge.
-  const completedIssues = settled
-    .map((outcome, i) => ({ outcome, issue: issues[i]! }))
-    .filter(
-      (entry) =>
-        entry.outcome.status === "fulfilled" &&
-        entry.outcome.value.commits.length > 0,
-    )
-    .map((entry) => entry.issue);
+  // Which branches have something to merge? Ask git, not the run results. A
+  // pipeline that rejected may still have committed before it died, and a
+  // branch carried over from an earlier round holds commits no run in this
+  // round reports. Both are green work that would otherwise sit on a branch
+  // forever, invisible to every subsequent round.
+  const completedIssues = issues.filter((issue) => hasUnmergedWork(issue.branch));
 
   const completedBranches = completedIssues.map((i) => i.branch);
 
@@ -400,6 +538,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     maxIterations: 1,
     agent: sandcastle.claudeCode(MODEL),
     completionSignal: AGENT_SIGNALS,
+    idleTimeoutSeconds: IDLE_TIMEOUT_SECONDS,
     promptFile: "./.sandcastle/merge-prompt.md",
     promptArgs: {
       // A markdown list of branch names, one per line.
