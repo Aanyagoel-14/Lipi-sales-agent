@@ -22,11 +22,19 @@ const VISITOR = "visitor-web-0001";
 
 let workspaceId: string;
 
+/** A workspace with an owner of its own: the email is derived from the name
+ *  so that a case building a second workspace does not collide on it. */
 async function setup(policy: "everything" | "money_only" | "nothing" = "nothing", name = "Test Co") {
   const { user } = await createUser(`${name.toLowerCase().replace(/\W+/g, "")}@test.local`);
   const workspace = await createWorkspace({ userId: user.id, name, policy });
   return workspace.id;
 }
+
+const sessionOf = (visitorId = VISITOR) =>
+  prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId } });
+
+/** Long enough for the next write's timestamp to be measurably later. */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 beforeEach(async () => {
   _resetRateLimitsForTests();
@@ -47,11 +55,11 @@ describe("the visitor session", () => {
 
   it("only bumps lastSeenAt on the second, rather than starting a new visit", async () => {
     const first = await upsertSession({ workspaceId, visitorId: VISITOR, touch: EMPTY_TOUCH });
-    const before = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    const before = await sessionOf();
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await tick();
     const second = await upsertSession({ workspaceId, visitorId: VISITOR, touch: EMPTY_TOUCH });
-    const after = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    const after = await sessionOf();
 
     expect(second.sessionId).toBe(first.sessionId);
     expect(await prisma.visitorSession.count({ where: { workspaceId } })).toBe(1);
@@ -93,7 +101,7 @@ describe("a message from a visitor", () => {
     expect(result.conversationId).toBeTruthy();
     expect(result.reply).toBeTruthy();
 
-    const session = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    const session = await sessionOf();
     expect(session.customerId).toBe(result.customer.id);
     expect(session.engagedAt).not.toBeNull();
   });
@@ -111,16 +119,16 @@ describe("a message from a visitor", () => {
   // talking — a first-touch-shaped fact, so a later message must not move it.
   it("stamps engagedAt on the first message and leaves it where it landed", async () => {
     await upsertSession({ workspaceId, visitorId: VISITOR, touch: EMPTY_TOUCH });
-    const browsing = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    const browsing = await sessionOf();
     expect(browsing.engagedAt).toBeNull(); // a page load is not engagement
 
     await sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "hello" });
-    const engaged = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    const engaged = await sessionOf();
     expect(engaged.engagedAt).not.toBeNull();
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await tick();
     await sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "do you have olive polos" });
-    const later = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    const later = await sessionOf();
 
     expect(later.engagedAt).toEqual(engaged.engagedAt);
     expect(later.lastSeenAt.getTime()).toBeGreaterThan(engaged.lastSeenAt.getTime());
@@ -190,17 +198,15 @@ describe("what the widget is allowed to read back", () => {
 });
 
 describe("the routes the widget calls", () => {
-  const widget = () => agent();
-
   it("opens a session and answers with the greeting", async () => {
-    const res = await widget().post(`/v1/webchat/${workspaceId}/session`)
+    const res = await agent().post(`/v1/webchat/${workspaceId}/session`)
       .send({ visitorId: VISITOR, touch: { utmSource: "google", utmMedium: "cpc" } })
       .expect(201);
 
     expect(res.body.greeting).toBe("Hi!");
     expect(res.headers["access-control-allow-origin"]).toBe("*");
 
-    const session = await prisma.visitorSession.findFirstOrThrow({ where: { workspaceId, visitorId: VISITOR } });
+    const session = await sessionOf();
     expect(session.utmSource).toBe("google");
     expect(session.utmCampaign).toBeNull();
   });
@@ -223,16 +229,16 @@ describe("the routes the widget calls", () => {
   });
 
   it("carries the CORS headers on a rejection too, or the widget cannot read why", async () => {
-    const res = await widget().post(`/v1/webchat/${workspaceId}/session`).expect(422);
+    const res = await agent().post(`/v1/webchat/${workspaceId}/session`).expect(422);
     expect(res.headers["access-control-allow-origin"]).toBe("*");
   });
 
   it("404s a workspace id that is not a workspace", async () => {
-    await widget().post("/v1/webchat/ws_not_real/session").send({ visitorId: VISITOR }).expect(404);
+    await agent().post("/v1/webchat/ws_not_real/session").send({ visitorId: VISITOR }).expect(404);
   });
 
   it("hands the reply straight back in the response", async () => {
-    const res = await widget().post(`/v1/webchat/${workspaceId}/message`)
+    const res = await agent().post(`/v1/webchat/${workspaceId}/message`)
       .send({ visitorId: VISITOR, text: "do you have olive polos" })
       .expect(201);
 
@@ -242,11 +248,11 @@ describe("the routes the widget calls", () => {
   });
 
   it("rejects a visitorId too short to be one the widget minted", async () => {
-    await widget().post(`/v1/webchat/${workspaceId}/message`).send({ visitorId: "short", text: "hi" }).expect(422);
+    await agent().post(`/v1/webchat/${workspaceId}/message`).send({ visitorId: "short", text: "hi" }).expect(422);
   });
 
   it("needs both a visitorId and a conversationId to poll", async () => {
-    await widget().get(`/v1/webchat/${workspaceId}/updates`).query({ visitorId: VISITOR }).expect(422);
+    await agent().get(`/v1/webchat/${workspaceId}/updates`).query({ visitorId: VISITOR }).expect(422);
   });
 });
 

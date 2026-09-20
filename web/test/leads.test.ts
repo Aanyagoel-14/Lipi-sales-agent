@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createUser, createWorkspace, resetDatabase } from "./helpers";
 import { prisma } from "@/server/lib/prisma";
 import { ingest } from "@/server/services/ingest";
-import { scoreLead, type LeadSignal } from "@/server/services/leads";
+import { scoreLead, type LeadSignal, type LeadStage } from "@/server/services/leads";
 
 /**
  * `scoreLead` is a pure function over one message's signals plus the score it
@@ -11,7 +11,6 @@ import { scoreLead, type LeadSignal } from "@/server/services/leads";
  * cannot answer alone: which of those decisions reaches the customer row.
  */
 
-let workspaceId: string;
 const signal = (overrides: Partial<LeadSignal> = {}): LeadSignal => ({
   previousScore: 0,
   intent: "other",
@@ -120,9 +119,11 @@ describe("drift on an unrecognised intent", () => {
   it("still gains 2 points a message, which the comment above says it must not", () => {
     expect(scoreLead(signal({ previousScore: 40, intent: "support" })).score).toBe(42);
 
+    // Count the messages a visitor who only ever says "hi" needs to cross
+    // the line. The 200 is a runaway guard, not an expectation.
     let score = 0;
+    let stage: LeadStage = "engaged";
     let messages = 0;
-    let stage = "engaged";
     while (stage !== "qualified" && messages < 200) {
       ({ score, stage } = scoreLead(signal({ previousScore: score })));
       messages += 1;
@@ -140,6 +141,8 @@ describe("drift on an unrecognised intent", () => {
  * is what pins the stage.
  */
 describe("the stage as ingest persists it", () => {
+  let workspaceId: string;
+
   beforeEach(async () => {
     await resetDatabase();
     const { user } = await createUser();
@@ -149,17 +152,19 @@ describe("the stage as ingest persists it", () => {
   const say = (text: string) =>
     ingest({ workspaceId, channel: "whatsapp", handle: "+91 90 000 0055", text });
 
+  const twin = (id: string) => prisma.customer.findFirstOrThrow({ where: { workspaceId, id } });
+
   it("writes customer onto the twin the moment an order is placed, and keeps it there", async () => {
     const ordered = await say("I want 3 olive L polos");
     expect(ordered.order).not.toBeNull();
 
-    const afterOrder = await prisma.customer.findFirstOrThrow({ where: { workspaceId, id: ordered.customer.id } });
+    const afterOrder = await twin(ordered.customer.id);
     expect(afterOrder.leadStage).toBe("customer");
 
     // A routine question a message later, with no buying signal in it at
     // all: the score moves, the stage does not.
     await say("hello");
-    const afterChat = await prisma.customer.findFirstOrThrow({ where: { workspaceId, id: ordered.customer.id } });
+    const afterChat = await twin(ordered.customer.id);
     expect(afterChat.leadStage).toBe("customer");
     expect(await prisma.order.count({ where: { workspaceId } })).toBe(1);
   });
@@ -167,7 +172,7 @@ describe("the stage as ingest persists it", () => {
   it("leaves a browsing visitor at engaged", async () => {
     const asked = await say("hello");
 
-    const customer = await prisma.customer.findFirstOrThrow({ where: { workspaceId, id: asked.customer.id } });
+    const customer = await twin(asked.customer.id);
     expect(customer.leadStage).toBe("engaged");
     expect(customer.leadScore).toBeLessThan(55);
   });

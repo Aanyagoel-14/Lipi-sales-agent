@@ -22,41 +22,40 @@ const WEBCHAT_WINDOW_MS = 60_000;
 beforeEach(_resetRateLimitsForTests);
 
 describe("the fixed window", () => {
+  // The window length is not what any of these cases is about — only how
+  // many calls fit inside it, and where the clock is when they arrive.
+  const hit = (key: string, limit: number) => checkRateLimit(key, limit, 60_000);
+  const clockAt = (iso: string) => vi.setSystemTime(new Date(iso));
+
+  // Three of the cases below drive the clock by hand; restoring it here
+  // rather than in each of them keeps the arithmetic they are about in view.
+  afterEach(() => vi.useRealTimers());
+
   it("allows exactly `limit` requests and refuses the next", () => {
     for (let i = 1; i <= 5; i++) {
-      expect(checkRateLimit("k", 5, 60_000), `request ${i}`).toEqual({ allowed: true });
+      expect(hit("k", 5), `request ${i}`).toEqual({ allowed: true });
     }
 
-    const refused = checkRateLimit("k", 5, 60_000);
-    expect(refused.allowed).toBe(false);
+    expect(hit("k", 5).allowed).toBe(false);
   });
 
   it("reports how long the caller must wait, rounded up to a whole second", () => {
     vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date("2026-09-17T12:00:00.000Z"));
-      checkRateLimit("k", 1, 60_000);
-      vi.setSystemTime(new Date("2026-09-17T12:00:30.500Z"));
+    clockAt("2026-09-17T12:00:00.000Z");
+    hit("k", 1);
 
-      const refused = checkRateLimit("k", 1, 60_000);
-      expect(refused).toEqual({ allowed: false, retryAfterSeconds: 30 });
-    } finally {
-      vi.useRealTimers();
-    }
+    clockAt("2026-09-17T12:00:30.500Z");
+    expect(hit("k", 1)).toEqual({ allowed: false, retryAfterSeconds: 30 });
   });
 
   it("starts a fresh window once the old one has expired", () => {
     vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date("2026-09-17T12:00:00.000Z"));
-      checkRateLimit("k", 1, 60_000);
-      expect(checkRateLimit("k", 1, 60_000).allowed).toBe(false);
+    clockAt("2026-09-17T12:00:00.000Z");
+    hit("k", 1);
+    expect(hit("k", 1).allowed).toBe(false);
 
-      vi.setSystemTime(new Date("2026-09-17T12:01:00.001Z"));
-      expect(checkRateLimit("k", 1, 60_000)).toEqual({ allowed: true });
-    } finally {
-      vi.useRealTimers();
-    }
+    clockAt("2026-09-17T12:01:00.001Z");
+    expect(hit("k", 1)).toEqual({ allowed: true });
   });
 
   // Fixed window, not rolling: a caller who keeps hammering a spent budget
@@ -64,24 +63,20 @@ describe("the fixed window", () => {
   // so the window they are told to wait out is the one they actually wait.
   it("does not extend the window when it refuses", () => {
     vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date("2026-09-17T12:00:00.000Z"));
-      checkRateLimit("k", 1, 60_000);
+    clockAt("2026-09-17T12:00:00.000Z");
+    hit("k", 1);
 
-      vi.setSystemTime(new Date("2026-09-17T12:00:59.000Z"));
-      expect(checkRateLimit("k", 1, 60_000)).toEqual({ allowed: false, retryAfterSeconds: 1 });
+    clockAt("2026-09-17T12:00:59.000Z");
+    expect(hit("k", 1)).toEqual({ allowed: false, retryAfterSeconds: 1 });
 
-      vi.setSystemTime(new Date("2026-09-17T12:01:00.001Z"));
-      expect(checkRateLimit("k", 1, 60_000)).toEqual({ allowed: true });
-    } finally {
-      vi.useRealTimers();
-    }
+    clockAt("2026-09-17T12:01:00.001Z");
+    expect(hit("k", 1)).toEqual({ allowed: true });
   });
 
   it("counts each key separately, so one caller cannot spend another's budget", () => {
-    checkRateLimit("a", 1, 60_000);
-    expect(checkRateLimit("a", 1, 60_000).allowed).toBe(false);
-    expect(checkRateLimit("b", 1, 60_000).allowed).toBe(true);
+    hit("a", 1);
+    expect(hit("a", 1).allowed).toBe(false);
+    expect(hit("b", 1).allowed).toBe(true);
   });
 });
 
@@ -118,17 +113,29 @@ describe("the budget as a webchat caller meets it", () => {
     workspaceId = (await createWorkspace({ userId: user.id })).id;
   });
 
-  afterEach(_resetRateLimitsForTests);
-
   /** A cheap `corsRoute` call from one source address. */
-  const poll = (ip: string) =>
+  const poll = (ip: string, ws = workspaceId) =>
     agent()
-      .get(`/v1/webchat/${workspaceId}/updates`)
+      .get(`/v1/webchat/${ws}/updates`)
       .query({ visitorId: "visitor-rate-1", conversationId: "cnv_nothing" })
       .set("x-forwarded-for", ip);
 
+  /** The endpoint the budget exists for: every one of these runs a full
+   *  `ingest()` — an extraction call, a transaction, a lead-score recompute. */
+  const say = (ip: string, visitorId = "visitor-rate-2") =>
+    agent()
+      .post(`/v1/webchat/${workspaceId}/message`)
+      .send({ visitorId, text: "do you have olive polos" })
+      .set("x-forwarded-for", ip);
+
+  /** Spend what is left of this address's budget on cheap polls, so that the
+   *  next request the case makes is the one that has to be refused. */
+  const spendBudget = async (ip: string, alreadySpent = 0) => {
+    for (let i = alreadySpent + 1; i <= WEBCHAT_LIMIT; i++) await poll(ip).expect(200);
+  };
+
   it("refuses the 31st request in the window with a Retry-After the widget can obey", async () => {
-    for (let i = 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.10").expect(200);
+    await spendBudget("198.51.100.10");
 
     const refused = await poll("198.51.100.10").expect(429);
     expect(refused.body.error).toBe("Too many requests");
@@ -141,7 +148,7 @@ describe("the budget as a webchat caller meets it", () => {
   // Without these the browser drops the response and the widget sees a
   // network error, which is the one failure it cannot back off from.
   it("still carries the CORS headers on the refusal", async () => {
-    for (let i = 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.11").expect(200);
+    await spendBudget("198.51.100.11");
 
     const refused = await poll("198.51.100.11").expect(429);
     expect(refused.headers["access-control-allow-origin"]).toBe("*");
@@ -150,26 +157,18 @@ describe("the budget as a webchat caller meets it", () => {
   });
 
   it("charges the budget per source address, not per workspace", async () => {
-    for (let i = 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.12").expect(200);
+    await spendBudget("198.51.100.12");
 
     await poll("198.51.100.12").expect(429);
     await poll("198.51.100.13").expect(200);
   });
-
-  /** The endpoint the budget exists for: every one of these runs a full
-   *  `ingest()` — an extraction call, a transaction, a lead-score recompute. */
-  const say = (ip: string, visitorId = "visitor-rate-2") =>
-    agent()
-      .post(`/v1/webchat/${workspaceId}/message`)
-      .send({ visitorId, text: "do you have olive polos" })
-      .set("x-forwarded-for", ip);
 
   // One key per source address, not one per route, so the cheap endpoint
   // cannot be used to drain a budget the expensive one then ignores — and,
   // more to the point, `/message` is metered at all. Swap its `corsRoute`
   // for a plain `route()` and this is the only case that notices.
   it("spends one budget across all three routes, so a poll flood closes /message too", async () => {
-    for (let i = 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.20").expect(200);
+    await spendBudget("198.51.100.20");
 
     const refused = await say("198.51.100.20").expect(429);
     expect(refused.headers["access-control-allow-origin"]).toBe("*");
@@ -187,7 +186,7 @@ describe("the budget as a webchat caller meets it", () => {
   it("counts a visitor's own messages against the budget, not only their polls", async () => {
     const spent = 5;
     for (let i = 1; i <= spent; i++) await say("198.51.100.21").expect(201);
-    for (let i = spent + 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.21").expect(200);
+    await spendBudget("198.51.100.21", spent);
 
     await poll("198.51.100.21").expect(429);
     expect(await prisma.message.count({ where: { conversation: { workspaceId }, from: "customer" } })).toBe(spent);
@@ -201,21 +200,15 @@ describe("the budget as a webchat caller meets it", () => {
     const { user } = await createUser("second@test.local");
     const second = (await createWorkspace({ userId: user.id, name: "Second Co" })).id;
 
-    for (let i = 1; i <= WEBCHAT_LIMIT; i++) await poll("198.51.100.15").expect(200);
+    await spendBudget("198.51.100.15");
 
-    await agent().get(`/v1/webchat/${second}/updates`)
-      .query({ visitorId: "visitor-rate-1", conversationId: "cnv_nothing" })
-      .set("x-forwarded-for", "198.51.100.15")
-      .expect(429);
+    await poll("198.51.100.15", second).expect(429);
   });
 
   // The counter runs before the handler, so a flood aimed at a workspace id
   // that does not exist is throttled on the same budget.
   it("throttles before the handler decides the request was invalid", async () => {
-    const miss = () =>
-      agent().get("/v1/webchat/ws_does_not_exist/updates")
-        .query({ visitorId: "visitor-rate-1", conversationId: "cnv_nothing" })
-        .set("x-forwarded-for", "198.51.100.14");
+    const miss = () => poll("198.51.100.14", "ws_does_not_exist");
 
     for (let i = 1; i <= WEBCHAT_LIMIT; i++) await miss().expect(404);
     await miss().expect(429);
