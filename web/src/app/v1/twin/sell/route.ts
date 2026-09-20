@@ -7,7 +7,7 @@ const sellSchema = z.object({
   text: z.string().trim().min(1).max(2000),
   handle: z.string().trim().min(1).max(120),
   name: z.string().trim().max(120).optional(),
-  channel: z.enum(["whatsapp", "instagram", "facebook", "telegram", "email", "webchat"]).default("webchat"),
+  channel: z.enum(["whatsapp", "instagram", "facebook", "telegram", "x", "email", "webchat"]).default("webchat"),
   /**
    * The caller's own transcript, when it keeps one — the storefront panel
    * does. Omitted, `sell()` reads this handle's earlier turns itself, which

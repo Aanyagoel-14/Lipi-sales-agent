@@ -151,8 +151,8 @@ inventory/order effects, creates agent runs and approvals, composes a grounded
 reply, and appends events for each effect.
 
 Those facts reach the customer through `sell()`, on every channel.
-`channels/inbound.ts` is the one door for WhatsApp, Instagram, Messenger and
-Telegram, and the website widget calls the same function directly — so one
+`channels/inbound.ts` is the one door for WhatsApp, Instagram, Messenger,
+Telegram and X, and the website widget calls the same function directly — so one
 salesperson answers all of them and no channel gets a form letter. `sell()`
 runs the ingest transaction, then writes the voiced reply onto the very row
 ingest composed into, which is the row the connector delivers: one inbound
@@ -179,6 +179,34 @@ never rewritten, `lastSeenAt` moves on every later view, and `engagedAt` is
 stamped only when they first say something. That is the line between a visit and
 a lead. The greeting the call answers with is held by the widget until the
 visitor opens the panel; nothing opens itself at anybody.
+
+### X direct messages
+
+X is the Meta arrangement rather than Telegram's, because X's own model is
+Meta's: a webhook is registered against an **app**, not an account. One URL —
+`POST /webhooks/x` — is validated by a challenge signed with the app's consumer
+secret, every delivery is signed with that same secret (base64, in
+`x-twitter-webhooks-signature`), and the tenant is the `for_user_id` in the
+payload, resolved through `(channel, externalId)` exactly as a phone number id
+or a Page id is. A URL per connection would prove nothing extra: the secret
+behind it would be the same for every tenant.
+
+Three properties of the channel are declared in its registry spec rather than
+handled at the door. X delivers **both directions** of a conversation, so the
+reply just sent arrives back as an event whose sender is the shop's own
+account, and the parser drops it the way an Instagram echo is dropped. X takes
+**15 DMs per 15 minutes** from one account, so the spec carries its own inbound
+ceiling — twice the send ceiling, because of those echoes — instead of
+`inbound.ts` knowing a channel's name. And a DM holds 10,000 characters, so a
+reply is never split, which matters because the API bills per DM.
+
+Composio has no X trigger (its twitter toolkit reports zero), so inbound is
+Lipi's; outbound and credentials are Composio's like every other channel. The
+per-tenant part of turning inbound on is the activity subscription, made at
+connect time against the deployment's registered webhook — and it cannot be
+withdrawn from here, because X authenticates the removal with the app's bearer
+token, which Composio does not hold. Disconnect clears the id inbound routes
+on instead, which is the same answer Telegram gives to the same problem.
 
 ## Grounding the salesperson
 
@@ -356,6 +384,7 @@ system is a *reader* of that log rather than a second record of what happened.
 | Email | Not implemented. | Mailbox adapter, inbound authentication and outbound delivery integration. |
 | Webchat | Not implemented. | Hosted widget, authenticated session model and message transport. |
 | Instagram | Not implemented. | Meta messaging adapter and review-compliant webhook setup. |
+| X (Twitter) | Connect through Composio, activity subscription at connect time, CRC-validated and signature-verified inbound, outbound DM. | Lipi's own X app on a tier with Account Activity access, `POST /2/webhooks` registered once against `PUBLIC_URL/webhooks/x`, and `X_API_SECRET` / `X_WEBHOOK_ID` set. Per-DM billing is the gate on volume. |
 
 Only a real connection with `connected` status may appear as connected in the
 dashboard.

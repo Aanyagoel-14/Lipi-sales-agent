@@ -5,7 +5,7 @@
  * next/headers or anything else that cannot be bundled for the browser.
  * `lib/dash` re-exports them for server callers.
  */
-export type ChannelId = "whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat";
+export type ChannelId = "whatsapp" | "instagram" | "facebook" | "telegram" | "x" | "email" | "webchat";
 
 /** Fixed slot order. A channel keeps its colour regardless of how many are shown. */
 export const channelSlot: Record<ChannelId, number> = {
@@ -15,6 +15,8 @@ export const channelSlot: Record<ChannelId, number> = {
   telegram: 4,
   email: 5,
   webchat: 6,
+  // Seventh, added with X: every channel above keeps the colour it had.
+  x: 7,
 };
 
 export const channelLabel: Record<ChannelId, string> = {
@@ -22,6 +24,7 @@ export const channelLabel: Record<ChannelId, string> = {
   instagram: "Instagram",
   facebook: "Messenger",
   telegram: "Telegram",
+  x: "X",
   email: "Email",
   webchat: "Website chat",
 };

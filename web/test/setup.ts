@@ -9,6 +9,11 @@ process.env.APP_SECRET ??= "test-secret-not-used-in-production-0123456789";
 // first and answer Meta's challenge with the second.
 process.env.META_APP_SECRET ??= "test-meta-app-secret";
 process.env.META_VERIFY_TOKEN ??= "test-meta-verify-token";
+// Lipi's X app, likewise: the route verifies every Account Activity body
+// against the consumer secret and answers X's challenge with it, and a
+// tenant's DMs are subscribed to the webhook this id names.
+process.env.X_API_SECRET ??= "test-x-api-secret";
+process.env.X_WEBHOOK_ID ??= "test-x-webhook-id";
 // Lipi's Shopify app, likewise: the install route refuses without these two,
 // and the webhook route verifies every body against the secret.
 process.env.SHOPIFY_API_KEY ??= "test-shopify-api-key";

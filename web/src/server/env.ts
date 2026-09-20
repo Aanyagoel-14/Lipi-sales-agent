@@ -39,6 +39,7 @@ const schema = z.object({
   COMPOSIO_AUTH_CONFIG_INSTAGRAM: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_FACEBOOK: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_TELEGRAM: z.string().optional(),
+  COMPOSIO_AUTH_CONFIG_X: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_GMAIL: z.string().optional(),
   // Lipi's own Meta app: one App Secret and one verify token for the whole
   // deployment, set once in the Meta app against `/webhooks/meta`. Meta
@@ -47,6 +48,16 @@ const schema = z.object({
   // there is no per-tenant equivalent and never was.
   META_APP_SECRET: z.string().optional(),
   META_VERIFY_TOKEN: z.string().optional(),
+
+  // ------------------------------------------------------------------- X --
+  // Lipi's own X app, the same shape as the Meta one. X signs every Account
+  // Activity delivery with the app's *consumer secret* and proves ownership
+  // of the callback with a challenge signed by the same key, so this is what
+  // `/webhooks/x` verifies against — there is no per-tenant equivalent. The
+  // webhook itself is registered once per deployment (`POST /2/webhooks`)
+  // and its id is what each tenant's activity is subscribed to.
+  X_API_SECRET: z.string().optional(),
+  X_WEBHOOK_ID: z.string().optional(),
 
   // ------------------------------------------------------------- Shopify --
   // Lipi's own Shopify app, one per deployment. The API key identifies it on
@@ -90,6 +101,20 @@ const schema = z.object({
       code: "custom",
       path: [key],
       message: `${key} is required when a Meta channel is offered (${offered.join(", ")}); inbound cannot be verified without it`,
+    });
+  }
+}).superRefine((value, ctx) => {
+  // The same rule for X, for the same reason: without the app's consumer
+  // secret no delivery can be verified and the CRC challenge cannot be
+  // answered, and without the webhook id no tenant can be subscribed to it.
+  if (!value.COMPOSIO_AUTH_CONFIG_X) return;
+
+  for (const key of ["X_API_SECRET", "X_WEBHOOK_ID"] as const) {
+    if (value[key]) continue;
+    ctx.addIssue({
+      code: "custom",
+      path: [key],
+      message: `${key} is required when X is offered (COMPOSIO_AUTH_CONFIG_X is set); DMs cannot be received without it`,
     });
   }
 });

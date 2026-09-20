@@ -56,6 +56,29 @@ export function verifyShopifyWebhook(raw: Buffer, header: string | undefined, ap
 }
 
 /**
+ * X signs an Account Activity delivery with the *app's* consumer secret —
+ * Meta's story again, and the same rule about the raw bytes — but the digest
+ * is base64 and the header is `x-twitter-webhooks-signature`. A verifier that
+ * compared hex here would refuse every genuine delivery.
+ */
+export function verifyXSignature(raw: Buffer, header: string | undefined, consumerSecret: string): boolean {
+  if (!header?.startsWith("sha256=")) return false;
+  const expected = createHmac("sha256", consumerSecret).update(raw).digest("base64");
+  return secretsMatch(expected, header.slice("sha256=".length));
+}
+
+/**
+ * The answer to X's Challenge-Response Check: the HMAC of the token X sent,
+ * keyed by the same consumer secret, base64 and prefixed the same way.
+ *
+ * X makes this GET on registration, after every manual re-validation and
+ * once an hour thereafter; a webhook that stops answering it is marked
+ * invalid and stops receiving events, so this is not a one-off setup step.
+ */
+export const crcResponseToken = (crcToken: string, consumerSecret: string): string =>
+  `sha256=${createHmac("sha256", consumerSecret).update(crcToken).digest("base64")}`;
+
+/**
  * The OAuth callback is signed differently: Shopify HMACs the query string
  * itself, with `hmac` removed, the remaining parameters sorted by key and
  * joined as `key=value&…`, and the digest in hex. `signature` is dropped too

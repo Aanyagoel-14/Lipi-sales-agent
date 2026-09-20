@@ -100,6 +100,7 @@ export type ChannelSpec = {
     | "COMPOSIO_AUTH_CONFIG_INSTAGRAM"
     | "COMPOSIO_AUTH_CONFIG_FACEBOOK"
     | "COMPOSIO_AUTH_CONFIG_TELEGRAM"
+    | "COMPOSIO_AUTH_CONFIG_X"
     | "COMPOSIO_AUTH_CONFIG_GMAIL";
   connect:
     | { kind: "link" }
@@ -124,6 +125,7 @@ export type ChannelSpec = {
       route(entry: Json): { externalId: string; payload: Json }[];
     }
     | { kind: "telegram" }
+    | { kind: "x_activity" }
     | { kind: "composio_trigger"; slug: string; config(connection: ConnectionView): Json }
     | { kind: "none"; reason: string };
   /** Provider payload, already routed to one connection → canonical messages. */
@@ -134,6 +136,14 @@ export type ChannelSpec = {
    * for a channel with no practical limit (email).
    */
   textLimit: number | null;
+  /**
+   * How many deliveries one connection of this channel may cause us to look
+   * at, and over what window. Absent means the shared default in
+   * `inbound.ts`, which is what a channel with no provider ceiling worth
+   * naming should use; a channel that can only answer a few messages an hour
+   * says so here rather than being special-cased at the door.
+   */
+  inboundLimit?: { max: number; windowMs: number };
   /** What to execute to reply. Throws when the connection lacks something the tool needs. */
   send(args: { to: string; text: string; config: Json; threadId?: string; subject?: string }): SendRequest;
   /**
@@ -175,6 +185,10 @@ export type ChannelSpec = {
 /**
  * Pinned toolkit versions, read from `GET /toolkits/{slug}` on 2026-09-19 and
  * verified against every tool slug and argument name the specs below use.
+ * `twitter` is the exception and says so at its spec: its version and tool
+ * slugs come from the toolkit's public page on 2026-09-20, and the argument
+ * names are X's own, because this deployment has no Composio key to check
+ * them with.
  *
  * Composio rejects an execute that names no version, and Lipi never sets
  * `dangerouslySkipVersionCheck`, so a stale or wrong pin fails loudly instead
@@ -188,6 +202,7 @@ const PINS = {
   telegram: "20260821_00",
   instagram: "20260915_00",
   facebook: "20260902_00",
+  twitter: "20260812_00",
   gmail: "20260915_00",
 } as const;
 
@@ -685,6 +700,144 @@ const facebook: ChannelSpec = {
   },
 };
 
+// --------------------------------------------------------------------- x --
+
+/**
+ * One Account Activity delivery, as docs.x.com documents it for DMs.
+ *
+ * The envelope is the long-standing one — `direct_message_events` with a
+ * `message_create` inside — and it is what the v2 Account Activity API still
+ * sends. Typing indicators, read receipts and deletions arrive in sibling
+ * arrays or with another `type`, and none of them carries
+ * `message_data.text`, which is what keeps them out.
+ */
+type XActivity = {
+  for_user_id?: string;
+  direct_message_events?: {
+    type?: string;
+    id?: string;
+    message_create?: {
+      target?: { recipient_id?: string };
+      sender_id?: string;
+      message_data?: { text?: string };
+    };
+  }[];
+  users?: Record<string, { id?: string; name?: string; screen_name?: string }>;
+};
+
+const x: ChannelSpec = {
+  channel: "x",
+  label: "X",
+  // The toolkit is still called `twitter`, so every tool slug is too, and
+  // `versionForTool` finds the pin by that prefix. The channel is `x`
+  // because that is what a customer and an operator call it.
+  toolkit: "twitter",
+  toolkitVersion: PINS.twitter,
+  authConfigEnv: "COMPOSIO_AUTH_CONFIG_X",
+  connect: { kind: "link" },
+  inbound: { kind: "x_activity" },
+
+  /**
+   * Both directions of a DM conversation are delivered to the webhook — X
+   * says so in as many words — so the reply just sent comes back as an event
+   * whose sender is the connected account itself. Answering those would be
+   * the twin talking to itself, exactly as an Instagram echo would.
+   */
+  parse(body, connection) {
+    const payload = body as XActivity;
+    const out: ParsedMessage[] = [];
+
+    for (const event of payload.direct_message_events ?? []) {
+      if (event.type !== "message_create") continue;
+      const sender = event.message_create?.sender_id;
+      const text = event.message_create?.message_data?.text?.trim();
+      if (!sender || !text || !event.id) continue;
+      if (connection.externalId && sender === connection.externalId) continue;
+
+      const user = payload.users?.[sender];
+      out.push({
+        channel: "x",
+        handle: sender,
+        text,
+        name: user?.screen_name ? `@${user.screen_name}` : user?.name,
+        externalId: event.id,
+      });
+    }
+
+    return out;
+  },
+
+  // X takes a DM of up to 10,000 characters, so a reply is never split in
+  // practice — which is the point: the API bills per DM sent.
+  textLimit: 10000,
+
+  /**
+   * `POST /2/dm_conversations/with/:participant_id/messages` allows 15 calls
+   * per 15 minutes for one user, and every reply we send arrives back here
+   * as a delivery of its own. Twice the send ceiling is therefore the most a
+   * connection can produce in a conversation it is keeping up with, and past
+   * it there is no reply left to send anyway.
+   */
+  inboundLimit: { max: 30, windowMs: 15 * 60_000 },
+
+  send({ to, text }) {
+    // The participant is X's numeric user id — `^[0-9]{1,19}$` in its own
+    // schema — which is exactly what inbound stored as the handle.
+    return { slug: "TWITTER_SEND_A_NEW_MESSAGE_TO_A_USER", arguments: { participant_id: to, text } };
+  },
+
+  /**
+   * Points the deployment's registered webhook at this account's activity.
+   *
+   * The webhook itself is Lipi's, registered once against Lipi's X app and
+   * named by `X_WEBHOOK_ID`: X allows a handful per app and validates each
+   * with a CRC signed by the app's consumer secret, so there is one URL for
+   * every tenant and the subscription is the only per-tenant part. That is
+   * the Meta story again rather than Telegram's, and it throws for the same
+   * reason `subscribeMeta` does — a channel that cannot receive is not a
+   * connected sales channel.
+   */
+  async afterConnect(ctx) {
+    const webhookId = env.X_WEBHOOK_ID;
+    if (!webhookId) {
+      throw new Error("This deployment has no registered X webhook (X_WEBHOOK_ID is empty), so DMs could not be received");
+    }
+    const result = await ctx.client.execute("TWITTER_CREATE_ACTIVITY_SUBSCRIPTION", {
+      userId: ctx.workspaceId,
+      connectedAccountId: ctx.connectedAccountId,
+      arguments: { webhook_id: webhookId },
+    });
+    if (!result.successful) {
+      throw new Error(`X refused the activity subscription: ${result.error ?? "no reason given"}`);
+    }
+    return { config: { webhookId } };
+  },
+
+  /**
+   * There is no `beforeDisconnect`. Removing a subscription is
+   * `DELETE /2/account_activity/webhooks/:id/subscriptions/:user_id/all`,
+   * which X authenticates with the *app's* bearer token — not the user
+   * credential Composio holds — so it cannot be made from here. Disconnect
+   * clears `externalId`, and a delivery for an account no connection claims
+   * is dropped at the door; DEPLOYMENT.md says how to remove it for good.
+   */
+
+  identity: {
+    // `GET /2/users/me`, whose default fields are already id, name and
+    // username; asking for more would only widen what a connect step holds.
+    slug: "TWITTER_USER_LOOKUP_ME",
+    pick(data) {
+      // X answers `{ data: { … } }`; Composio may or may not unwrap it.
+      const root = record(data) ?? {};
+      const me = record(root.data) ?? root;
+      const id = str(me.id);
+      if (!id) throw new Error("X did not identify the account");
+      const username = str(me.username);
+      return { externalId: id, displayName: username ? `@${username}` : (str(me.name) ?? "X account") };
+    },
+  },
+};
+
 // ------------------------------------------------------------ email/gmail --
 
 /** `"Deepa Rao <deepa@example.com>"` → both parts; a bare address → address only. */
@@ -761,7 +914,7 @@ const email: ChannelSpec = {
 
 // --------------------------------------------------------------- registry --
 
-export const channelSpecs: readonly ChannelSpec[] = [whatsapp, telegram, instagram, facebook, email];
+export const channelSpecs: readonly ChannelSpec[] = [whatsapp, telegram, instagram, facebook, x, email];
 
 const byChannel = new Map(channelSpecs.map((spec) => [spec.channel, spec]));
 
