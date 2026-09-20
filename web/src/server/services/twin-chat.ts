@@ -100,23 +100,22 @@ export async function chatWithTwin(workspaceId: string, messages: ChatTurn[]): P
   const briefing = await buildBriefing(workspaceId);
   const latest = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
 
-  if (!env.OPENROUTER_API_KEY) {
-    return { reply: answerWithRules(latest, briefing), source: "rules", model: null, facts: briefing.facts };
-  }
+  /** Every answer that does not reach the model. `degraded` is absent when none was tried. */
+  const fromSnapshot = (degraded?: string): ChatResult => ({
+    reply: answerWithRules(latest, briefing),
+    source: "rules",
+    model: null,
+    facts: briefing.facts,
+    ...(degraded ? { degraded } : {}),
+  });
+
+  if (!env.OPENROUTER_API_KEY) return fromSnapshot();
 
   // No customer: this is the operator, so only the workspace ceiling applies.
   // Over it, the snapshot answers — which is the same thing an absent key
   // does, and `degraded` says which ceiling it was.
-  const budget = await checkModelBudget({ workspaceId, purpose: "twin_chat" });
-  if (!budget.allowed) {
-    return {
-      reply: answerWithRules(latest, briefing),
-      source: "rules",
-      model: null,
-      facts: briefing.facts,
-      degraded: budget.reason,
-    };
-  }
+  const verdict = await checkModelBudget({ workspaceId, purpose: "twin_chat" });
+  if (!verdict.allowed) return fromSnapshot(verdict.reason);
 
   try {
     return {
@@ -128,12 +127,6 @@ export async function chatWithTwin(workspaceId: string, messages: ChatTurn[]): P
   } catch (error) {
     const reason = (error as Error).message;
     console.warn(`[twin-chat] OpenRouter failed, answering from the snapshot: ${reason}`);
-    return {
-      reply: answerWithRules(latest, briefing),
-      source: "rules",
-      model: null,
-      facts: briefing.facts,
-      degraded: reason,
-    };
+    return fromSnapshot(reason);
   }
 }

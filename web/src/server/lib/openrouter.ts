@@ -16,6 +16,16 @@ import { recordModelCall, type ModelMeter, type ModelUsage } from "./metering";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
+/** What a caller may say about the request itself, apart from who pays for it. */
+type CompletionOptions = {
+  messages: ChatMessage[];
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  responseFormat?: unknown;
+  timeoutMs?: number;
+};
+
 /**
  * Reasoning models put their scratchpad in the reply.
  *
@@ -86,14 +96,10 @@ export function unglueTrailingSentence(text: string): string {
 /** Both formatting repairs, in the order they have to run. */
 const tidy = (text: string) => unglueTrailingSentence(tidyMarkdownLists(text));
 
-export async function chatForReply(options: {
-  messages: ChatMessage[];
-  meter: ModelMeter;
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  timeoutMs?: number;
-}): Promise<string> {
+/** The response format is this function's own, so a caller does not set one. */
+export async function chatForReply(
+  options: Omit<CompletionOptions, "responseFormat"> & { meter: ModelMeter },
+): Promise<string> {
   const content = await chatCompletion({
     ...options,
     responseFormat: {
@@ -141,9 +147,9 @@ class ModelCallFailed extends Error {
   }
 }
 
-type Usage = { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+type OpenRouterUsage = { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 
-const usageFrom = (usage: Usage | undefined): ModelUsage | null =>
+const usageFrom = (usage: OpenRouterUsage | undefined): ModelUsage | null =>
   usage
     ? {
         promptTokens: usage.prompt_tokens ?? null,
@@ -152,15 +158,7 @@ const usageFrom = (usage: Usage | undefined): ModelUsage | null =>
       }
     : null;
 
-export async function chatCompletion(options: {
-  messages: ChatMessage[];
-  meter: ModelMeter;
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  responseFormat?: unknown;
-  timeoutMs?: number;
-}): Promise<string> {
+export async function chatCompletion(options: CompletionOptions & { meter: ModelMeter }): Promise<string> {
   const model = options.model ?? env.OPENROUTER_CHAT_MODEL;
   const started = Date.now();
 
@@ -184,15 +182,10 @@ export async function chatCompletion(options: {
   }
 }
 
+/** The call itself. `model` is resolved by the caller, which is what meters it. */
 async function request(
   model: string,
-  options: {
-    messages: ChatMessage[];
-    temperature?: number;
-    maxTokens?: number;
-    responseFormat?: unknown;
-    timeoutMs?: number;
-  },
+  options: CompletionOptions,
 ): Promise<{ content: string; usage: ModelUsage | null }> {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -218,7 +211,7 @@ async function request(
 
   const body = (await res.json()) as {
     choices?: { message?: { content?: string }; finish_reason?: string }[];
-    usage?: Usage;
+    usage?: OpenRouterUsage;
     error?: { message?: string };
   };
 

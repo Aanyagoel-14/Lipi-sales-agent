@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
+import { agent, createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
 import { env } from "@/server/env";
 import { prisma } from "@/server/lib/prisma";
 import { checkModelBudget, modelSpend, startOfDayUtc } from "@/server/lib/metering";
@@ -11,10 +11,12 @@ let workspaceId: string;
 
 async function setup() {
   const { user } = await createUser();
-  const workspace = await createWorkspace({ userId: user.id, policy: "nothing" });
-  workspaceId = workspace.id;
-  return workspace;
+  workspaceId = (await createWorkspace({ userId: user.id, policy: "nothing" })).id;
 }
+
+/** The defaults are far too high to reach in a test, so a test that needs a ceiling sets it. */
+const ceilings = (data: { dailyModelCalls?: number; dailyModelTokens?: number; customerModelCalls?: number }) =>
+  prisma.workspace.update({ where: { id: workspaceId }, data });
 
 const buy = (text: string, handle = "+91 90 000 5555") =>
   sell({ workspaceId, channel: "webchat", handle, name: "Walk-in", text });
@@ -23,17 +25,15 @@ const buy = (text: string, handle = "+91 90 000 5555") =>
 const answers = (content: string, usage?: { prompt: number; completion: number }) =>
   vi.stubGlobal("fetch", async () =>
     new Response(
+      // An absent `usage` is dropped by JSON.stringify, which is the body a
+      // provider that reports no tokens sends.
       JSON.stringify({
         choices: [{ message: { content } }],
-        ...(usage
-          ? {
-              usage: {
-                prompt_tokens: usage.prompt,
-                completion_tokens: usage.completion,
-                total_tokens: usage.prompt + usage.completion,
-              },
-            }
-          : {}),
+        usage: usage && {
+          prompt_tokens: usage.prompt,
+          completion_tokens: usage.completion,
+          total_tokens: usage.prompt + usage.completion,
+        },
       }),
       { status: 200 },
     ));
@@ -162,8 +162,8 @@ describe("the per-workspace daily budget", () => {
   });
 
   it("degrades at the call ceiling rather than erroring", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { dailyModelCalls: 6 } });
+    await setup();
+    await ceilings({ dailyModelCalls: 6 });
     await alreadySpent(6);
     vi.stubGlobal("fetch", async () => { throw new Error("the model must not be called"); });
 
@@ -179,8 +179,8 @@ describe("the per-workspace daily budget", () => {
   });
 
   it("degrades at the token ceiling too", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { dailyModelTokens: 1000 } });
+    await setup();
+    await ceilings({ dailyModelTokens: 1000 });
     await alreadySpent(2, { tokens: 500 });
     vi.stubGlobal("fetch", async () => { throw new Error("the model must not be called"); });
 
@@ -190,8 +190,8 @@ describe("the per-workspace daily budget", () => {
   });
 
   it("turns the model off entirely at a ceiling of zero", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { dailyModelCalls: 0 } });
+    await setup();
+    await ceilings({ dailyModelCalls: 0 });
     vi.stubGlobal("fetch", async () => { throw new Error("the model must not be called"); });
 
     const result = await buy("do you have XL polos?");
@@ -201,8 +201,8 @@ describe("the per-workspace daily budget", () => {
   });
 
   it("does not charge one workspace for another's spend", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { dailyModelCalls: 4 } });
+    await setup();
+    await ceilings({ dailyModelCalls: 4 });
 
     const { user } = await createUser("other@test.local");
     const other = await createWorkspace({ userId: user.id, name: "Other Co" });
@@ -219,8 +219,8 @@ describe("the per-workspace daily budget", () => {
   });
 
   it("does not charge today for yesterday's spend", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { dailyModelCalls: 4 } });
+    await setup();
+    await ceilings({ dailyModelCalls: 4 });
     const yesterday = new Date(startOfDayUtc().getTime() - 60_000);
     await alreadySpent(40, { on: yesterday });
     answers("Reserved.");
@@ -244,8 +244,8 @@ describe("the per-workspace daily budget", () => {
 
 describe("the per-conversation cap", () => {
   it("stops one customer's thread taking the whole workspace's budget", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { customerModelCalls: 4 } });
+    await setup();
+    await ceilings({ customerModelCalls: 4 });
     answers("Reserved.");
 
     // Two messages from the same handle: two calls each, so the third is over.
@@ -258,8 +258,8 @@ describe("the per-conversation cap", () => {
   });
 
   it("leaves every other customer served", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { customerModelCalls: 2 } });
+    await setup();
+    await ceilings({ customerModelCalls: 2 });
     answers("Reserved.");
 
     await buy("do you have XL polos?", "+91 90 000 1111");
@@ -297,8 +297,8 @@ describe("the operator's own twin chat", () => {
   });
 
   it("answers from the snapshot when the workspace is over its ceiling", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { dailyModelCalls: 1 } });
+    await setup();
+    await ceilings({ dailyModelCalls: 1 });
     await alreadySpent(1);
     vi.stubGlobal("fetch", async () => { throw new Error("the model must not be called"); });
 
@@ -326,8 +326,8 @@ describe("reading the spend", () => {
   });
 
   it("counts the failures separately, and says when the budget is gone", async () => {
-    const workspace = await setup();
-    await prisma.workspace.update({ where: { id: workspace.id }, data: { dailyModelCalls: 2 } });
+    await setup();
+    await ceilings({ dailyModelCalls: 2 });
     vi.stubGlobal("fetch", async () => new Response("no credits", { status: 402 }));
     await buy("I need 2 blue XL polos");
 
@@ -342,7 +342,6 @@ describe("reading the spend", () => {
     answers("Reserved.");
     await buy("I need 2 blue XL polos");
 
-    const { agent } = await import("./helpers");
     await agent().get("/v1/usage/models").expect(401);
 
     const a = await signedIn();

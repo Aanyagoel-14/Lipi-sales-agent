@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { env } from "../env";
 import { chatCompletion } from "../lib/openrouter";
-import { checkModelBudget, type ModelMeter } from "../lib/metering";
+import { checkModelBudget, type ModelMeter, type ModelSpender } from "../lib/metering";
 import { catalogueFor, type Vertical } from "./catalogues";
 
 /**
@@ -267,7 +267,7 @@ async function extractWithOpenRouter(
 }
 
 /**
- * `budget` names the workspace whose ceiling this extraction spends and the
+ * `spender` names the workspace whose ceiling this extraction spends and the
  * customer thread it is spent on. Over the ceiling the rules run instead —
  * the same degradation an absent key already gets, and visible on the
  * `intent.extracted` event as `via=rules`.
@@ -275,12 +275,12 @@ async function extractWithOpenRouter(
 export async function extract(
   text: string,
   vocab: Vocabulary,
-  budget: Omit<ModelMeter, "purpose">,
+  spender: ModelSpender,
   now = new Date(),
 ): Promise<ExtractionResult> {
   if (!env.OPENROUTER_API_KEY) return extractWithRules(text, vocab, now);
 
-  const meter: ModelMeter = { ...budget, purpose: "extract" };
+  const meter: ModelMeter = { ...spender, purpose: "extract" };
   const verdict = await checkModelBudget(meter, now);
   if (!verdict.allowed) {
     console.warn(`[extract] ${verdict.reason}, using rules`);

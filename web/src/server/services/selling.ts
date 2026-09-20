@@ -236,9 +236,9 @@ export async function sell(input: {
   // composed reply — every number in it is verified — and the operator sees
   // why on `degraded`.
   const meter: ModelMeter = { workspaceId: input.workspaceId, purpose: "sell", customerId: result.customer.id };
-  const budget = await checkModelBudget(meter);
-  if (!budget.allowed) {
-    return { ...base, reply: result.reply, voicedBy: "template", degraded: budget.reason };
+  const verdict = await checkModelBudget(meter);
+  if (!verdict.allowed) {
+    return { ...base, reply: result.reply, voicedBy: "template", degraded: verdict.reason };
   }
 
   const [grounding, workspace] = await Promise.all([

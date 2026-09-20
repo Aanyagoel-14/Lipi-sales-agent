@@ -34,6 +34,9 @@ export type ModelMeter = {
   customerId?: string | null;
 };
 
+/** A meter with the purpose left to the service about to fill it in. */
+export type ModelSpender = Omit<ModelMeter, "purpose">;
+
 /** Tokens as the response reported them. Absent when there was no response. */
 export type ModelUsage = {
   promptTokens: number | null;
@@ -56,6 +59,18 @@ export function startOfDayUtc(now = new Date()): Date {
 /** Long provider errors are evidence, not prose: enough to recognise, not to store. */
 const ERROR_MAX = 300;
 
+/** One finished call, as `lib/openrouter.ts` saw it end. */
+type RecordedCall = ModelMeter & {
+  model: string;
+  latencyMs: number;
+  ok: boolean;
+  usage?: ModelUsage | null;
+  error?: string;
+};
+
+/** The three ceilings, read together wherever one of them is needed. */
+const CEILINGS = { dailyModelCalls: true, dailyModelTokens: true, customerModelCalls: true } as const;
+
 /**
  * Appends the row. Never throws.
  *
@@ -64,13 +79,7 @@ const ERROR_MAX = 300;
  * the time this runs — there is nothing to protect by failing loudly. The
  * warning is the signal that a budget is undercounting.
  */
-export async function recordModelCall(call: ModelMeter & {
-  model: string;
-  latencyMs: number;
-  ok: boolean;
-  usage?: ModelUsage | null;
-  error?: string;
-}): Promise<void> {
+export async function recordModelCall(call: RecordedCall): Promise<void> {
   try {
     await prisma.modelCall.create({
       data: {
@@ -102,7 +111,7 @@ export async function recordModelCall(call: ModelMeter & {
 export async function checkModelBudget(meter: ModelMeter, now = new Date()): Promise<BudgetVerdict> {
   const workspace = await prisma.workspace.findUnique({
     where: { id: meter.workspaceId },
-    select: { dailyModelCalls: true, dailyModelTokens: true, customerModelCalls: true },
+    select: CEILINGS,
   });
   // No workspace means no budget to spend. The caller's own lookup will raise
   // a better error than this one could.
@@ -157,7 +166,7 @@ export type ModelSpend = {
 export async function modelSpend(workspaceId: string, now = new Date()): Promise<ModelSpend> {
   const workspace = await prisma.workspace.findUniqueOrThrow({
     where: { id: workspaceId },
-    select: { dailyModelCalls: true, dailyModelTokens: true, customerModelCalls: true },
+    select: CEILINGS,
   });
 
   const since = startOfDayUtc(now);
@@ -183,10 +192,10 @@ export async function modelSpend(workspaceId: string, now = new Date()): Promise
     }))
     .sort((a, b) => b.calls - a.calls || a.purpose.localeCompare(b.purpose));
 
-  const total = (pick: (row: (typeof byPurpose)[number]) => number) =>
-    byPurpose.reduce((sum, row) => sum + pick(row), 0);
-  const calls = total((row) => row.calls);
-  const tokens = total((row) => row.tokens);
+  const sum = (field: "calls" | "failed" | "tokens") =>
+    byPurpose.reduce((running, row) => running + row[field], 0);
+  const calls = sum("calls");
+  const tokens = sum("tokens");
 
   return {
     day: since.toISOString().slice(0, 10),
@@ -195,7 +204,7 @@ export async function modelSpend(workspaceId: string, now = new Date()): Promise
       dailyTokens: workspace.dailyModelTokens,
       conversationCalls: workspace.customerModelCalls,
     },
-    today: { calls, failed: total((row) => row.failed), tokens },
+    today: { calls, failed: sum("failed"), tokens },
     byPurpose,
     exhausted: calls >= workspace.dailyModelCalls || tokens >= workspace.dailyModelTokens,
   };

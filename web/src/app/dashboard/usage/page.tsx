@@ -1,10 +1,10 @@
 import { EmptyState, PageHead, Panel, Tag } from "@/components/dash/ui";
-import { getModelSpend, num } from "@/lib/dash";
+import { getModelSpend, num, type ModelPurpose } from "@/lib/dash";
 
 export const metadata = { title: "Model spend · Lipi AI" };
 
 /** What the purposes are called in the product, rather than in the schema. */
-const PURPOSE_LABELS: Record<string, string> = {
+const PURPOSE_LABELS: Record<ModelPurpose, string> = {
   extract: "Reading customer intent",
   sell: "Voicing the salesperson",
   twin_chat: "Ask the twin",
