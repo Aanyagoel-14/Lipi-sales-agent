@@ -1,4 +1,4 @@
-import type { Channel } from "@/generated/prisma/client";
+import type { Channel, ChannelConnection } from "@/generated/prisma/client";
 import { newWebhookSecret } from "@/server/lib/crypto";
 import type { ComposioClient } from "@/server/lib/composio";
 import { env } from "../env";
@@ -44,6 +44,20 @@ export type ConnectionView = {
   externalId: string | null;
   config: Json;
 };
+
+/**
+ * A stored connection, narrowed to what a parser is allowed to know about it.
+ * Every inbound route builds one, so the narrowing is written once: a spec
+ * that could reach for the whole row would be a spec that could reach for a
+ * credential.
+ */
+export const connectionView = (connection: ChannelConnection): ConnectionView => ({
+  id: connection.id,
+  workspaceId: connection.workspaceId,
+  channel: connection.channel,
+  externalId: connection.externalId,
+  config: (connection.config ?? {}) as Json,
+});
 
 /** What a post-connect or pre-disconnect hook gets to work with. */
 export type ConnectContext = {

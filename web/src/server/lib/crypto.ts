@@ -75,8 +75,9 @@ export function verifyXSignature(raw: Buffer, header: string | undefined, consum
  * once an hour thereafter; a webhook that stops answering it is marked
  * invalid and stops receiving events, so this is not a one-off setup step.
  */
-export const crcResponseToken = (crcToken: string, consumerSecret: string): string =>
-  `sha256=${createHmac("sha256", consumerSecret).update(crcToken).digest("base64")}`;
+export function crcResponseToken(crcToken: string, consumerSecret: string): string {
+  return `sha256=${createHmac("sha256", consumerSecret).update(crcToken).digest("base64")}`;
+}
 
 /**
  * The OAuth callback is signed differently: Shopify HMACs the query string

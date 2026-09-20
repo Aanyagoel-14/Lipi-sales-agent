@@ -1,9 +1,8 @@
 import { receive } from "@/server/channels/inbound";
-import { specFor, type ChannelSpec, type Json } from "@/server/channels/registry";
+import { connectionView, specFor } from "@/server/channels/registry";
 import { env } from "@/server/env";
 import { crcResponseToken, verifyXSignature } from "@/server/lib/crypto";
 import { prisma } from "@/server/lib/prisma";
-import type { ChannelConnection } from "@/generated/prisma/client";
 
 /**
  * Every X direct message, for every tenant, arrives here.
@@ -63,9 +62,8 @@ export async function POST(req: Request) {
   // and X says which in one field. Anything else — a replay job status, an
   // activity type this deployment never subscribed to, a bare `null` — has
   // no account on it and is nothing to route.
-  const body = payload && typeof payload === "object" ? (payload as { for_user_id?: unknown }) : null;
-  const forUserId = typeof body?.for_user_id === "string" ? body.for_user_id : null;
-  if (!forUserId) return status(200);
+  const forUserId = (payload as { for_user_id?: unknown } | null)?.for_user_id;
+  if (typeof forUserId !== "string" || !forUserId) return status(200);
 
   const connection = await prisma.channelConnection.findUnique({
     where: { channel_externalId: { channel: "x", externalId: forUserId } },
@@ -79,14 +77,5 @@ export async function POST(req: Request) {
   }
 
   const spec = specFor("x")!;
-  return receive(connection, spec.parse(payload, view(connection)));
+  return receive(connection, spec.parse(payload, connectionView(connection)));
 }
-
-/** What a parser is allowed to know about the connection it is parsing for. */
-const view = (connection: ChannelConnection): Parameters<ChannelSpec["parse"]>[1] => ({
-  id: connection.id,
-  workspaceId: connection.workspaceId,
-  channel: connection.channel,
-  externalId: connection.externalId,
-  config: (connection.config ?? {}) as Json,
-});

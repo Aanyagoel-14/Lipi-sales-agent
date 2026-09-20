@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { env } from "@/server/env";
-import { catalog, channelSpecs, parseAddress, specFor, toolkitVersions } from "@/server/channels/registry";
+import { catalog, channelSpecs, connectionView, parseAddress, specFor, toolkitVersions } from "@/server/channels/registry";
+import type { Prisma } from "@/generated/prisma/client";
 
 const connection = { id: "cc_1", workspaceId: "ws_1", channel: "whatsapp" as const, externalId: null, config: {} };
 const spec = (channel: "whatsapp" | "telegram" | "instagram" | "facebook" | "x" | "email") => specFor(channel)!;
@@ -277,5 +278,33 @@ describe("catalog()", () => {
     for (const entry of catalog()) {
       expect(JSON.parse(JSON.stringify(entry))).toEqual(entry);
     }
+  });
+});
+
+describe("the view a parser is given of the connection it parses for", () => {
+  /** A stored row, with every column a parser has no business reading. */
+  const row = {
+    id: "cc_x", workspaceId: "ws_1", channel: "x" as const, externalId: "4337869213",
+    config: { webhookId: "wh_1" } as Prisma.JsonValue, status: "connected" as const,
+    displayName: "@lipiapparel", composioAccountId: "ca_1", composioAuthConfigId: "ac_1",
+    composioTriggerIds: [], connectedAt: new Date(), webhookSecret: "the-telegram-secret",
+    lastEventAt: null, lastError: null, createdAt: new Date(), updatedAt: new Date(),
+  };
+
+  it("narrows a row to the five fields a spec may see, and nothing beside them", () => {
+    // Written once and shared by all three inbound routes: a view that could
+    // reach the whole row is a view that could reach a credential.
+    expect(connectionView(row)).toEqual({
+      id: "cc_x", workspaceId: "ws_1", channel: "x", externalId: "4337869213",
+      config: { webhookId: "wh_1" },
+    });
+    expect(Object.keys(connectionView(row)).sort())
+      .toEqual(["channel", "config", "externalId", "id", "workspaceId"]);
+  });
+
+  it("gives a spec an object for a config no operator has written to yet", () => {
+    // `config` is non-null in the schema, but a row read through a partial
+    // select is not, and `spec.send` indexes into whatever it is handed.
+    expect(connectionView({ ...row, config: null }).config).toEqual({});
   });
 });
