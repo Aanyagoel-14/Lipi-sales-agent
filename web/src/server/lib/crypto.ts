@@ -43,6 +43,44 @@ export function verifyMetaSignature(raw: Buffer, header: string | undefined, app
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * Shopify signs a webhook body with the *app's* API secret, base64 rather
+ * than hex, and the deployment has one app — so this is the Meta story again
+ * and the same rule applies: the raw bytes are what was signed, so the body
+ * must never be parsed and re-serialised before it gets here.
+ */
+export function verifyShopifyWebhook(raw: Buffer, header: string | undefined, apiSecret: string): boolean {
+  if (!header) return false;
+  const expected = createHmac("sha256", apiSecret).update(raw).digest("base64");
+  return secretsMatch(expected, header);
+}
+
+/**
+ * The OAuth callback is signed differently: Shopify HMACs the query string
+ * itself, with `hmac` removed, the remaining parameters sorted by key and
+ * joined as `key=value&…`, and the digest in hex. `signature` is dropped too
+ * — it belongs to the retired app-proxy scheme and Shopify excludes it.
+ *
+ * This proves the redirect came from Shopify. It does not prove the operator
+ * meant to start it, which is what `installState` is for.
+ */
+export function verifyShopifyCallback(search: string, apiSecret: string): boolean {
+  const given = new URLSearchParams(search).get("hmac");
+  if (!given) return false;
+
+  // Over the pairs exactly as they arrived, percent-encoding included —
+  // decoding first would sign a different string than Shopify signed for any
+  // value carrying a reserved character (`host` is base64 and routinely does).
+  const message = search
+    .replace(/^\?/, "")
+    .split("&")
+    .filter((pair) => pair && !/^(hmac|signature)=/.test(pair))
+    .sort()
+    .join("&");
+
+  return secretsMatch(createHmac("sha256", apiSecret).update(message).digest("hex"), given);
+}
+
 export const newWebhookSecret = () => randomBytes(24).toString("base64url");
 
 /** Constant-time compare for shared secrets that arrive in a header. */

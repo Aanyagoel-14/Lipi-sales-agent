@@ -9,6 +9,10 @@ process.env.APP_SECRET ??= "test-secret-not-used-in-production-0123456789";
 // first and answer Meta's challenge with the second.
 process.env.META_APP_SECRET ??= "test-meta-app-secret";
 process.env.META_VERIFY_TOKEN ??= "test-meta-verify-token";
+// Lipi's Shopify app, likewise: the install route refuses without these two,
+// and the webhook route verifies every body against the secret.
+process.env.SHOPIFY_API_KEY ??= "test-shopify-api-key";
+process.env.SHOPIFY_API_SECRET ??= "test-shopify-api-secret";
 (process.env as Record<string, string>).NODE_ENV = "test";
 // The suite must never reach OpenRouter. A developer's real key in .env would
 // otherwise make model-backed paths hit the network: slow, billable, and
@@ -24,6 +28,10 @@ env.OPENROUTER_API_KEY = undefined;
 const { setComposioClient } = await import("@/server/lib/composio");
 const { fakeComposio } = await import("./fakes/composio");
 setComposioClient(fakeComposio);
+// Nor a real Shopify store. Same seam, same reason.
+const { setShopifyClient } = await import("@/server/lib/shopify");
+const { fakeShopify } = await import("./fakes/shopify");
+setShopifyClient(fakeShopify);
 
 beforeAll(() => {
   if (!process.env.DATABASE_URL?.includes("lipi_test")) {
@@ -31,4 +39,7 @@ beforeAll(() => {
   }
 });
 
-beforeEach(() => fakeComposio.reset());
+beforeEach(() => {
+  fakeComposio.reset();
+  fakeShopify.reset();
+});
