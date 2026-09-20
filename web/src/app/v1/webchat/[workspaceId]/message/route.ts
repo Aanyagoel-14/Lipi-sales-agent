@@ -29,6 +29,9 @@ export const POST = corsRoute<{ workspaceId: string }>(async (req, { workspaceId
   return json({
     conversationId: result.conversationId,
     reply: result.held ? null : result.reply,
+    // The field belongs beside the sentence that asked for it. Under a policy
+    // that holds replies there is no sentence on screen yet, so no field.
+    contactAsk: result.held ? null : result.contactAsk,
     held: result.held,
   }, 201);
 });

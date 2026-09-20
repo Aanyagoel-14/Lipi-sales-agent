@@ -23,9 +23,15 @@ type Call = { url: string; method: string; body: Record<string, unknown> };
 /** The endpoints the widget calls, and what they answer. `sessionFails`
  *  stands in for an offline visitor or a 500, both of which the widget must
  *  swallow rather than throw into the host page. */
-function fakeServer(options: { sessionFails?: boolean } = {}) {
+function fakeServer(options: { sessionFails?: boolean; contactFails?: boolean; asks?: (string | null)[] } = {}) {
   const calls: Call[] = [];
   let sessionFails = options.sessionFails ?? false;
+
+  // What the server wants next, handed out one answer at a time: the first
+  // to `/message`, the rest to each `/contact` save. Empty means it is not
+  // asking for anything, which is every case written before #16.
+  const asks = [...(options.asks ?? [])];
+  const nextAsk = () => (asks.length ? asks.shift()! : null);
 
   const fetch = async (url: string, init?: { method?: string; body?: string }) => {
     calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body) : {} });
@@ -35,7 +41,17 @@ function fakeServer(options: { sessionFails?: boolean } = {}) {
       return { ok: true, status: 201, json: async () => ({ sessionId: "vst_1", greeting: GREETING }) };
     }
     if (url.endsWith("/message")) {
-      return { ok: true, status: 201, json: async () => ({ conversationId: "cnv_1", reply: REPLY, held: false }) };
+      return {
+        ok: true, status: 201,
+        json: async () => ({ conversationId: "cnv_1", reply: REPLY, held: false, contactAsk: nextAsk() }),
+      };
+    }
+    if (url.endsWith("/contact")) {
+      if (options.contactFails) return { ok: false, status: 503, json: async () => ({}) };
+      return {
+        ok: true, status: 200,
+        json: async () => ({ captured: ["x"], duplicateEmail: false, contactAsk: nextAsk() }),
+      };
     }
     return { ok: true, status: 200, json: async () => ({ messages: [] }) };
   };
@@ -270,5 +286,134 @@ describe("the script tag itself", () => {
     await page.settle();
 
     expect(server.calls[0]!.url).toBe("https://lipi.example.com/v1/webchat/wsp_other/session");
+  });
+});
+
+/**
+ * Progressive contact capture, the client half (#16).
+ *
+ * The twin asks in words — the server decides when, from the lead score —
+ * and this is the box those words point at. It is inline and it is never a
+ * gate: the message composer stays live beside it, exactly as the header
+ * comment on widget.js requires.
+ */
+describe("the field the twin asks for a contact detail with", () => {
+  /** Load, open, and say something that draws the twin's reply. */
+  async function chatting(server: ReturnType<typeof fakeServer>) {
+    const page = loadWidget({ fetch: server.fetch });
+    page.domContentLoaded();
+    await page.settle();
+    page.openPanel();
+    await page.settle();
+    page.type("I need 2 blue XL polos");
+    await page.settle();
+    return page;
+  }
+
+  it("shows no field while the reply asks for nothing", async () => {
+    const page = await chatting(fakeServer());
+
+    expect(page.contactAsk()).toBeNull();
+  });
+
+  it("puts one box on screen for exactly what the reply asked for", async () => {
+    const page = await chatting(fakeServer({ asks: ["email"] }));
+
+    expect(page.contactAsk()).toBe("email");
+    expect(page.contactPlaceholder()).toBe("you@example.com");
+  });
+
+  // Saving a detail is not sending a message: it goes to its own endpoint,
+  // and nothing about it appears in the transcript.
+  it("sends what was typed to its own endpoint, not into the conversation", async () => {
+    const server = fakeServer({ asks: ["name"] });
+    const page = await chatting(server);
+
+    page.typeContact("Priya Sharma");
+    await page.settle();
+
+    const [save] = server.to("/contact");
+    expect(save!.method).toBe("POST");
+    expect(save!.body.field).toBe("name");
+    expect(save!.body.value).toBe("Priya Sharma");
+    expect(save!.body.visitorId).toBe(server.to("/session")[0]!.body.visitorId);
+    expect(server.to("/message")).toHaveLength(1);
+    expect(page.messages()).toEqual([GREETING, "I need 2 blue XL polos", REPLY]);
+  });
+
+  it("moves to the one the server names next, rather than deciding for itself", async () => {
+    const page = await chatting(fakeServer({ asks: ["name", "email"] }));
+
+    page.typeContact("Priya Sharma");
+    await page.settle();
+
+    expect(page.contactAsk()).toBe("email");
+    expect(page.contactPlaceholder()).toBe("you@example.com");
+  });
+
+  it("takes the box away once there is nothing left to ask", async () => {
+    const page = await chatting(fakeServer({ asks: ["name"] }));
+
+    page.typeContact("Priya Sharma");
+    await page.settle();
+
+    expect(page.contactAsk()).toBeNull();
+  });
+
+  // The server asks again on every turn until it has the thing; re-rendering
+  // the box each time would wipe whatever they were part-way through typing.
+  it("leaves a half-typed answer alone when the next reply asks the same thing", async () => {
+    const page = await chatting(fakeServer({ asks: ["name", "name"] }));
+
+    page.fillContact("Priya Sh");
+    page.type("and 2 in olive");
+    await page.settle();
+
+    expect(page.contactAsk()).toBe("name");
+    expect(page.contactValue()).toBe("Priya Sh");
+  });
+
+  it("saves nothing for an empty box", async () => {
+    const server = fakeServer({ asks: ["name"] });
+    const page = await chatting(server);
+
+    page.typeContact("   ");
+    await page.settle();
+
+    expect(server.to("/contact")).toEqual([]);
+    expect(page.contactAsk()).toBe("name");
+  });
+
+  // Not a gate: waving it away costs the visitor nothing, and it does not
+  // come back at them for the rest of the visit.
+  it("lets the visitor wave it away, and does not ask again this visit", async () => {
+    const server = fakeServer({ asks: ["name", "email"] });
+    const page = await chatting(server);
+
+    page.skipContact();
+    expect(page.contactAsk()).toBeNull();
+
+    page.type("and 2 in olive");
+    await page.settle();
+
+    expect(page.contactAsk()).toBeNull();
+    expect(server.to("/contact")).toEqual([]);
+  });
+
+  it("leaves the chat working when the save fails, and says nothing about it", async () => {
+    const server = fakeServer({ contactFails: true, asks: ["name"] });
+    const page = await chatting(server);
+
+    page.typeContact("Priya Sharma");
+    await page.settle();
+
+    // Still on screen with what they typed, so one more press is the retry.
+    expect(page.contactAsk()).toBe("name");
+    expect(page.messages()).toEqual([GREETING, "I need 2 blue XL polos", REPLY]);
+    expect(page.warnings).toEqual([]);
+
+    page.type("are they in stock");
+    await page.settle();
+    expect(server.to("/message")).toHaveLength(2);
   });
 });

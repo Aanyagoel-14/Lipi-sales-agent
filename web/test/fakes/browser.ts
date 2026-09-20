@@ -173,6 +173,25 @@ export function loadWidget(options: PageOptions) {
       if (input) input.value = text;
       byId("lipi-widget-form")?.dispatch("submit");
     },
+    /** The field the widget is showing for a contact detail, named by what
+     *  it is asking for — null when there is no box on screen. */
+    contactAsk: () => {
+      const row = byId("lipi-widget-contact");
+      return row?.classList.contains("lipi-shown") ? row.getAttribute("data-field") : null;
+    },
+    contactPlaceholder: () => byId("lipi-widget-contact-input")?.placeholder ?? null,
+    contactValue: () => byId("lipi-widget-contact-input")?.value ?? null,
+    /** Type into the contact box without pressing Save. */
+    fillContact: (value: string) => {
+      const input = byId("lipi-widget-contact-input");
+      if (input) input.value = value;
+    },
+    typeContact: (value: string) => {
+      const input = byId("lipi-widget-contact-input");
+      if (input) input.value = value;
+      byId("lipi-widget-contact")?.dispatch("submit");
+    },
+    skipContact: () => byId("lipi-widget-contact-skip")?.dispatch("click"),
     poll: () => timers.forEach((fn) => fn()),
     /** Let every promise the widget has in flight settle. */
     settle: () => new Promise((resolve) => setTimeout(resolve, 0)),

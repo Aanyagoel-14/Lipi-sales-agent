@@ -36,3 +36,16 @@ export const updatesSchema = z.object({
   conversationId: z.string().trim().min(1).max(60),
   sinceIso: z.string().trim().max(40).optional(),
 });
+
+/**
+ * A contact detail typed into the widget's own inline field (#16). `field`
+ * mirrors `ContactField` in `services/leads.ts` — the route hands this
+ * straight to `readTypedContact`, so the two cannot drift without failing to
+ * compile. `value` is only bounded here; whether it *is* an email or a phone
+ * number is decided by pattern, in one place, for both capture paths.
+ */
+export const contactSchema = z.object({
+  visitorId: z.string().trim().min(8).max(80),
+  field: z.enum(["name", "email", "phone"]),
+  value: z.string().trim().min(1).max(200),
+});

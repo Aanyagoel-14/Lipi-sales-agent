@@ -134,6 +134,16 @@
     + "border-bottom-right-radius:2px}"
     + "#lipi-widget-messages .lipi-agent{margin-right:auto;background:#eee;color:#1a1a1a;"
     + "border-bottom-left-radius:2px}"
+    + "#lipi-widget-contact{display:none;border-top:1px solid #eee;padding:8px;gap:6px;"
+    + "align-items:center;background:#f7f6fb}"
+    + "#lipi-widget-contact.lipi-shown{display:flex}"
+    + "#lipi-widget-contact-input{flex:1;border:1px solid #ddd;border-radius:8px;outline:none;"
+    + "font-size:13px;padding:7px 9px;min-width:0}"
+    + "#lipi-widget-contact-save{border:none;background:#6b3fd4;color:#fff;border-radius:8px;"
+    + "padding:0 12px;height:32px;font-size:13px;cursor:pointer}"
+    + "#lipi-widget-contact-save:disabled{opacity:.5;cursor:default}"
+    + "#lipi-widget-contact-skip{border:none;background:none;color:#6b6b6b;font-size:12px;"
+    + "padding:0 4px;cursor:pointer;text-decoration:underline}"
     + "#lipi-widget-form{display:flex;border-top:1px solid #eee;padding:8px}"
     + "#lipi-widget-input{flex:1;border:none;outline:none;font-size:13px;padding:8px}"
     + "#lipi-widget-send{border:none;background:#6b3fd4;color:#fff;border-radius:8px;padding:0 14px;"
@@ -148,6 +158,24 @@
 
   // --------------------------------------------------------------- DOM
   var launcher, panel, messagesEl, form, input, sendBtn;
+  var contactRow, contactInput, contactSave, contactSkip;
+
+  /*
+   * Progressive capture (#16). The twin asks for ONE detail in its own
+   * words — the server decides which, and whether to ask at all, from the
+   * lead score — and hands the field name back on the reply. This is only
+   * the box those words point at: a compact inline row above the composer,
+   * never a modal and never a gate, because a chat that demands an address
+   * before it will help is the thing this widget exists instead of.
+   *
+   * The `type` matters on a phone: it is what puts an email or a number pad
+   * under the visitor's thumb rather than a full keyboard.
+   */
+  var CONTACT_FIELDS = {
+    name: { type: "text", placeholder: "Your name", autocomplete: "name" },
+    email: { type: "email", placeholder: "you@example.com", autocomplete: "email" },
+    phone: { type: "tel", placeholder: "Your phone number", autocomplete: "tel" }
+  };
 
   function buildDom() {
     launcher = document.createElement("button");
@@ -179,10 +207,34 @@
     sendBtn.type = "submit";
     sendBtn.textContent = "Send";
 
+    contactRow = document.createElement("form");
+    contactRow.id = "lipi-widget-contact";
+
+    contactInput = document.createElement("input");
+    contactInput.id = "lipi-widget-contact-input";
+    contactInput.type = "text";
+    contactInput.autocomplete = "off";
+
+    contactSave = document.createElement("button");
+    contactSave.id = "lipi-widget-contact-save";
+    contactSave.type = "submit";
+    contactSave.textContent = "Save";
+
+    // A button, not an X: the way out has to be as easy to read as the way in.
+    contactSkip = document.createElement("button");
+    contactSkip.id = "lipi-widget-contact-skip";
+    contactSkip.type = "button";
+    contactSkip.textContent = "Not now";
+
+    contactRow.appendChild(contactInput);
+    contactRow.appendChild(contactSave);
+    contactRow.appendChild(contactSkip);
+
     form.appendChild(input);
     form.appendChild(sendBtn);
     panel.appendChild(header);
     panel.appendChild(messagesEl);
+    panel.appendChild(contactRow);
     panel.appendChild(form);
 
     document.body.appendChild(launcher);
@@ -266,6 +318,57 @@
     });
   }
 
+  // Waved away once, gone for the rest of the page view. The server keeps
+  // asking — it has no idea what this visitor did with a box — so the
+  // refusal is remembered here, where it happened.
+  var contactDismissed = false;
+  var contactField = null;
+
+  function showContactAsk(field) {
+    var spec = CONTACT_FIELDS[field];
+    // An unrecognised field name is a server the widget is older than: show
+    // nothing rather than a box with no label on it.
+    if (contactDismissed || !spec) return;
+    // Already asking for this one. The server asks again on every turn until
+    // it has it, and re-rendering the box would wipe a half-typed answer.
+    if (contactField === field) return;
+
+    contactField = field;
+    contactInput.type = spec.type;
+    contactInput.placeholder = spec.placeholder;
+    contactInput.autocomplete = spec.autocomplete;
+    contactInput.value = "";
+    contactRow.setAttribute("data-field", field);
+    contactRow.classList.add("lipi-shown");
+  }
+
+  function hideContactAsk() {
+    contactField = null;
+    contactRow.classList.remove("lipi-shown");
+  }
+
+  function saveContact(value) {
+    var field = contactField;
+    if (!field) return;
+
+    contactSave.disabled = true;
+    api("/v1/webchat/" + WORKSPACE_ID + "/contact", {
+      method: "POST",
+      body: JSON.stringify({ visitorId: visitorId, field: field, value: value }),
+    }).then(function (data) {
+      hideContactAsk();
+      // What to ask for next is the server's to say: it is the one that
+      // knows what the twin already holds.
+      if (data && data.contactAsk) showContactAsk(data.contactAsk);
+    }).catch(function () {
+      // Leave the box, and what they typed in it, exactly where they are:
+      // pressing Save again is the retry, and a failed save of ours is not
+      // worth a line in their conversation.
+    }).finally(function () {
+      contactSave.disabled = false;
+    });
+  }
+
   function sendMessage(text) {
     appendMessage(text, "visitor");
     sendBtn.disabled = true;
@@ -278,6 +381,10 @@
         appendMessage(data.reply, "agent");
         lastPollIso = new Date().toISOString();
       }
+      if (data.contactAsk) showContactAsk(data.contactAsk);
+      // Nothing asked for: put the box away, unless they are part-way
+      // through answering the last one.
+      else if (!contactInput.value) hideContactAsk();
     }).catch(function () {
       appendMessage("That didn't send. Please try again.", "agent");
     }).finally(function () {
@@ -313,6 +420,16 @@
       if (!text) return;
       input.value = "";
       sendMessage(text);
+    });
+    contactRow.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var value = contactInput.value.trim();
+      if (!value) return;
+      saveContact(value);
+    });
+    contactSkip.addEventListener("click", function () {
+      contactDismissed = true;
+      hideContactAsk();
     });
     // Record the visit now, while the campaign is still on the URL; the
     // greeting it answers with waits in `sessionRequest` for `greet()`.

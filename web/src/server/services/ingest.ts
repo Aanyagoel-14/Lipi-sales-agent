@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { toRupees } from "../lib/money";
 import { prisma } from "../lib/prisma";
+import { contactHeld, planContactCapture } from "./contacts";
 import { extract, vocabularyFor, type ExtractionResult } from "./extract";
-import { scoreLead, type LeadStage } from "./leads";
+import { nextContactAsk, scoreLead, type ContactField, type LeadStage } from "./leads";
 import { composeReply, DEFAULT_VOICE, findKnowledge, voiceViolations, type ReplyParts } from "./voice";
 import type { Channel } from "@/generated/prisma/client";
 
@@ -49,6 +50,19 @@ export type IngestResult = {
    */
   replyMessageId: string;
   voiceViolations: string[];
+  /**
+   * What this message gave the twin about how to reach them, and whether the
+   * address it gave already sits on another twin in this workspace — which is
+   * a flag for the operator, never a merge (see `services/contacts.ts`).
+   */
+  contact: { captured: ContactField[]; duplicateEmail: boolean };
+  /**
+   * The one contact detail the twin should ask for on this turn, or null.
+   * `sell()` puts it in front of the model and the widget renders a field for
+   * it; the composed reply below never asks, because a form letter with two
+   * questions in it gets neither answered.
+   */
+  contactAsk: ContactField | null;
   knowledgeUsed: { title: string; kind: string } | null;
   agentRuns: { agent: string; action: string; status: "needs_approval" | "done" }[];
   events: Effect[];
@@ -152,9 +166,23 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     const previousSizeProfileLength = customer.sizeProfile.length;
     const segmentChanged = segment !== customer.segment;
 
+    // How to reach them, when they happened to say it (#16). Recognised by
+    // pattern in `extract()`, decided in `contacts.ts`, and folded into the
+    // update this loop was already making rather than written beside it —
+    // one message still mutates the twin once, inside the one transaction
+    // (invariant 1).
+    const contact = await planContactCapture(tx, {
+      workspaceId: workspace.id,
+      customer,
+      detected: extracted.contact,
+      source: "volunteered",
+      now,
+    });
+    for (const event of contact.events) record(event.type, event.twin, event.payload);
+
     customer = await tx.customer.update({
       where: { id: customer.id },
-      data: { lastSeenAt: now, sizeProfile, segment },
+      data: { lastSeenAt: now, sizeProfile, segment, ...contact.update },
     });
 
     if (sizeProfile.length !== previousSizeProfileLength || segmentChanged || learned) {
@@ -400,6 +428,10 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       record("lead.scored", "customer", `${customer.id} score=${leadScore} stage=${leadStage}`);
     }
 
+    // Asked of the twin as it stands after this message, so a detail given in
+    // the same breath is never asked for again.
+    const contactAsk = nextContactAsk(leadScore, leadStage as LeadStage, contactHeld(customer));
+
     /* -------------------------------------------------- agents and reply */
     const held = needsApproval(workspace.approvalPolicy, false);
 
@@ -463,6 +495,8 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       replySent: !held,
       replyMessageId: replyMessage.id,
       voiceViolations: violations,
+      contact: { captured: contact.captured, duplicateEmail: contact.duplicateEmailOf !== null },
+      contactAsk,
       knowledgeUsed: knowledge ? { title: knowledge.title, kind: knowledge.kind } : null,
       agentRuns: runs.map((r) => ({
         agent: r.agent,

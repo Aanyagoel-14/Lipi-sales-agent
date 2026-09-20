@@ -71,3 +71,40 @@ export function scoreLead(signal: LeadSignal): { score: number; stage: LeadStage
 /** Only fields `scoreLead` needs off the customer row, kept narrow so a
  *  caller does not have to fetch (or mock) the whole `Customer`. */
 export type ScorableCustomer = Pick<Customer, "leadScore" | "orderCount">;
+
+/**
+ * Progressive contact capture (#16): when the twin may ask how to reach
+ * someone, and what it may ask for next.
+ *
+ * The trigger is the lead score rather than a count of messages, because the
+ * score is already the answer to "how close is this conversation to an
+ * order" — a second number for the same question is a second number that can
+ * disagree with the first. Below the threshold the twin sells and says
+ * nothing about contact details: a visitor asked for their email by the
+ * second sentence leaves.
+ */
+export const CONTACT_ASK_SCORE = 30;
+
+/** What the twin already holds. Not the values — only whether it has them,
+ *  which is all the decision turns on. */
+export type ContactHeld = { name: boolean; email: boolean; phone: boolean };
+
+export type ContactField = "name" | "email" | "phone";
+
+/**
+ * One field, or nothing. Never two at once: a reply that ends in two
+ * questions gets one answer at best, and the cheapest thing to give is asked
+ * for first.
+ *
+ * A past buyer is always worth reaching, whatever this particular message
+ * scored — the relationship the `customer` stage describes is real, and
+ * chasing an order is a human's job that needs an address to do it with.
+ */
+export function nextContactAsk(score: number, stage: LeadStage, held: ContactHeld): ContactField | null {
+  if (score < CONTACT_ASK_SCORE && stage !== "customer") return null;
+
+  if (!held.name) return "name";
+  if (!held.email) return "email";
+  if (!held.phone) return "phone";
+  return null;
+}

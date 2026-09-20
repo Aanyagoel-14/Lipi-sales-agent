@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma";
 import { EMPTY_TOUCH, firstTouchData, hasAttribution, type AttributionTouch } from "./attribution";
+import { contactHeld, planContactCapture } from "./contacts";
+import { nextContactAsk, type ContactField } from "./leads";
 import { sell } from "./selling";
+import type { DetectedContact } from "./extract";
 
 /**
  * The webchat channel (Req 1).
@@ -128,6 +131,72 @@ export async function sendVisitorMessage(input: MessageInput) {
   });
 
   return result;
+}
+
+export type TypedContactResult = {
+  captured: ContactField[];
+  /** The address is on this twin and on another one in this workspace. The
+   *  operator's flag, never a merge — see `services/contacts.ts`. */
+  duplicateEmail: boolean;
+  /** What the widget should put the next field on screen for, or null when
+   *  there is nothing left worth asking. One at a time, here as in words. */
+  contactAsk: ContactField | null;
+};
+
+/**
+ * A contact detail typed into the widget's own field (#16).
+ *
+ * The other capture path rides inside `ingest()`'s transaction, because the
+ * message that carried the address is being written anyway. Nothing else is
+ * being written here — the visitor pressed Save on a box, not sent a message
+ * — so this is its own transaction, and `planContactCapture` is what keeps
+ * the two paths agreeing about what overwrites what.
+ *
+ * Null means this workspace has never heard from this visitor: the handle is
+ * workspace-scoped, so there is no twin here to write onto (invariant 5).
+ */
+export async function captureTypedContact(input: {
+  workspaceId: string;
+  visitorId: string;
+  detected: DetectedContact;
+}): Promise<TypedContactResult | null> {
+  const now = new Date();
+
+  return prisma.$transaction(async (tx) => {
+    const customer = await tx.customer.findFirst({
+      where: { workspaceId: input.workspaceId, handle: `web:${input.visitorId}` },
+    });
+    if (!customer) return null;
+
+    const plan = await planContactCapture(tx, {
+      workspaceId: input.workspaceId, customer, detected: input.detected, source: "form", now,
+    });
+
+    // Retyping the same address writes nothing, and a write of nothing is
+    // still a write — so the twin is only touched when the plan says so.
+    const updated = plan.captured.length
+      ? await tx.customer.update({ where: { id: customer.id }, data: plan.update })
+      : customer;
+
+    await tx.twinEvent.createMany({
+      data: plan.events.map((e, i) => ({
+        id: id("evt"),
+        workspaceId: input.workspaceId,
+        occurredAt: new Date(now.getTime() + i),
+        type: e.type,
+        twin: e.twin,
+        payload: e.payload,
+      })),
+    });
+
+    return {
+      captured: plan.captured,
+      duplicateEmail: plan.duplicateEmailOf !== null,
+      // Asked of the twin as it stands after the save, so the field the
+      // widget shows next is never the one just filled in.
+      contactAsk: nextContactAsk(updated.leadScore, updated.leadStage, contactHeld(updated)),
+    };
+  });
 }
 
 /** Agent replies sent after the visitor's own request returned — i.e. an
