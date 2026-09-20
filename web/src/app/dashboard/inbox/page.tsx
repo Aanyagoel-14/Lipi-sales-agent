@@ -113,11 +113,16 @@ export default async function InboxPage() {
                       {m.delivery && m.delivery !== "sent" ? (
                         <>
                           {" · "}
-                          <span
-                            className={m.delivery === "failed" ? "text-magenta" : undefined}
-                            title={m.deliveryError ?? undefined}
-                          >
+                          <span className={m.delivery === "failed" ? "text-magenta" : undefined}>
                             {DELIVERY[m.delivery]}
+                            {/* The provider's own reason, in the thread rather
+                                than in a `title` — a tooltip does not exist on
+                                a phone, and this is the line that separates
+                                "the channel is down" from "this one chat
+                                cannot be reached". A live channel showing four
+                                undelivered messages and no reason reads as a
+                                broken product. */}
+                            {m.deliveryError ? ` · ${m.deliveryError}` : null}
                           </span>
                         </>
                       ) : null}
