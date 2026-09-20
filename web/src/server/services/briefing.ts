@@ -251,7 +251,7 @@ const SCAFFOLDING = [
   FOR_SALE, RECOMMEND, ANSWERS, MORE_POLICY, ALL_POLICY, PARTIAL,
   // Reserved at a generous product and variant name, so the sentence that
   // admits the shelf is empty is never the line that does not fit.
-  nothingLikeIt({ product: "".padEnd(60), variant: "".padEnd(30) }),
+  nothingLikeIt({ product: " ".repeat(60), variant: " ".repeat(30) }),
   "", "", "", "",
 ];
 
@@ -261,7 +261,6 @@ const size = (lines: string[]) => lines.reduce((a, line) => a + line.length + 1,
 const recommendationLines = (r: Recommendation) => [
   `- ${r.why}: ${r.product}${r.variant ? ` in ${r.variant}` : ""} — ${rupees(r.priceInr)} each, ${r.available} available.`,
 ];
-
 
 /** One taught policy, as the block states it. */
 const knowledgeLines = (entry: KnowledgeEntry) => [`- ${entry.title}: ${entry.body}`];
@@ -413,8 +412,8 @@ export async function buildGrounding(workspaceId: string, focus: Focus): Promise
   // the catalogue because it is the catalogue already narrowed to the few rows
   // worth saying out loud. Nothing is truncated mid-fact -- half a price is
   // worse than no price -- so an item either fits whole or is dropped, and
-  // because each list is already in relevance order, dropping from the end drops the
-  // lowest-ranked first.
+  // because each list is already in relevance order, dropping from the end
+  // drops the lowest-ranked first.
   const axes = (products[0]?.axes as string[] | undefined) ?? ["Option A", "Option B"];
   const header = [`You work at ${workspace.name}.`, `Everything is sold by ${axes[0]} and ${axes[1]}.`];
 
@@ -449,8 +448,9 @@ export async function buildGrounding(workspaceId: string, focus: Focus): Promise
   if (shown.kept.length < products.length || catalogue.length === CAPS.products) lines.push(PARTIAL);
 
   if (offers.kept.length || recommended.soldOut) {
-    lines.push("", RECOMMEND);
-    if (offers.kept.length) lines.push(...offers.lines);
+    lines.push("", RECOMMEND, ...offers.lines);
+    // Only when the list carries nothing to put in its place: an alternative
+    // and "nothing replaces it" in the same block contradict each other.
     if (recommended.soldOut && !offers.kept.some((i) => i.kind === "alternative")) {
       lines.push(nothingLikeIt(recommended.soldOut));
     }

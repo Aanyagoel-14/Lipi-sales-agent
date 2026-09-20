@@ -92,6 +92,12 @@ const OFFERS_A_DISCOUNT = new RegExp(
 );
 
 /**
+ * How a discount violation is labelled, so a caller can tell money the twin
+ * tried to give away from a phrase the workspace merely banned.
+ */
+export const UNAUTHORISED_OFFER = "unauthorised discount or waiver";
+
+/**
  * Flags what the twin may not say: the phrases the workspace has banned, and
  * money it was never authorised to give away. Returned rather than silently
  * stripped: an operator needs to see that their twin tried to say it.
@@ -107,7 +113,7 @@ export function voiceViolations(text: string, voice: Voice): string[] {
   const banned = voice.neverSay.filter((phrase) => phrase.trim() && text.toLowerCase().includes(phrase.toLowerCase()));
 
   const offer = text.match(OFFERS_A_DISCOUNT);
-  return offer ? [...banned, `unauthorised discount or waiver ("${offer[0].trim()}")`] : banned;
+  return offer ? [...banned, `${UNAUTHORISED_OFFER} ("${offer[0].trim()}")`] : banned;
 }
 
 const KIND_FOR_INTENT: Record<string, KnowledgeEntry["kind"][]> = {

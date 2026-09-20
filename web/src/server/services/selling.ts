@@ -6,7 +6,7 @@ import { buildGrounding } from "./briefing";
 import { ingest, type IngestResult } from "./ingest";
 import { invoiceForOrder } from "./invoicing";
 import type { Recommendation } from "./recommend";
-import { DEFAULT_VOICE, voiceViolations, type Voice } from "./voice";
+import { DEFAULT_VOICE, UNAUTHORISED_OFFER, voiceViolations, type Voice } from "./voice";
 import type { Channel } from "@/generated/prisma/client";
 
 /**
@@ -271,7 +271,7 @@ export async function sell(input: {
       // An invented discount is a different failure from a banned phrase, and
       // the operator reading the degraded line needs to know which: one is a
       // tone rule, the other is money the twin tried to give away.
-      const offered = violations.some((v) => v.startsWith("unauthorised"));
+      const offered = violations.some((v) => v.startsWith(UNAUTHORISED_OFFER));
       return {
         ...base, reply: result.reply, voicedBy: "template",
         degraded: offered

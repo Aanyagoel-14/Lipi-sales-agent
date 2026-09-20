@@ -118,15 +118,16 @@ const bestVariant = (product: RecommendProduct) => {
 };
 
 export async function buildRecommendations(workspaceId: string, focus: Focus): Promise<Recommendations> {
-  if (!focus.matched) return nothing();
+  const asked = focus.matched;
+  if (!asked) return nothing();
 
   const matched = await prisma.product.findFirst({
-    where: { workspaceId, name: focus.matched.product },
+    where: { workspaceId, name: asked.product },
     select: recommendSelect,
   });
   if (!matched) return nothing();
 
-  const wanted = matched.variants.find((v) => label(v) === focus.matched!.variant);
+  const wanted = matched.variants.find((v) => label(v) === asked.variant);
   const gone = wanted && available(wanted) <= 0 ? wanted : null;
 
   const [alternatives, companions, step] = await Promise.all([

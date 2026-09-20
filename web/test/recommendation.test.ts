@@ -12,6 +12,18 @@ import { buildRecommendations } from "@/server/services/recommend";
 
 let workspaceId: string;
 
+/** The two messages every case here turns on: one ask that is gone, one on the shelf. */
+const wantsSoldOut = {
+  text: "I need 2 XXL cobalt polos",
+  intent: "buy",
+  matched: { product: "Polo Classic", variant: "XXL / Cobalt" },
+};
+const wantsInStock = {
+  text: "I need 2 M cobalt polos",
+  intent: "buy",
+  matched: { product: "Polo Classic", variant: "M / Cobalt" },
+};
+
 async function setup() {
   const { user } = await createUser();
   const workspace = await createWorkspace({ userId: user.id, policy: "nothing" });
@@ -72,11 +84,7 @@ describe("alternatives to something sold out", () => {
   it("offers an in-stock variant of the same product", async () => {
     await setup();
     // XXL / Cobalt is seeded at zero; the rest of the Cobalt run is not.
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 XXL cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "XXL / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsSoldOut);
 
     expect(recommended.soldOut).toEqual({ product: "Polo Classic", variant: "XXL / Cobalt" });
 
@@ -91,11 +99,7 @@ describe("alternatives to something sold out", () => {
   it("offers several sizes of it, deepest stock first", async () => {
     await setup();
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 XXL cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "XXL / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsSoldOut);
 
     const variants = recommended.items.filter((i) => i.kind === "alternative").map((i) => i.variant);
     // Seeded Cobalt run: M 26, L 18, S 12, XL 4 — the three deepest, in order.
@@ -106,11 +110,7 @@ describe("alternatives to something sold out", () => {
     await setup();
     await emptyThePolos();
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 XXL cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "XXL / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsSoldOut);
 
     expect(recommended.soldOut).toEqual({ product: "Polo Classic", variant: "XXL / Cobalt" });
     expect(recommended.items).toEqual([]);
@@ -122,11 +122,7 @@ describe("alternatives to something sold out", () => {
     await addPolo("Polo Sport", { stock: 0 });
     await addPolo("Polo Tour", { stock: 4 });
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 XXL cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "XXL / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsSoldOut);
 
     expect(recommended.items.map((i) => i.product)).toEqual(["Polo Tour"]);
   });
@@ -134,16 +130,13 @@ describe("alternatives to something sold out", () => {
   it("recommends nothing when what they asked for is on the shelf", async () => {
     await setup();
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 M cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "M / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsInStock);
 
     expect(recommended.soldOut).toBeNull();
     expect(recommended.items.filter((i) => i.kind === "alternative")).toEqual([]);
   });
 });
+
 describe("cross-sell from what this workspace has actually sold", () => {
   it("names what its own customers bought alongside the matched product", async () => {
     await setup();
@@ -151,11 +144,7 @@ describe("cross-sell from what this workspace has actually sold", () => {
     await orderedTogether(workspaceId, "bala", ["Polo Classic", "Leather Belt"]);
     await orderedTogether(workspaceId, "chandra", ["Polo Classic", "Linen Shirt"]);
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 M cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "M / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsInStock);
 
     const cross = recommended.items.filter((i) => i.kind === "cross_sell");
     // Counted, not guessed: the belt was bought alongside twice, the shirt once.
@@ -174,11 +163,7 @@ describe("cross-sell from what this workspace has actually sold", () => {
     // Ours has only ever paired them with belts.
     await orderedTogether(workspaceId, "asha", ["Polo Classic", "Leather Belt"]);
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 M cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "M / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsInStock);
 
     expect(recommended.items.filter((i) => i.kind === "cross_sell").map((i) => i.product)).toEqual(["Leather Belt"]);
   });
@@ -191,11 +176,7 @@ describe("cross-sell from what this workspace has actually sold", () => {
       data: { stock: 0, reserved: 0 },
     });
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 M cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "M / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsInStock);
 
     expect(recommended.items.filter((i) => i.kind === "cross_sell")).toEqual([]);
   });
@@ -207,11 +188,7 @@ describe("the step up", () => {
     await addPolo("Polo Sport", { priceInr: 1500 });
     await addPolo("Polo Lux", { priceInr: 2500 });
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 M cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "M / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsInStock);
 
     const upsell = recommended.items.filter((i) => i.kind === "upsell");
     expect(upsell).toHaveLength(1);
@@ -225,11 +202,7 @@ describe("the step up", () => {
     await addPolo("Polo Sport", { priceInr: 1500, stock: 0 });
     await addPolo("Polo Lux", { priceInr: 2500 });
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 M cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "M / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsInStock);
 
     expect(recommended.items.filter((i) => i.kind === "upsell").map((i) => i.product)).toEqual(["Polo Lux"]);
   });
@@ -238,11 +211,7 @@ describe("the step up", () => {
     await setup();
     await addPolo("Polo Basic", { priceInr: 900 });
 
-    const recommended = await buildRecommendations(workspaceId, {
-      text: "I need 2 M cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "M / Cobalt" },
-    });
+    const recommended = await buildRecommendations(workspaceId, wantsInStock);
 
     expect(recommended.items.filter((i) => i.kind === "upsell")).toEqual([]);
   });
@@ -263,11 +232,7 @@ describe("what it costs to recommend", () => {
       return findMany(args) as ReturnType<typeof findMany>;
     });
 
-    await buildRecommendations(workspaceId, {
-      text: "I need 2 M cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "M / Cobalt" },
-    });
+    await buildRecommendations(workspaceId, wantsInStock);
 
     expect(reads.length).toBeGreaterThan(0);
     for (const read of reads) {
@@ -281,13 +246,11 @@ describe("what it costs to recommend", () => {
     await setup();
     await addPolo("Polo Sport", { priceInr: 1500 });
     await orderedTogether(workspaceId, "asha", ["Polo Classic", "Leather Belt"]);
-    const focus = {
-      text: "I need 2 XXL cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "XXL / Cobalt" },
-    };
 
-    expect(await buildRecommendations(workspaceId, focus)).toEqual(await buildRecommendations(workspaceId, focus));
+    const first = await buildRecommendations(workspaceId, wantsSoldOut);
+    const second = await buildRecommendations(workspaceId, wantsSoldOut);
+
+    expect(first).toEqual(second);
   });
 
   it("recommends nothing when nothing was matched", async () => {
@@ -302,11 +265,7 @@ describe("the recommendations in the grounding block", () => {
     await addPolo("Polo Sport", { priceInr: 1500 });
     await orderedTogether(workspaceId, "asha", ["Polo Classic", "Leather Belt"]);
 
-    const grounding = await buildGrounding(workspaceId, {
-      text: "I need 2 XXL cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "XXL / Cobalt" },
-    });
+    const grounding = await buildGrounding(workspaceId, wantsSoldOut);
 
     expect(grounding.text).toContain("WHAT TO PUT IN FRONT OF THEM");
     expect(grounding.text).toContain("which is sold out: Polo Classic in M / Cobalt — ₹1,196 each, 26 available");
@@ -319,11 +278,7 @@ describe("the recommendations in the grounding block", () => {
     await setup();
     await emptyThePolos();
 
-    const grounding = await buildGrounding(workspaceId, {
-      text: "I need 2 XXL cobalt polos",
-      intent: "buy",
-      matched: { product: "Polo Classic", variant: "XXL / Cobalt" },
-    });
+    const grounding = await buildGrounding(workspaceId, wantsSoldOut);
 
     expect(grounding.text).toContain("Polo Classic XXL / Cobalt is sold out");
     expect(grounding.text).toContain("Say so plainly");
