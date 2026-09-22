@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
 import { fakeEndpoint } from "./fakes/webhook-endpoint";
 import { responses } from "@/app/v1/contract";
@@ -237,6 +237,10 @@ describe("outbound webhooks", () => {
   });
 
   describe("the queue", () => {
+    // One case below pins the clock; restoring it here keeps a failure in the
+    // middle of it from leaking a frozen `Date` into every test after it.
+    afterEach(() => vi.useRealTimers());
+
     it("is at-least-once with a stable event id, and never owes the same event twice", async () => {
       await subscribe(workspaceId, { url: URL_A });
       await buy();
@@ -279,6 +283,47 @@ describe("outbound webhooks", () => {
       const payloads = fakeEndpoint.posts.map((p) => JSON.parse(p.body).event.payload);
       expect(payloads).toContain("after");
       expect(payloads).not.toContain("before");
+    });
+
+    // `occurredAt` is a millisecond, and the event before a subscription is
+    // often written inside the same one. A cursor read off the clock rather
+    // than off the log then lands on `(thatMillisecond, "")` — a position
+    // every event in that millisecond sorts *after* — so the subscriber's
+    // first delivery was the history it was explicitly not supposed to get.
+    // The clock is pinned here because racing for it failed about one full
+    // run in twenty, which is the worst possible way to learn this.
+    it("does not replay events written in the same millisecond it was created", async () => {
+      // Only `Date`: the timers Prisma and the poster rely on must keep running.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-09-17T12:00:00.000Z"));
+
+      await recordEvent(workspaceId, "order_twin.created", "order", "before");
+      const { subscription } = await subscribe(workspaceId, { url: URL_A });
+      expect(subscription.cursorAt.toISOString()).toBe("2026-09-17T12:00:00.000Z");
+
+      vi.setSystemTime(new Date("2026-09-17T12:00:00.001Z"));
+      await recordEvent(workspaceId, "order_twin.created", "order", "after");
+      vi.useRealTimers();
+
+      await dispatch(workspaceId);
+
+      const payloads = fakeEndpoint.posts.map((p) => JSON.parse(p.body).event.payload);
+      expect(payloads).toEqual(["after"]);
+    });
+
+    // The other half of the same rule: an empty log is not a reason to skip
+    // the first event, so a workspace with no history still starts at now.
+    it("delivers the first event a workspace ever records", async () => {
+      await prisma.twinEvent.deleteMany({ where: { workspaceId } });
+
+      const { subscription } = await subscribe(workspaceId, { url: URL_A });
+      expect(subscription.cursorId).toBe("");
+
+      await recordEvent(workspaceId, "order_twin.created", "order", "first");
+      await dispatch(workspaceId);
+
+      const payloads = fakeEndpoint.posts.map((p) => JSON.parse(p.body).event.payload);
+      expect(payloads).toEqual(["first"]);
     });
 
     it("sends only the types a subscription asked for", async () => {

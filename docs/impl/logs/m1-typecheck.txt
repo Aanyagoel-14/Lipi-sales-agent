@@ -1,0 +1,14 @@
+
+> typecheck
+> npm --prefix web run typecheck
+
+
+> web@0.1.0 pretypecheck
+> next typegen
+
+Generating route types...
+✓ Types generated successfully
+
+> web@0.1.0 typecheck
+> tsc --noEmit
+

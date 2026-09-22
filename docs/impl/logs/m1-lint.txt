@@ -1,0 +1,8 @@
+
+> lint
+> npm --prefix web run lint
+
+
+> web@0.1.0 lint
+> eslint
+

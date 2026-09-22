@@ -1,0 +1,107 @@
+
+> typecheck
+> npm --prefix web run typecheck
+
+
+> web@0.1.0 pretypecheck
+> next typegen
+
+Generating route types...
+✓ Types generated successfully
+
+> web@0.1.0 typecheck
+> tsc --noEmit
+
+src/app/v1/conversations/route.ts(64,31): error TS2345: Argument of type '{ workspaceId: string; channel: "whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"; handle: string; text: string; name?: string | undefined; }' is not assignable to parameter of type 'IngestInput'.
+  Types of property 'channel' are incompatible.
+    Type '"whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"' is not assignable to type 'Channel'.
+      Type '"x"' is not assignable to type 'Channel'.
+src/app/v1/messages/route.ts(15,28): error TS2345: Argument of type '{ workspaceId: string; channel: "whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"; handle: string; text: string; name?: string | undefined; }' is not assignable to parameter of type 'IngestInput'.
+  Types of property 'channel' are incompatible.
+    Type '"whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"' is not assignable to type 'Channel'.
+      Type '"x"' is not assignable to type 'Channel'.
+src/app/v1/twin/sell/route.ts(35,26): error TS2345: Argument of type '{ workspaceId: string; text: string; handle: string; channel: "whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"; name?: string | undefined; history?: { role: "user" | "assistant"; content: string; }[] | undefined; }' is not assignable to parameter of type '{ workspaceId: string; channel: Channel; handle: string; name?: string | undefined; text: string; history?: SellTurn[] | undefined; }'.
+  Types of property 'channel' are incompatible.
+    Type '"whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"' is not assignable to type 'Channel'.
+      Type '"x"' is not assignable to type 'Channel'.
+src/app/v1/twin/test/route.ts(10,28): error TS2345: Argument of type '{ workspaceId: string; channel: "whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"; handle: string; text: string; name?: string | undefined; }' is not assignable to parameter of type 'IngestInput'.
+  Types of property 'channel' are incompatible.
+    Type '"whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"' is not assignable to type 'Channel'.
+      Type '"x"' is not assignable to type 'Channel'.
+src/app/v1/workspaces/route.ts(31,9): error TS2322: Type '{ catalogueSeeded: boolean; onboardedAt: null; memberships: { create: { userId: string; role: "owner"; }; }; name: string; vertical: "apparel" | "auto_parts" | "marine" | "wholesale"; channels: ("whatsapp" | ... 5 more ... | "x")[]; approvalPolicy: "everything" | ... 1 more ... | "nothing"; }' is not assignable to type '((Without<WorkspaceCreateInput, WorkspaceUncheckedCreateInput> & WorkspaceUncheckedCreateInput) | (Without<...> & WorkspaceCreateInput)) & object'.
+  Type '{ catalogueSeeded: boolean; onboardedAt: null; memberships: { create: { userId: string; role: "owner"; }; }; name: string; vertical: "apparel" | "auto_parts" | "marine" | "wholesale"; channels: ("whatsapp" | ... 5 more ... | "x")[]; approvalPolicy: "everything" | ... 1 more ... | "nothing"; }' is not assignable to type 'Without<WorkspaceUncheckedCreateInput, WorkspaceCreateInput> & WorkspaceCreateInput & object'.
+    Type '{ catalogueSeeded: boolean; onboardedAt: null; memberships: { create: { userId: string; role: "owner"; }; }; name: string; vertical: "apparel" | "auto_parts" | "marine" | "wholesale"; channels: ("whatsapp" | ... 5 more ... | "x")[]; approvalPolicy: "everything" | ... 1 more ... | "nothing"; }' is not assignable to type 'WorkspaceCreateInput'.
+      Types of property 'channels' are incompatible.
+        Type '("whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x")[]' is not assignable to type 'Channel[] | WorkspaceCreatechannelsInput | undefined'.
+          Type '("whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x")[]' is not assignable to type 'Channel[]'.
+            Type '"whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "webchat" | "x"' is not assignable to type 'Channel'.
+              Type '"x"' is not assignable to type 'Channel'.
+src/app/webhooks/x/route.ts(69,36): error TS2322: Type '"x"' is not assignable to type 'Channel'.
+src/app/webhooks/x/route.ts(79,24): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.
+src/server/channels/outbound.ts(92,10): error TS2678: Type '"x"' is not comparable to type 'Channel'.
+src/server/channels/registry.ts(743,3): error TS2322: Type '"x"' is not assignable to type 'Channel'.
+src/server/channels/registry.ts(774,9): error TS2322: Type '"x"' is not assignable to type 'Channel'.
+src/server/services/contacts.ts(5,24): error TS2305: Module '"@/generated/prisma/client"' has no exported member 'ContactSource'.
+src/server/services/contacts.ts(175,48): error TS2353: Object literal may only specify known properties, and 'email' does not exist in type 'CustomerWhereInput'.
+src/server/services/ingest.ts(172,7): error TS2739: Type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }' is missing the following properties from type 'ContactRow': email, phone
+src/server/services/ingest.ts(429,73): error TS2345: Argument of type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }' is not assignable to parameter of type 'ContactRow'.
+  Type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }' is missing the following properties from type 'ContactRow': email, phone
+src/server/services/selling.ts(104,3): error TS2353: Object literal may only specify known properties, and 'x' does not exist in type 'Record<Channel, string>'.
+src/server/services/webchat.ts(172,39): error TS2739: Type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }' is missing the following properties from type 'ContactRow': email, phone
+src/server/services/webchat.ts(197,84): error TS2345: Argument of type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }' is not assignable to parameter of type 'ContactRow'.
+  Type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }' is missing the following properties from type 'ContactRow': email, phone
+test/contacts.test.ts(44,21): error TS2339: Property 'email' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(45,21): error TS2339: Property 'emailSource' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(46,21): error TS2339: Property 'emailAt' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(47,21): error TS2339: Property 'phone' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(54,21): error TS2339: Property 'phone' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(55,21): error TS2339: Property 'phoneSource' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(88,19): error TS2339: Property 'emailAt' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(88,50): error TS2339: Property 'emailAt' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(96,27): error TS2339: Property 'email' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(103,21): error TS2339: Property 'email' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(104,21): error TS2339: Property 'phone' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(118,19): error TS2339: Property 'email' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/contacts.test.ts(119,20): error TS2339: Property 'email' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/outbound.test.ts(45,46): error TS2367: This comparison appears to be unintentional because the types '"whatsapp" | "instagram" | "facebook" | "telegram" | "webchat"' and '"x"' have no overlap.
+test/outbound.test.ts(123,19): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.
+test/outbound.test.ts(124,64): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.
+test/outbound.test.ts(295,21): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.
+test/outbound.test.ts(296,21): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.
+test/outbound.test.ts(297,21): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.
+test/outbound.test.ts(298,21): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.
+test/outbound.test.ts(299,21): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.
+test/registry.test.ts(7,103): error TS2345: Argument of type '"whatsapp" | "instagram" | "facebook" | "telegram" | "email" | "x"' is not assignable to parameter of type 'Channel'.
+  Type '"x"' is not assignable to type 'Channel'.
+test/registry.test.ts(111,41): error TS2345: Argument of type '{ id: string; workspaceId: string; channel: "x"; externalId: string; config: {}; }' is not assignable to parameter of type 'ConnectionView'.
+  Types of property 'channel' are incompatible.
+    Type '"x"' is not assignable to type 'Channel'.
+test/registry.test.ts(121,34): error TS2345: Argument of type '{ id: string; workspaceId: string; channel: "x"; externalId: string; config: {}; }' is not assignable to parameter of type 'ConnectionView'.
+  Types of property 'channel' are incompatible.
+    Type '"x"' is not assignable to type 'Channel'.
+test/registry.test.ts(128,8): error TS2345: Argument of type '{ id: string; workspaceId: string; channel: "x"; externalId: string; config: {}; }' is not assignable to parameter of type 'ConnectionView'.
+  Types of property 'channel' are incompatible.
+    Type '"x"' is not assignable to type 'Channel'.
+test/registry.test.ts(132,8): error TS2345: Argument of type '{ id: string; workspaceId: string; channel: "x"; externalId: string; config: {}; }' is not assignable to parameter of type 'ConnectionView'.
+  Types of property 'channel' are incompatible.
+    Type '"x"' is not assignable to type 'Channel'.
+test/registry.test.ts(138,38): error TS2345: Argument of type '{ id: string; workspaceId: string; channel: "x"; externalId: string; config: {}; }' is not assignable to parameter of type 'ConnectionView'.
+  Types of property 'channel' are incompatible.
+    Type '"x"' is not assignable to type 'Channel'.
+test/registry.test.ts(298,27): error TS2345: Argument of type '{ id: string; workspaceId: string; channel: "x"; externalId: string; config: Prisma.JsonValue; status: "connected"; displayName: string; composioAccountId: string; composioAuthConfigId: string; ... 6 more ...; updatedAt: Date; }' is not assignable to parameter of type '{ id: string; status: ConnectionStatus; channel: Channel; externalId: string | null; displayName: string | null; config: JsonValue; composioAccountId: string | null; ... 8 more ...; workspaceId: string; }'.
+  Types of property 'channel' are incompatible.
+    Type '"x"' is not assignable to type 'Channel'.
+test/registry.test.ts(302,39): error TS2345: Argument of type '{ id: string; workspaceId: string; channel: "x"; externalId: string; config: Prisma.JsonValue; status: "connected"; displayName: string; composioAccountId: string; composioAuthConfigId: string; ... 6 more ...; updatedAt: Date; }' is not assignable to parameter of type '{ id: string; status: ConnectionStatus; channel: Channel; externalId: string | null; displayName: string | null; config: JsonValue; composioAccountId: string | null; ... 8 more ...; workspaceId: string; }'.
+  Types of property 'channel' are incompatible.
+    Type '"x"' is not assignable to type 'Channel'.
+test/registry.test.ts(309,27): error TS2345: Argument of type '{ config: null; id: string; workspaceId: string; channel: "x"; externalId: string; status: "connected"; displayName: string; composioAccountId: string; composioAuthConfigId: string; composioTriggerIds: never[]; ... 5 more ...; updatedAt: Date; }' is not assignable to parameter of type '{ id: string; status: ConnectionStatus; channel: Channel; externalId: string | null; displayName: string | null; config: JsonValue; composioAccountId: string | null; ... 8 more ...; workspaceId: string; }'.
+  Types of property 'channel' are incompatible.
+    Type '"x"' is not assignable to type 'Channel'.
+test/webchat.test.ts(631,21): error TS2339: Property 'emailSource' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/webchat.test.ts(632,21): error TS2339: Property 'phoneSource' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/webchat.test.ts(633,21): error TS2339: Property 'phone' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/webchat.test.ts(647,21): error TS2339: Property 'email' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/webchat.test.ts(648,21): error TS2339: Property 'phone' does not exist on type '{ id: string; name: string; channel: Channel; workspaceId: string; handle: string; segment: Segment; lifetimeValue: number; orderCount: number; avgOrderValue: number; returnRatePct: number; ... 16 more ...; leadStage: LeadStage; }'.
+test/webhooks.test.ts(48,20): error TS2322: Type 'Connectable' is not assignable to type 'Channel'.
+  Type '"x"' is not assignable to type 'Channel'.
+test/webhooks.test.ts(537,27): error TS2345: Argument of type '"x"' is not assignable to parameter of type 'Channel'.

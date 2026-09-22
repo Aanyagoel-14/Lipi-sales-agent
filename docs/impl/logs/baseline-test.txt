@@ -1,0 +1,36 @@
+
+> test
+> npm --prefix web run test
+
+
+> web@0.1.0 test
+> vitest run
+
+
+ RUN  v5.0.0 /Users/aanyagoel/Desktop/Lipi-sales-agent/web
+
+ ❯ test/webhook-delivery.test.ts (28 tests | 1 failed) 4745ms
+   ❯ outbound webhooks (28)
+     ❯ the queue (7)
+       × starts at the moment of subscription, not at the beginning of the log 138ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/webhook-delivery.test.ts > outbound webhooks > the queue > starts at the moment of subscription, not at the beginning of the log
+AssertionError: expected [ 'before', 'after' ] to not include 'before'
+ ❯ test/webhook-delivery.test.ts:281:28
+    279|       const payloads = fakeEndpoint.posts.map((p) => JSON.parse(p.body…
+    280|       expect(payloads).toContain("after");
+    281|       expect(payloads).not.toContain("before");
+       |                            ^
+    282|     });
+    283|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 36 passed (37)
+      Tests  1 failed | 823 passed (824)
+   Start at  16:44:16
+   Duration  139.58s (tests 96%, setup 3%, import 1%, transform 1%)
+

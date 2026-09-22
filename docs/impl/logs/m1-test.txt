@@ -1,0 +1,160 @@
+
+> test
+> npm --prefix web run test
+
+
+> web@0.1.0 test
+> vitest run
+
+
+ RUN  v5.0.0 /Users/aanyagoel/Desktop/Lipi-sales-agent/web
+
+ ❯ test/shopify.test.ts (34 tests | 1 failed) 333544ms
+   ❯ shopify webhooks (7)
+     × takes a product update and corrects the twin from it 326466ms
+ ❯ test/selling.test.ts (42 tests | 2 failed) 65432ms
+   ❯ the grounding block (6)
+     × stays inside its ceiling with 500 knowledge entries, keeping the ones that answer 55946ms
+     × says so when what it lists is not the whole catalogue 212ms
+ ❯ test/model-budget.test.ts (22 tests | 2 failed) 191134ms
+   ❯ metering every model call (6)
+     × writes one row per call, named by what spent it 186291ms
+     × records the model each call asked for, not one name for both 1149ms
+ ❯ test/catalogue.test.ts (10 tests | 2 failed) 87861ms
+   ❯ importing real catalogue data (2)
+     × rejects the whole file when a variant is duplicated 85816ms
+   ❯ correcting stock (1)
+     × updates the figure and records why 252ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/catalogue.test.ts > importing real catalogue data > rejects the whole file when a variant is duplicated
+Error: Hook timed out in 60000ms.
+If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".
+ ❯ test/catalogue.test.ts:17:1
+     15| });
+     16|
+     17| beforeEach(async () => {
+       | ^
+     18|   await resetDatabase();
+     19|   const { user } = await createUser();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯
+
+ FAIL  test/catalogue.test.ts > correcting stock > updates the figure and records why
+PrismaClientKnownRequestError: 
+Invalid `prisma.user.create()` invocation in
+/Users/aanyagoel/Desktop/Lipi-sales-agent/web/test/helpers.ts:27:34
+
+  24 }
+  25 
+  26 export async function createUser(email = "owner@test.local", password = "testing12345") {
+→ 27   const user = await prisma.user.create(
+Unique constraint failed on the constraint: `users_email_key`
+ ❯ vn.handleRequestError src/generated/prisma/runtime/client.js:69:8643
+ ❯ vn.handleAndLogRequestError src/generated/prisma/runtime/client.js:69:7932
+ ❯ vn.request src/generated/prisma/runtime/client.js:69:7639
+ ❯ a src/generated/prisma/runtime/client.js:103:6935
+ ❯ createUser test/helpers.ts:27:16
+     25|
+     26| export async function createUser(email = "owner@test.local", password …
+     27|   const user = await prisma.user.create({
+       |                ^
+     28|     data: { email, name: "Test Owner", passwordHash: await hashPasswor…
+     29|   });
+ ❯ test/catalogue.test.ts:19:20
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯
+
+ FAIL  test/model-budget.test.ts > metering every model call > writes one row per call, named by what spent it
+Error: Test timed out in 20000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/model-budget.test.ts:66:3
+     64|
+     65| describe("metering every model call", () => {
+     66|   it("writes one row per call, named by what spent it", async () => {
+       |   ^
+     67|     await setup();
+     68|     answers("Lovely, those are reserved for you.");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯
+
+ FAIL  test/model-budget.test.ts > metering every model call > records the model each call asked for, not one name for both
+PrismaClientKnownRequestError: 
+Invalid `prisma.$executeRawUnsafe()` invocation:
+
+
+Raw query failed. Code: `40P01`. Message: `deadlock detected`
+ ❯ vn.handleRequestError src/generated/prisma/runtime/client.js:69:8643
+ ❯ vn.handleAndLogRequestError src/generated/prisma/runtime/client.js:69:7932
+ ❯ vn.request src/generated/prisma/runtime/client.js:69:7639
+ ❯ a src/generated/prisma/runtime/client.js:103:6935
+ ❯ resetDatabase test/helpers.ts:11:3
+      9| /** Order matters: children before parents, because the schema has rea…
+     10| export async function resetDatabase() {
+     11|   await prisma.$executeRawUnsafe(`
+       |   ^
+     12|     TRUNCATE TABLE
+     13|       payments, invoices, approvals, agent_runs, messages, conversatio…
+ ❯ test/model-budget.test.ts:60:3
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯
+
+ FAIL  test/selling.test.ts > the grounding block > stays inside its ceiling with 500 knowledge entries, keeping the ones that answer
+Error: Test timed out in 20000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/selling.test.ts:549:3
+    547|   });
+    548|
+    549|   it("stays inside its ceiling with 500 knowledge entries, keeping the…
+       |   ^
+    550|     await setup();
+    551|     const { buildGrounding, GROUNDING_MAX_CHARS } = await import("@/se…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯
+
+ FAIL  test/selling.test.ts > the grounding block > says so when what it lists is not the whole catalogue
+PrismaClientKnownRequestError: 
+Invalid `prisma.user.create()` invocation in
+/Users/aanyagoel/Desktop/Lipi-sales-agent/web/test/helpers.ts:27:34
+
+  24 }
+  25 
+  26 export async function createUser(email = "owner@test.local", password = "testing12345") {
+→ 27   const user = await prisma.user.create(
+Unique constraint failed on the constraint: `users_email_key`
+ ❯ vn.handleRequestError src/generated/prisma/runtime/client.js:69:8643
+ ❯ vn.handleAndLogRequestError src/generated/prisma/runtime/client.js:69:7932
+ ❯ vn.request src/generated/prisma/runtime/client.js:69:7639
+ ❯ a src/generated/prisma/runtime/client.js:103:6935
+ ❯ createUser test/helpers.ts:27:16
+     25|
+     26| export async function createUser(email = "owner@test.local", password …
+     27|   const user = await prisma.user.create({
+       |                ^
+     28|     data: { email, name: "Test Owner", passwordHash: await hashPasswor…
+     29|   });
+ ❯ setup test/selling.test.ts:11:20
+ ❯ test/selling.test.ts:575:5
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/7]⎯
+
+ FAIL  test/shopify.test.ts > shopify webhooks > takes a product update and corrects the twin from it
+Error: Test timed out in 20000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/shopify.test.ts:449:3
+    447|   });
+    448|
+    449|   it("takes a product update and corrects the twin from it", async () …
+       |   ^
+    450|     const { a, workspace: ws } = await connected();
+    451|     const variant = variantFixture({ id: 71, inventory_quantity: 6 });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯
+
+
+ Test Files  4 failed | 33 passed (37)
+      Tests  7 failed | 819 passed (826)
+   Start at  17:41:51
+   Duration  789.05s (tests 99%)
+

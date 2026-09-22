@@ -57,20 +57,33 @@ export type SubscribeInput = { url: string; eventTypes?: string[] };
 /**
  * A new subscription, and the one time its signing secret exists in plaintext.
  *
- * The cursor starts at *now*, not at the beginning of the log. An endpoint
+ * The cursor starts at the *end of the log*, not at the beginning. An endpoint
  * that has just been registered has no business receiving three months of
  * history it cannot tell apart from live traffic, and an integrator who wants
  * the history has `/v1/events`, which pages.
+ *
+ * The position is read off the newest event rather than off the wall clock.
+ * `occurredAt` has millisecond resolution, so a subscription created in the
+ * same millisecond as the event before it used to land on `(thatMillisecond,
+ * "")` — a cursor that every event in that millisecond sorts *after*, which
+ * replayed them. Naming the newest event makes the start exact whatever the
+ * clock did, and an empty log still starts at now.
  */
 export async function subscribe(workspaceId: string, input: SubscribeInput) {
   const secret = newWebhookSecret();
+  const newest = await prisma.twinEvent.findFirst({
+    where: { workspaceId },
+    orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+    select: { occurredAt: true, id: true },
+  });
   const subscription = await prisma.webhookSubscription.create({
     data: {
       workspaceId,
       url: input.url,
       eventTypes: input.eventTypes ?? [],
       secret: encrypt(secret),
-      cursorAt: new Date(),
+      cursorAt: newest?.occurredAt ?? new Date(),
+      cursorId: newest?.id ?? "",
     },
   });
   return { subscription, secret };
