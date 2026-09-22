@@ -19,7 +19,8 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@lipi-ai/sdk-node": ["./sdk/src/index.ts"]
     }
   },
   "include": [

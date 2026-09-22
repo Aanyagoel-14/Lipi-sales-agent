@@ -9,13 +9,16 @@ section named under "Next step".
 
 ## Current phase
 
-**M2 — Agent & Skill domain model.** Discovery is complete: `REPO_MAP.md` and
-`TRACEABILITY.md` are written and M1 is committed.
+**M5 — the Digital Twin rules.** M2, M3, M4, M6, M7, M8 and M9 are done.
 
 ## Next step
 
-Finish `web/src/server/agents/` — registry, executor, the five PRD skills and
-the four templates — then the builder deploy endpoint (M3).
+The Digital Twin rules PRD §5 states that nothing currently reads: the 4-hour
+reservation hold, the `Inquiry` and `Confirmed` order stages, VIP routing,
+auto-PO dispatch at the reorder threshold, and wiring the margin floor and
+credit-risk checks into `ingest()`'s own reply path rather than only into the
+skill executor. Then Use Case 1 as an acceptance test (F-1), M11 (the
+remaining channels), M12 (UI) and M13 (security, performance, final audit).
 
 ---
 
@@ -84,6 +87,25 @@ not a flaky assertion.
 | M1 checkpoint | `npm run lint` | exit 0 |
 | M1 checkpoint | `npm run typecheck` | exit 0 |
 | M1 checkpoint | `npm test` | **826 passed / 826**, 37 files, 137.7s |
+| M2/M3/M4 checkpoint | `npm run lint` / `typecheck` | exit 0 / exit 0 |
+| M2/M3/M4 checkpoint | `npm test` | **932 passed / 932**, 42 files, 154.8s |
+| M8 checkpoint | `npm run lint` / `typecheck` | exit 0 / exit 0 |
+| M8 checkpoint | `npm test` | **981 passed / 981**, 44 files |
+| M9 checkpoint | `npm run lint` / `typecheck` | exit 0 / exit 0 |
+| M9 checkpoint | `npm test` | **1010 passed / 1010**, 45 files, 169.6s |
+
+### A second self-inflicted bad run
+
+An `npm test` taken while a *second* vitest was running in the foreground
+reported 173 failures. `test/ci.test.ts` creates and drops a probe database;
+`DROP DATABASE` blocks while any connection to it is open, the `beforeAll`
+hook timed out at 60s, and every subsequent file failed on a broken pool. The
+same thing happened once more when `prisma generate` was run mid-suite.
+
+Two rules for this repository, learned the hard way: **never run two vitest
+processes at once**, and **never regenerate the Prisma client while the suite
+is running**. The suite talks to one real Postgres with `fileParallelism:
+false`; it is a shared resource and has to be treated as one.
 
 ### A note on a misleading run
 
@@ -108,14 +130,14 @@ architecture (one Next.js deployable, Postgres + Prisma, a deterministic
 | --- | --- | --- |
 | M0 | Baseline recorded; pre-existing webhook cursor race fixed | **done** |
 | M1 | `REPO_MAP.md` + `TRACEABILITY.md` | **done** |
-| M2 | Agent & Skill domain model — registry/plugin pattern, templates, guardrails | in flight |
-| M3 | Builder API — `POST /v1/agents/builder/deploy`, templates, skill catalogue | not started |
-| M4 | `POST /v1/conversations/ingest` to the PRD's contract | not started |
+| M2 | Agent & Skill domain model — registry/plugin pattern, templates, guardrails | **done** |
+| M3 | Builder API — `POST /v1/agents/builder/deploy`, templates, skill catalogue | **done** |
+| M4 | `POST /v1/conversations/ingest` to the PRD's contract | **done** |
 | M5 | Digital Twin completion — order state machine, 4h reservation hold, customer credit/margin/VIP rules, fitment graph, supplier auto-PO | not started |
-| M6 | The five named PRD skills, each schema-validated, guarded and audited | not started |
-| M7 | Personal PA twin + calendar adapter + negotiation (Use Case 2) | not started |
-| M8 | Bespoke SDK (TypeScript, then Python parity) + fabrication pricing tests | not started |
-| M9 | Website generator — `POST /v1/builder/sites/generate`, twin binding, deployment config | not started |
+| M6 | The five named PRD skills, each schema-validated, guarded and audited | **done** (folded into M2) |
+| M7 | Personal PA twin + calendar adapter + negotiation (Use Case 2) | **done** — Google Calendar sync is still open, see `BLOCKERS.md` |
+| M8 | Bespoke SDK (TypeScript) + fabrication pricing tests | **done** — Python parity outstanding |
+| M9 | Website generator — `POST /v1/builder/sites/generate`, twin binding, deployment config, **and the site actually served** | **done** — edge hosting is `BLOCKERS.md` B-005 |
 | M10 | Voice + conversation intelligence — ASR/VAD/TTS adapters, `AUDIO_INTERRUPT`, PII/PHI redaction (Use Cases 3, 4) | not started |
 | M11 | Remaining PRD channels — Slack, phone/VoIP, LinkedIn, Zoom/Teams | not started |
 | M12 | UI — split-pane workspace, Agent Studio canvas, Web Customizer, PRD design tokens | not started |
@@ -123,3 +145,40 @@ architecture (one Next.js deployable, Postgres + Prisma, a deterministic
 
 Each row is a checkpoint under §0.2: suite green, the four state files updated,
 one commit.
+
+
+---
+
+## What M2, M3, M4, M6, M7 and M8 delivered
+
+**New, and each of them genuinely executing against the twins rather than
+describing itself:**
+
+| | |
+| --- | --- |
+| `web/src/server/agents/registry.ts` | one array of declarative skill specs plus a pure `run`, modelled on `server/channels/registry.ts`. Adding a skill is a file and a line. |
+| `web/src/server/agents/execute.ts` | the only place a skill runs, and the security boundary: nine checks, in order, all before `run()` or all before the result is visible. |
+| `web/src/server/agents/guardrails.ts` | per-agent ceilings, parsed from either the PRD's snake_case or camelCase, defaulting to the cautious reading. |
+| `web/src/server/agents/twin-store.ts` | the narrow view of the twin a skill may touch. No `prisma`, no `workspaceId` parameter anywhere. |
+| `web/src/server/agents/scheduling.ts` | pure scheduling arithmetic — working hours, focus blocks, buffers, daily ceiling, timezone, DST. |
+| `web/src/server/agents/templates.ts` | the PRD's four templates, as data. |
+| `web/src/server/agents/deploy.ts` | validated deploy, upserting on `(workspace, name)`. |
+| `web/src/server/lib/payments.ts` | the Stripe seam: a real link, or none and the reason. |
+| `web/sdk/` | `@lipi-ai/sdk-node`, resolving at the PRD's own import path. |
+
+**Five skills**, each with an argument schema, guardrails, audit and tests:
+`Inventory_Lookup`, `Discount_Calculator`, `Stripe_Invoice`, `Lead_Scoring`,
+`Calendar_Negotiation`.
+
+**Endpoints:** `POST /v1/agents/builder/deploy`, `GET /v1/agents/templates`,
+`GET /v1/agents/skills`, `GET /v1/agents`, `GET|PATCH|DELETE /v1/agents/{id}`,
+`POST /v1/agents/{id}/execute`, `POST /v1/conversations/ingest` — the last two
+of those also at the PRD's `/api/v1/...` spelling.
+
+**One migration**, `20260923090000_agents_and_skills`: `agents`,
+`agent_skills`, `pa_profiles`, `calendar_events`, `scheduling_negotiations`,
+and two nullable columns on `agent_runs`.
+
+**Tests added:** `test/agents.test.ts` (36), `test/scheduling.test.ts` (22),
+`test/calendar.test.ts` (11), `test/agent-builder.test.ts` (24),
+`test/prd-ingest.test.ts` (13), `test/sdk.test.ts` (26).

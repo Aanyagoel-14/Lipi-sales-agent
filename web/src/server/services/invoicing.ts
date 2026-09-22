@@ -41,6 +41,56 @@ async function nextNumber(tx: Prisma.TransactionClient, workspaceId: string, yea
 }
 
 /**
+ * Issues the invoice for an order inside a transaction the caller already
+ * owns, or returns the one it already has.
+ *
+ * Split out from `invoiceForOrder()` below so a skill running under
+ * `server/agents/execute.ts` can invoice without nesting one `$transaction`
+ * inside another — the executor has already opened one precisely so a skill's
+ * writes and its audit trail commit together. Both entry points share this
+ * body, so there is still exactly one piece of code that decides what is owed.
+ */
+export async function issueInvoice(tx: Prisma.TransactionClient, workspaceId: string, orderId: string, now = new Date()) {
+  // Re-checked inside the transaction: two requests can pass an outer check
+  // at the same time, and the second must not issue a second invoice.
+  const raced = await tx.invoice.findFirst({ where: { workspaceId, orderId } });
+  if (raced) return { invoice: raced, created: false };
+
+  const order = await tx.order.findFirst({
+    where: { id: orderId, workspaceId },
+    include: { customer: { select: { id: true, segment: true } } },
+  });
+  if (!order) throw new Error(`Unknown order ${orderId}`);
+
+  const terms = TERMS_DAYS[order.customer.segment] ?? 0;
+  const created = await tx.invoice.create({
+    data: {
+      number: await nextNumber(tx, workspaceId, now.getUTCFullYear()),
+      workspaceId,
+      source: "manual",
+      issuedOn: new Date(now.toISOString().slice(0, 10)),
+      dueOn: new Date(new Date(now.getTime() + terms * DAY).toISOString().slice(0, 10)),
+      amount: order.value,
+      customerId: order.customerId,
+      orderId: order.id,
+    },
+  });
+
+  await tx.twinEvent.create({
+    data: {
+      id: `evt_${randomUUID().slice(0, 8)}`,
+      workspaceId,
+      occurredAt: now,
+      type: "invoice.issued",
+      twin: "order",
+      payload: `${created.number} order=${order.id} amount=${toRupees(created.amount)} due=${created.dueOn.toISOString().slice(0, 10)}`,
+    },
+  });
+
+  return { invoice: created, created: true };
+}
+
+/**
  * Issues the invoice for an order, or returns the one it already has.
  *
  * Idempotent on purpose: a customer asking twice for their invoice, or a
@@ -51,43 +101,8 @@ export async function invoiceForOrder(workspaceId: string, orderId: string, now 
   if (existing) return { invoice: existing, created: false };
 
   const invoice = await prisma.$transaction(async (tx) => {
-    // Re-check inside the transaction: two requests can pass the check above
-    // at the same time, and the second must not issue a second invoice.
-    const raced = await tx.invoice.findFirst({ where: { workspaceId, orderId } });
-    if (raced) return raced;
-
-    const order = await tx.order.findFirst({
-      where: { id: orderId, workspaceId },
-      include: { customer: { select: { id: true, segment: true } } },
-    });
-    if (!order) throw new Error(`Unknown order ${orderId}`);
-
-    const terms = TERMS_DAYS[order.customer.segment] ?? 0;
-    const created = await tx.invoice.create({
-      data: {
-        number: await nextNumber(tx, workspaceId, now.getUTCFullYear()),
-        workspaceId,
-        source: "manual",
-        issuedOn: new Date(now.toISOString().slice(0, 10)),
-        dueOn: new Date(new Date(now.getTime() + terms * DAY).toISOString().slice(0, 10)),
-        amount: order.value,
-        customerId: order.customerId,
-        orderId: order.id,
-      },
-    });
-
-    await tx.twinEvent.create({
-      data: {
-        id: `evt_${randomUUID().slice(0, 8)}`,
-        workspaceId,
-        occurredAt: now,
-        type: "invoice.issued",
-        twin: "order",
-        payload: `${created.number} order=${order.id} amount=${toRupees(created.amount)} due=${created.dueOn.toISOString().slice(0, 10)}`,
-      },
-    });
-
-    return created;
+    const { invoice: row } = await issueInvoice(tx, workspaceId, orderId, now);
+    return row;
   });
 
   return { invoice, created: true };

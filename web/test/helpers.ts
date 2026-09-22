@@ -10,7 +10,9 @@ import { agent } from "./dispatch";
 export async function resetDatabase() {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
-      payments, invoices, approvals, agent_runs, messages, conversations,
+      payments, invoices, approvals, agent_runs, agent_skills, agents,
+      scheduling_negotiations, calendar_events, pa_profiles,
+      messages, conversations,
       inventory_exceptions, inventory_sync_runs, inventory_mappings,
       inventory_connectors,
       processed_messages,

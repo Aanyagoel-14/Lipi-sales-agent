@@ -74,6 +74,26 @@ const schema = z.object({
   // Pinned, never "latest": a floating version means Shopify can change the
   // shape of a payload the twin trusts without anything here changing.
   SHOPIFY_API_VERSION: z.string().default("2025-01"),
+
+  // -------------------------------------------------------------- Stripe --
+  // Checkout links. Optional, and absent means the `Stripe_Invoice` skill
+  // still issues a real invoice with a real downloadable PDF — it just
+  // reports that no payment link could be created and why. It never invents
+  // a URL; see `server/lib/payments.ts` for why that distinction is the whole
+  // point of the seam.
+  STRIPE_SECRET_KEY: z.string().optional(),
+  // What checkout links are denominated in. Invoices are stored in the minor
+  // units of whatever the deployment sells in; this is the ISO code that goes
+  // on the payment page.
+  STRIPE_CURRENCY: z.string().length(3).default("INR"),
+
+  // ------------------------------------------------------------- hosting --
+  // Edge deployment for generated sites (PRD §3 Phase 3). Optional, and
+  // absent means a generated site is still really served — at this
+  // deployment's own origin, under `/s/{slug}` — it simply gets no CDN, no
+  // custom domain and no certificate. See `server/sites/hosting.ts`.
+  VERCEL_TOKEN: z.string().optional(),
+  CLOUDFLARE_API_TOKEN: z.string().optional(),
 }).superRefine((value, ctx) => {
   // Half a Shopify app is worse than none: an install that starts and cannot
   // finish, or a webhook that can never be verified.

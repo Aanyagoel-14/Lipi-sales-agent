@@ -355,11 +355,26 @@ model AgentRun {
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   id         String    @id
+  /// The acting agent's display name. Kept as a string, not narrowed to a
+  /// foreign key, because `ingest()`'s own four roles ("Sales", "Inventory",
+  /// "Procurement", "Support") are not rows and never were — a run raised by
+  /// the built-in commerce loop has a name and no `agentId`.
   agent      String
   action     String
   status     RunStatus
   durationMs Int
   ranAt      DateTime
+
+  /// The configured agent this run belongs to, when one does. Null for the
+  /// built-in loop above.
+  agentId String?
+  agentRef Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  /// The registry slug of the skill that produced this run, when a skill did.
+  /// Null for the built-in loop. This is what makes "which tool did the model
+  /// actually invoke, and with whose authority" answerable from the audit
+  /// trail rather than from prose in `action`.
+  skill String?
 
   conversationId String?
   conversation   Conversation? @relation(fields: [conversationId], references: [id])
@@ -369,6 +384,7 @@ model AgentRun {
   @@index([status])
   @@index([ranAt])
   @@index([workspaceId])
+  @@index([agentId, ranAt])
   @@map("agent_runs")
 }
 
@@ -581,6 +597,10 @@ model Workspace {
   webhookSubscriptions WebhookSubscription[]
   webhookDeliveries    WebhookDelivery[]
   modelCalls           ModelCall[]
+  agents               Agent[]
+  paProfiles           PaProfile[]
+  negotiations         SchedulingNegotiation[]
+  sites                GeneratedSite[]
 
   @@map("workspaces")
 }
@@ -1212,4 +1232,355 @@ model ModelCall {
   @@index([workspaceId, occurredAt])
   @@index([customerId, occurredAt])
   @@map("model_calls")
+}
+
+/**
+ * Which pre-built agent a workspace started from, if any.
+ *
+ * The four the PRD names (§2 Step 01). `custom` is what an agent assembled
+ * from skills by hand records, so "started from a template" and "was built
+ * from scratch" are distinguishable afterwards — a template can change, and
+ * an operator is entitled to know whether theirs was derived from one.
+ */
+enum AgentTemplate {
+  customer_support
+  sdr
+  calendar_pa
+  inbound_reception
+  custom
+}
+
+/**
+ * Where an agent is in its life. `draft` has never been published; `paused`
+ * was published and is currently answering nothing. Deleting is not a state:
+ * an agent that has run has runs, approvals and events pointing at it.
+ */
+enum AgentStatus {
+  draft
+  deployed
+  paused
+}
+
+/**
+ * A deployable agent: the unit the no-code builder creates and the SDK
+ * registers.
+ *
+ * Before this existed a workspace had exactly one implicit agent, and which
+ * "agent" had acted was a string literal chosen by a branch inside `ingest()`
+ * ("Sales", "Inventory", "Procurement", "Support"). That is fine for a fixed
+ * product and impossible for a builder, because there is nothing to configure,
+ * nothing to deploy, and nothing for a guardrail to be attached to.
+ *
+ * What an agent owns, and why each lives here rather than on the workspace:
+ *
+ *  - `skills`     what it may do. This is the allowed-tool list, and it is
+ *                 checked on every execution (`server/agents/execute.ts`).
+ *                 A model that asks for a skill this agent does not hold is
+ *                 refused before the arguments are even parsed.
+ *  - `guardrails` the ceilings it may not cross and the words that always
+ *                 fetch a human. Per agent, because an SDR negotiating
+ *                 discounts and a reception agent booking appointments do not
+ *                 want the same limits.
+ *  - `channels`   where it answers. A workspace can connect WhatsApp without
+ *                 every agent it owns being published there.
+ *
+ * `TwinVoice` and `KnowledgeEntry` stay on the workspace: how the business
+ * sounds and what it may claim are properties of the business, not of one
+ * agent, and duplicating them per agent is how two agents end up quoting
+ * different return policies at the same customer.
+ */
+model Agent {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id       String        @id @default(cuid())
+  name     String
+  template AgentTemplate @default(custom)
+  status   AgentStatus   @default(draft)
+
+  /// What it says about itself. Never a place for numbers or policy — those
+  /// are facts, and facts reach the model through the grounding block.
+  description String?
+
+  /// Where this agent is published. A subset of the workspace's connected
+  /// channels; publishing to one that is not connected is refused at deploy.
+  channels Channel[]
+
+  /// The ceilings, validated against `agentGuardrailsSchema`
+  /// (`server/agents/guardrails.ts`) on the way in, so a malformed object
+  /// cannot be stored and then silently fail open at execution time.
+  guardrails Json @default("{}")
+
+  /// Which knowledge entries ground this agent. Empty means every entry the
+  /// workspace has, which is the useful default and what the PRD's own
+  /// `knowledge_base_ids` omission implies.
+  knowledgeEntryIds String[] @default([])
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deployedAt DateTime?
+
+  skills AgentSkill[]
+  runs   AgentRun[]
+
+  /// One agent per name per tenant: the deploy endpoint is an upsert on this,
+  /// so re-deploying an agent updates it rather than growing a second one
+  /// with the same name and half the traffic.
+  @@unique([workspaceId, name])
+  @@index([workspaceId, status])
+  @@map("agents")
+}
+
+/**
+ * One skill, enabled on one agent, with its own configuration.
+ *
+ * `skill` is a slug from the registry in `server/agents/registry.ts`, not a
+ * foreign key: skills are code, they ship with a release, and a database row
+ * per skill would let a tenant name one that has no implementation. A slug
+ * that the registry does not know is refused at deploy.
+ *
+ * `enabled` rather than deletion, so turning a skill off for an afternoon
+ * does not lose the configuration it was turned off with.
+ */
+model AgentSkill {
+  id      String @id @default(cuid())
+  agentId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  skill   String
+  config  Json    @default("{}")
+  enabled Boolean @default(true)
+
+  @@unique([agentId, skill])
+  @@map("agent_skills")
+}
+
+/**
+ * Where a calendar entry came from.
+ *
+ * `negotiated` is distinct from `manual` because it is the one the PA twin
+ * created itself, and an operator reviewing what their assistant did to their
+ * week is entitled to see which entries it put there.
+ */
+enum CalendarSource {
+  google
+  manual
+  negotiated
+  /// A block the owner never wants meetings in. Not a meeting; a refusal.
+  focus
+}
+
+/**
+ * How a scheduling conversation is going.
+ *
+ * The PRD's Personal PA Twin stores "active scheduling negotiations" (§5),
+ * which is only meaningful if a negotiation is a thing that persists between
+ * turns — a proposal sent on Monday and answered on Tuesday is one
+ * negotiation, not two messages.
+ */
+enum NegotiationState {
+  proposed
+  countered
+  confirmed
+  abandoned
+}
+
+/**
+ * The Personal PA Twin (PRD §5).
+ *
+ * Owner focus blocks, max daily meeting hours, buffer rules and a fatigue
+ * index — the constraints a scheduling decision is made against. They live on
+ * a row rather than in a prompt for the same reason every other number in this
+ * codebase does: a model asked to "keep a reasonable buffer" will eventually
+ * keep none, and the owner finds out by walking into a meeting they were
+ * already late for.
+ *
+ * One profile per named owner per workspace, because a business has several
+ * people whose calendars mean different things, and merging them would make
+ * "is this slot free" unanswerable.
+ */
+model PaProfile {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id        String @id @default(cuid())
+  ownerName String
+  /// IANA zone. Every stored instant is UTC; this is what "avoid mornings"
+  /// is resolved against, and getting it from the row rather than the server
+  /// is the difference between a 9am meeting and a 3am one.
+  timezone  String @default("UTC")
+
+  /// The working window, in minutes from local midnight.
+  workdayStartMinute Int @default(540)
+  workdayEndMinute   Int @default(1080)
+
+  /// PRD §5: "buffer rules (15 min)". Held either side of every booking.
+  bufferMinutes Int @default(15)
+
+  /// PRD §5: "max daily meeting hours", stored in minutes so it composes with
+  /// everything else here without a unit conversion at the point of use.
+  maxDailyMeetingMinutes Int @default(300)
+
+  /// Recurring blocks the owner will not take meetings in, as
+  /// `[{ weekday, startMinute, endMinute, label }]` with weekday 0 = Sunday.
+  focusBlocks Json @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events       CalendarEvent[]
+  negotiations SchedulingNegotiation[]
+
+  @@unique([workspaceId, ownerName])
+  @@index([workspaceId])
+  @@map("pa_profiles")
+}
+
+/**
+ * One entry on a PA twin's calendar.
+ *
+ * Instants are stored UTC and compared UTC. `externalId` is the provider's
+ * own id where the entry came from one, so a re-sync updates rather than
+ * duplicates — the same idempotency rule the channel adapters keep on
+ * provider message ids.
+ */
+model CalendarEvent {
+  workspaceId String
+
+  id        String @id @default(cuid())
+  profileId String
+  profile   PaProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  externalId String?
+  title      String
+  startsAt   DateTime
+  endsAt     DateTime
+  source     CalendarSource @default(manual)
+  /// False for an entry that is on the calendar but does not block it — a
+  /// tentative hold, an all-day marker.
+  busy       Boolean        @default(true)
+
+  createdAt DateTime @default(now())
+
+  negotiation SchedulingNegotiation?
+
+  @@unique([profileId, externalId])
+  @@index([profileId, startsAt])
+  @@index([workspaceId])
+  @@map("calendar_events")
+}
+
+/**
+ * A multi-turn scheduling negotiation, as a row.
+ *
+ * "Find 45 minutes with Dr. Chen next week, avoid mornings, keep 15-minute
+ * buffers" is not one request and one answer — it is a proposal, possibly a
+ * counter, and a confirmation, spread over hours and arriving on whichever
+ * channel the counterpart prefers. The constraints are parsed once, at the
+ * start, and every later turn is decided against the stored ones rather than
+ * re-read out of prose that may not be repeated.
+ */
+model SchedulingNegotiation {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id        String @id @default(cuid())
+  profileId String
+  profile   PaProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  /// Who the meeting is with. A name, because the counterpart may have no
+  /// account and no twin — the PRD's own example is a doctor.
+  counterpartName   String
+  counterpartHandle String?
+
+  durationMinutes Int
+  purpose         String
+
+  /// The parsed constraints, validated by `schedulingConstraintsSchema`
+  /// (`server/agents/scheduling.ts`): windows to avoid, earliest and latest
+  /// acceptable dates, whether buffers are required.
+  constraints Json @default("{}")
+
+  state NegotiationState @default(proposed)
+
+  /// The slots offered, newest proposal last, as
+  /// `[{ startIso, endIso, offeredAt }]`. Kept so a counter-offer can be
+  /// checked against what was actually put on the table.
+  proposedSlots Json @default("[]")
+
+  agreedStart DateTime?
+  agreedEnd   DateTime?
+
+  /// The calendar entry this negotiation produced, once it confirmed.
+  eventId String?        @unique
+  event   CalendarEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId, state])
+  @@index([profileId, state])
+  @@map("scheduling_negotiations")
+}
+
+/**
+ * Where a generated site has got to.
+ *
+ * `generated` has a structure and no deployment; `deployed` has both. There is
+ * no `deploying` — a deployment either produced a URL or it did not, and a
+ * state that means "we are not sure" is a state somebody has to poll.
+ */
+enum SiteStatus {
+  generated
+  deployed
+  failed
+}
+
+/**
+ * A site generated from a business profile (PRD §3).
+ *
+ * The three phases of §3 map onto three columns rather than three tables:
+ * `structure` is Phase 1's output, the bindings inside it are Phase 2, and
+ * `deployment` is Phase 3's.
+ *
+ * **The structure holds no business data.** A catalogue block names the
+ * catalogue; it does not carry products. A quote block holds the formula's
+ * source; it does not carry prices. Everything is resolved against live rows
+ * when a page is rendered, so a generated site cannot show a price that was
+ * true at generation and is not true now — which is the whole of "dynamic
+ * twin binding … without manual SQL migrations or backend glue code".
+ */
+model GeneratedSite {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id   String @id @default(cuid())
+  /// The path this site is served at under `/s/`. Derived from the business
+  /// name, unique per deployment because it is a public URL.
+  slug String @unique
+  name String
+
+  /// The PRD's `business_profile`, `site_features` and `deployment_target`,
+  /// stored as sent so a regenerate is reproducible from the original ask.
+  profile    Json
+  features   Json
+  deployment Json
+
+  /// Phase 1's output, including the Phase 2 bindings. Validated against
+  /// `SiteStructure` on the way in.
+  structure Json
+
+  /// The quote expression's source, lifted out of `features` because the
+  /// renderer reads it on every quote and a column beats a JSON path.
+  quoteFormula String?
+
+  status SiteStatus @default(generated)
+  /// Where it went live, when it did. Null until a provider says otherwise.
+  liveUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId, createdAt])
+  @@map("generated_sites")
 }

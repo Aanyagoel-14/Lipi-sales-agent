@@ -46,14 +46,14 @@ Baseline column values below were established by reading the code on
 
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| B-1 | §2 Step 01 | Pick a template from a marketplace: Customer Support, SDR, Calendar PA, Inbound Reception | none | templates, marketplace, `Agent` entity | — | NOT_STARTED |
-| B-2 | §2 Step 01 | Assemble a custom agent from 50+ modular skills | none | skill abstraction entirely | — | NOT_STARTED |
-| B-3 | §2 Step 01 | The five named skills: `Calendar_Negotiation`, `Inventory_Lookup`, `Discount_Calculator`, `Stripe_Invoice`, `Lead_Scoring` | lead scoring and stock checking exist as inline code inside `ingest()`, not as skills | all five as addressable skills; discount and calendar logic do not exist at all | `services/leads.ts`, `services/ingest.ts` | NOT_STARTED |
+| B-1 | §2 Step 01 | Pick a template from a marketplace: Customer Support, SDR, Calendar PA, Inbound Reception | **all four, as data, each deploying a working agent** | a browser UI for picking one (M12) | `server/agents/templates.ts`, `v1/agents/templates` | VERIFIED |
+| B-2 | §2 Step 01 | Assemble a custom agent from 50+ modular skills | a registry; an agent holds any subset; the SDK adds more without touching agent code | 45 more skills — the shape is done, the catalogue is five | `server/agents/registry.ts` | IMPLEMENTED |
+| B-3 | §2 Step 01 | The five named skills | **all five**, each with an argument schema, guardrails, audit and tests | — | `server/agents/skills/*` | VERIFIED |
 | B-4 | §2 Step 02 | Upload PDF catalogues, spreadsheets, call transcripts, website URLs for training | CSV variant import; manual knowledge entries | PDF, transcript and URL ingestion | `v1/catalogue/import`, `v1/twin/knowledge` | NOT_STARTED |
 | B-5 | §2 Step 02 | Define brand voice personality | **works** — formality, length, emoji, greeting, sign-off, always/never phrases, enforced on the model's output | — | `services/voice.ts`, `v1/twin/voice` | IMPLEMENTED |
-| B-6 | §2 Step 02 | Establish discount authorisation floors | the twin is forbidden to offer *any* discount (`UNAUTHORISED_OFFER`) | an authorised floor it may work within | `services/voice.ts:98` | NOT_STARTED |
-| B-7 | §2 Step 02 | Set human-in-the-loop escalation thresholds | one workspace-wide policy: everything / money_only / nothing | per-agent thresholds and named triggers | `schema.prisma:473` | NOT_STARTED |
-| B-8 | §2 Step 03 | Publish across WhatsApp, Telegram, Slack, Website Chat, Phone/VoIP, LinkedIn in one click | per-channel connect flows | a deploy action, and 3 of the 6 channels | `v1/channels/[channel]/connect` | NOT_STARTED |
+| B-6 | §2 Step 02 | Establish discount authorisation floors | three floors — allowance, price floor, margin — checked in order by `Discount_Calculator`; over the floor escalates with a counter-offer | wiring the floors into `ingest()`'s own reply path (M5) | `server/agents/skills/discount-calculator.ts` | IMPLEMENTED |
+| B-7 | §2 Step 02 | Set human-in-the-loop escalation thresholds | per-agent guardrails: named triggers, quote ceiling, margin floor, past-due rule — all enforced in `execute.ts` and raising a real `Approval` | — | `server/agents/guardrails.ts` | VERIFIED |
+| B-8 | §2 Step 03 | Publish across WhatsApp, Telegram, Slack, Website Chat, Phone/VoIP, LinkedIn in one click | one `POST` publishes to every named channel, refusing any that is not connected | Slack, Phone/VoIP, LinkedIn as channels (M11) | `server/agents/deploy.ts` | IN_PROGRESS |
 | B-9 | §2 Step 03 | Monitor real-time conversation telemetry | dashboard KPIs, volume, intent mix, model spend — all request-time, none live | live updates | `services/analytics.ts` | NOT_STARTED |
 | B-10 | §2 Step 03 | Review audit trails | **works** — append-only `TwinEvent`, exposed at `/v1/events` and `/dashboard/events` | — | `server/lib/events.ts` | IMPLEMENTED |
 | B-11 | §2 Step 03 | Fine-tune agent behaviour live | voice, knowledge and policy are editable and take effect on the next message | per-agent tuning | `/dashboard/train` | IMPLEMENTED |
@@ -61,14 +61,14 @@ Baseline column values below were established by reading the code on
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
-| B-1 | — | — | — | — | four templates instantiate a working agent | pending |
-| B-2 | — | — | — | — | skills compose without touching agent code | pending |
-| B-3 | — | — | — | — | each of the five validates, guards, executes and audits | pending |
+| B-1 | `test/agents.test.ts` "every template names only skills that exist" | `test/agent-builder.test.ts` "offers the four templates", "takes its skills and guardrails from a template" | — | — | four templates instantiate a working agent | **green** |
+| B-2 | `test/agents.test.ts` "the registry" (5 cases) | `test/sdk.test.ts` "registering a custom skill" | — | — | skills compose without touching agent code | **green** |
+| B-3 | `test/agents.test.ts` per-skill blocks, `test/calendar.test.ts` | `test/agent-builder.test.ts` "executing a skill over HTTP" | — | — | each of the five validates, guards, executes and audits | **green** |
 | B-4 | — | — | — | — | each source type produces retrievable knowledge | pending |
 | B-5 | `test/selling.test.ts` (voice violations), `test/ingest.test.ts` | `test/api-contract.test.ts` | — | — | a banned phrase never reaches a customer | **baseline green** |
-| B-6 | — | — | — | — | a discount within the floor is offered; beyond it escalates | pending |
-| B-7 | `test/ingest.test.ts` (approval policy) | — | — | — | a named trigger holds the reply | pending |
-| B-8 | — | — | — | — | one call deploys to every named channel | pending |
+| B-6 | `test/agents.test.ts` "Discount_Calculator" (4 cases) | — | — | — | a discount within the floor is offered; beyond it escalates | **green** |
+| B-7 | `test/agents.test.ts` "guardrails", "guardrails at execution time" (7 cases) | `test/agent-builder.test.ts` "answers 202 when a guardrail holds" | — | — | a named trigger holds the reply | **green** |
+| B-8 | — | `test/agent-builder.test.ts` "step 3 — deploying" (10 cases) | — | — | one call deploys to every named channel | **green for the 4 channels that exist** |
 | B-9 | — | — | — | — | telemetry reflects a conversation that just happened | pending |
 | B-10 | `test/tenancy.test.ts`, `test/ingest.test.ts` | `test/api-contract.test.ts` | — | — | every mutation appears in the trail | **baseline green** |
 | B-11 | `test/twin-chat.test.ts` | — | — | — | an edit changes the next reply | **baseline green** |
@@ -80,18 +80,18 @@ Baseline column values below were established by reading the code on
 
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| C-1 | §3 Ph.1 | Intent → structure: business context prompt produces responsive components, semantic schema, sitemap | nothing | all | — | NOT_STARTED |
-| C-2 | §3 Ph.2 | Dynamic twin binding: product/service twins, quote formulas, Stripe checkout links, Google reviews bound to UI | nothing | all | — | NOT_STARTED |
-| C-3 | §3 Ph.3 | Global edge hosting: Cloudflare/Vercel deploy, SSL, custom domain DNS, SEO tags, embedded sub-400ms assistant | the embeddable widget exists and is real | deployment of a generated site | `public/static/widget.js` | NOT_STARTED |
-| C-4 | §3.1 | `POST /api/v1/builder/sites/generate` with `business_profile` / `site_features` / `deployment_target` | nothing | the endpoint and everything behind it | — | NOT_STARTED |
+| C-1 | §3 Ph.1 | Intent → structure | pages, blocks, schema.org JSON-LD and a sitemap, computed deterministically from the profile; each block carries an empty slot for model-written copy | model-written copy is not generated yet — the slot is | `server/sites/structure.ts` | IMPLEMENTED |
+| C-2 | §3 Ph.2 | Dynamic twin binding | blocks carry bindings, not data; `resolveBlocks()` reads live rows on every request; the quote formula is parsed and evaluated server-side | Stripe links on a site page (B-002), Google reviews (B-006) | `server/sites/generate.ts`, `formula.ts` | IMPLEMENTED |
+| C-3 | §3 Ph.3 | Global edge hosting | the site **is served** at `/s/{slug}` with SEO tags, JSON-LD, sitemap and the embedded assistant; the deploy endpoint reports separately whether an edge host took it | CDN, custom domain, certificate — see `BLOCKERS.md` B-005 | `server/sites/hosting.ts`, `app/s/[slug]` | BLOCKED_EXTERNAL_DEPENDENCY |
+| C-4 | §3.1 | `POST /api/v1/builder/sites/generate` | the PRD's body verbatim, at both `/v1` and `/api/v1`, persisting a real site | — | `v1/builder/sites/generate/route.ts` | VERIFIED |
 | C-5 | §3 | Generation completes in under 3 minutes | — | — | — | NOT_STARTED |
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
-| C-1 | — | — | — | — | a profile yields a persisted, renderable structure | pending |
-| C-2 | — | — | — | — | a bound price comes from a twin row, never from the model | pending |
-| C-3 | — | — | — | — | deployment config is produced; the deploy itself is adapter-backed | pending |
-| C-4 | — | — | — | — | request/response schemas, auth, errors and persistence all tested | pending |
+| C-1 | `test/sites.test.ts` "phase 1" (12 cases) | — | — | — | a profile yields a persisted, renderable structure | **green** |
+| C-2 | `test/formula.test.ts` (23 cases) | `test/sites.test.ts` "phase 2", "quoting" (8 cases) | — | — | a bound price comes from a twin row, never from the model | **green** |
+| C-3 | — | `test/sites.test.ts` "phase 3" (3 cases) | — | — | deployment config is produced; the deploy itself is adapter-backed | **green for the adapter; the edge itself is B-005** |
+| C-4 | — | `test/sites.test.ts` (28 cases) | — | — | request/response schemas, auth, errors and persistence all tested | **green** |
 | C-5 | — | — | — | — | measured (§28) | pending |
 
 ---
@@ -100,23 +100,23 @@ Baseline column values below were established by reading the code on
 
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| D-1 | §4 | Sandboxed TypeScript SDK: `LipiAgent`, `CustomSkill`, `ToolContext` | nothing | all | — | NOT_STARTED |
-| D-2 | §4 | Python SDK parity | nothing | all | — | NOT_STARTED |
-| D-3 | §4.1 | Tool parameter schema with enum validation (`material`, `thickness_mm`, `cut_length_cm`, `quantity`) | nothing | all | — | NOT_STARTED |
-| D-4 | §4.1 | `ctx.twinStore.updateOrderDraft` mutates the living Order twin | nothing | all | — | NOT_STARTED |
-| D-5 | §4.1 | Guardrails `maxSingleQuoteValue: 25000`, `escalateIfMaterialUnknown: true` | nothing | all | — | NOT_STARTED |
-| D-6 | §4.1 | Deterministic fabrication pricing: density, material cost, machine time, quantity break at >50, lead time break at >100 | nothing | all | — | NOT_STARTED |
-| D-7 | §4.1 | Deploy a bespoke agent across WhatsApp, Telegram and Web | nothing | all | — | NOT_STARTED |
+| D-1 | §4 | Sandboxed TypeScript SDK: `LipiAgent`, `CustomSkill`, `ToolContext` | **all three**; the PRD's import line resolves verbatim | — | `web/sdk/src/index.ts` | VERIFIED |
+| D-2 | §4 | Python SDK parity | nothing | all | — | BLOCKED_EXTERNAL_DEPENDENCY — see `BLOCKERS.md` B-004 |
+| D-3 | §4.1 | Tool parameter schema with enum validation | JSON-schema-ish declarations compiled to strict Zod; unknown keys, wrong types, `NaN` and `Infinity` all refused | — | `web/sdk/src/index.ts` | VERIFIED |
+| D-4 | §4.1 | `ctx.twinStore.updateOrderDraft` mutates the living Order twin | writes a real `Order` row, in integer minor units, updating the draft rather than growing one per revision | — | `server/agents/twin-store.ts` | VERIFIED |
+| D-5 | §4.1 | Guardrails `maxSingleQuoteValue: 25000`, `escalateIfMaterialUnknown: true` | both parsed; the ceiling checked against what the handler actually committed, not what it reported | — | `server/agents/guardrails.ts`, `execute.ts` | VERIFIED |
+| D-6 | §4.1 | Deterministic fabrication pricing | the PRD's formula, asserted against hand-computed values at every boundary it has | — | `test/sdk.test.ts` | VERIFIED |
+| D-7 | §4.1 | Deploy a bespoke agent across WhatsApp, Telegram and Web | `LipiAgent.deploy()` goes through the same validated path the builder does | — | `web/sdk/src/index.ts` | VERIFIED |
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
-| D-1 | — | — | — | — | the PRD's own snippet compiles and runs | pending |
-| D-2 | — | — | — | — | same tool, same numbers, both languages | pending |
-| D-3 | — | — | — | — | invalid material rejected, valid accepted | pending |
-| D-4 | — | — | — | — | the order draft row actually changes | pending |
-| D-5 | — | — | — | — | a quote over 25000 escalates rather than being sent | pending |
-| D-6 | — | — | — | — | **asserted against actual values** for each named boundary | pending |
-| D-7 | — | — | — | — | the deployed agent answers on each channel | pending |
+| D-1 | `test/sdk.test.ts` (the PRD's snippet, transcribed and executed) | — | — | — | the PRD's own snippet compiles and runs | **green** |
+| D-2 | — | — | — | — | same tool, same numbers, both languages | **blocked** (B-004) |
+| D-3 | `test/sdk.test.ts` "parameter validation" (5 cases) | — | — | — | invalid material rejected, valid accepted | **green** |
+| D-4 | `test/sdk.test.ts` "the Digital Twin mutation" (3 cases) | — | — | — | the order draft row actually changes | **green** |
+| D-5 | `test/sdk.test.ts` "guardrails on a bespoke agent" (4 cases) | — | — | — | a quote over 25000 escalates rather than being sent | **green** |
+| D-6 | `test/sdk.test.ts` arithmetic + quantity break + lead-time break (9 cases) | — | — | — | **asserted against actual values** for each named boundary | **green** |
+| D-7 | — | `test/sdk.test.ts` "deploying a bespoke agent" | — | — | the deployed agent answers on each channel | **green for deploy**; per-channel answering is M11 |
 
 ---
 
@@ -135,8 +135,8 @@ Baseline column values below were established by reading the code on
 | E-9 | §5 | Supplier lead time, defect rate, MOQ | **works** — all three on `Supplier` | — | `schema.prisma:181` | IMPLEMENTED |
 | E-10 | §5 | Rule: auto-dispatch POs when reserved inventory drops below threshold | a Procurement *run* is raised at the reorder point; no PO is dispatched | the dispatch | `services/ingest.ts:255` | NOT_STARTED |
 | E-11 | §5 | Rule: sync shipment tracking via webhooks | outbound webhook delivery is real | shipment tracking itself | `services/webhooks.ts` | NOT_STARTED |
-| E-12 | §5 | **Personal PA Twin**: focus blocks, max daily meeting hours, 15-min buffers, fatigue index, active negotiations | nothing | all | — | NOT_STARTED |
-| E-13 | §5 | Rule: autonomous multi-turn calendar negotiation, timezone resolution, focus-time enforcement | nothing | all | — | NOT_STARTED |
+| E-12 | §5 | **Personal PA Twin**: focus blocks, max daily meeting hours, 15-min buffers, active negotiations | `PaProfile`, `CalendarEvent`, `SchedulingNegotiation`, all enforced arithmetically | a derived fatigue index | `prisma/schema.prisma`, `server/agents/scheduling.ts` | IMPLEMENTED |
+| E-13 | §5 | Rule: autonomous multi-turn calendar negotiation, timezone resolution, focus-time enforcement | propose / counter / confirm, persisted between turns; DST-correct; only an offered slot may be confirmed | Google Calendar sync (`BLOCKERS.md` B-003) | `server/agents/skills/calendar-negotiation.ts` | VERIFIED |
 | E-14 | §5 | **Opportunity & ABM Twin**: org chart, champion/blocker map, buying intent 0–1.0, 10-K filings, hiring telemetry, mutual connections | nothing | all | — | NOT_STARTED |
 | E-15 | §5 | Rule: intent score rises on executive LinkedIn engagement; drafts contextual outreach | nothing | all | — | NOT_STARTED |
 | E-16 | §5 | Event-driven: every conversation, message and transaction mutates shared state | **works** — one transaction per message, append-only `TwinEvent` for every mutation | — | `services/ingest.ts:83` | IMPLEMENTED |
@@ -155,8 +155,8 @@ Baseline column values below were established by reading the code on
 | E-9 | `test/inventory.test.ts` | — | — | — | present and served | **baseline green** |
 | E-10 | — | — | — | — | crossing the threshold creates a PO | pending |
 | E-11 | `test/webhook-delivery.test.ts` | — | — | — | a tracking update reaches a subscriber | pending |
-| E-12 | — | — | — | — | the twin exists, persists and is audited | pending |
-| E-13 | — | — | — | — | Use Case 2 passes end to end | pending |
+| E-12 | `test/scheduling.test.ts` (22 cases) | `test/calendar.test.ts` (11 cases) | — | — | the twin exists, persists and is audited | **green** |
+| E-13 | `test/scheduling.test.ts` | `test/calendar.test.ts` "PRD §6 Use Case 2" | — | — | Use Case 2 passes end to end | **green except the Google write** |
 | E-14 | — | — | — | — | the twin exists, persists and is audited | pending |
 | E-15 | — | — | — | — | an engagement event moves the score deterministically | pending |
 | E-16 | `test/ingest.test.ts`, `test/tenancy.test.ts` | `test/webhook-delivery.test.ts` | — | — | all-or-nothing per message | **baseline green** |
@@ -169,14 +169,14 @@ Baseline column values below were established by reading the code on
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | F-1 | §6.1 | **Use Case 1** — WhatsApp wholesaler: extract item/colour/size/qty/offer/deadline; inventory confirms; price floor validated; customer has no overdue invoices; lock units; generate checkout link; reply on WhatsApp; push order draft to ERP | extraction, stock check, reservation, order creation, WhatsApp reply, audit trail | price-floor validation, credit check, checkout link, ERP push | `services/ingest.ts` | NOT_STARTED |
-| F-2 | §6.2 | **Use Case 2** — PA: 45 min with Dr. Chen next week, avoid mornings, 15-min buffers; negotiate; confirm; sync Google Calendar | nothing | all | — | NOT_STARTED |
+| F-2 | §6.2 | **Use Case 2** — PA | the PRD's own sentence drives propose → confirm; every offered slot asserted to be 45 minutes, next week, not a morning in the owner's zone, and buffer-clear of a real booking | the Google Calendar write (B-003) | `test/calendar.test.ts` | IN_PROGRESS |
 | F-3 | §6.3 | **Use Case 3** — regulated meeting intelligence: audio capture, ASR, stress flags, PII/PHI redaction, SOAP notes / case timelines against a precedent graph | nothing | all | — | NOT_STARTED |
 | F-4 | §6.4 | **Use Case 4** — inbound phone reception: SIP routing, brand voice, grounded RAG answers, appointment booking, SMS confirmation | grounded answers exist (text) | telephony, voice, booking, SMS | `services/briefing.ts` | NOT_STARTED |
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
 | F-1 | — | — | — | — | the PRD's exact sentence drives the whole chain and every step is asserted | pending |
-| F-2 | — | — | — | — | the PRD's exact sentence yields a booked slot honouring both constraints | pending |
+| F-2 | `test/scheduling.test.ts` "reads the PRD's scheduling request" | `test/calendar.test.ts` "PRD §6 Use Case 2" | — | — | the PRD's exact sentence yields a booked slot honouring both constraints | **green** |
 | F-3 | — | — | — | — | redaction verified; compliance *claims* explicitly not made | pending |
 | F-4 | — | — | — | — | call → answer → booking → confirmation, with failures and retries | pending |
 
@@ -189,7 +189,7 @@ Baseline column values below were established by reading the code on
 | G-1 | §7.1 | Omnichannel split-pane: channel sidebar, transcript centre, 360° twin inspector | a real 3-pane inbox with transcript, entity chips, delivery state and a customer-twin inspector | a **channel** rail, and working thread selection — rows are inert and the page always opens the newest thread | `app/dashboard/inbox/page.tsx:60` | IN_PROGRESS |
 | G-2 | §7.2 | Agent Studio canvas: drag-and-drop node graph for triggers, margin guardrails, fallback conditions, escalation rules | one workspace-wide autonomy radio group | the canvas and everything it configures | `dashboard/train/policy-form.tsx` | NOT_STARTED |
 | G-3 | §7.3 | Instant Web Customizer: mobile/desktop preview, block library, theme token editor, prompt-driven layout modifier | nothing | all | — | NOT_STARTED |
-| G-4 | §8.1 | Colours: `#0B0F19` canvas, `#111827` surface, `#6366F1` indigo, `#10B981` emerald, `#EF4444` coral | a light theme with `--color-violet #7856ff`; semantic token layer already exists and is used everywhere | the PRD's values | `app/globals.css:8` | NOT_STARTED |
+| G-4 | §8.1 | Colours: `#0B0F19` canvas, `#111827` surface, `#6366F1` indigo, `#10B981` emerald, `#EF4444` coral | **generated sites** use the PRD's palette verbatim | Lipi's own dashboard is still the light violet theme — see `DECISIONS.md` D-017 | `server/sites/theme.ts` | IN_PROGRESS |
 | G-5 | §8.1 | Inter for UI, JetBrains Mono for SKUs/JSON/timestamps | JetBrains Mono **is** the mono face; UI face is Plus Jakarta Sans | Inter | `app/layout.tsx:5` | NOT_STARTED |
 | G-6 | §8.1 | UI response < 150 ms | — | measurement | — | NOT_STARTED |
 | G-7 | §8.1 | Streaming text generation > 35 tokens/sec | replies are not streamed at all | streaming | `services/selling.ts` | NOT_STARTED |
@@ -200,7 +200,7 @@ Baseline column values below were established by reading the code on
 | G-1 | — | — | — | — | selecting a thread changes the transcript; channels filter | pending |
 | G-2 | — | — | — | — | a graph edit changes agent behaviour on the next message | pending |
 | G-3 | — | — | — | — | a block added in the customizer appears in the generated site | pending |
-| G-4 | — | — | — | — | the five PRD hex values are the theme, contrast re-measured | pending |
+| G-4 | `test/sites.test.ts` "the theme tokens" | — | — | — | the five PRD hex values are the theme, contrast re-measured | **green for generated sites** |
 | G-5 | — | — | — | — | Inter loaded for UI, JetBrains Mono for technical values | pending |
 | G-6 | — | — | — | — | measured (§28) | pending |
 | G-7 | — | — | — | — | measured, or recorded as not implemented | pending |
@@ -215,16 +215,16 @@ Baseline column values below were established by reading the code on
 | H-1 | §8 | Audio ingestion over WebSocket/WebRTC or SIP trunking | nothing | all | — | NOT_STARTED |
 | H-2 | §8 | Interruption logic: caller speech > 200 ms during playback emits `AUDIO_INTERRUPT`, terminates the TTS buffer, reactivates listening | nothing | all | — | NOT_STARTED |
 | H-3 | §8 | Model tiering: light model for extraction, heavy model for complex reasoning | **works** — two configured models, per-purpose metering, budget ceilings with deterministic degradation | — | `server/env.ts`, `server/lib/metering.ts` | IMPLEMENTED |
-| H-4 | §8.1 | `POST /api/v1/conversations/ingest` with the PRD's exact body | the pipeline is reachable at `/v1/messages` and `/v1/conversations`, in camelCase | the path and the snake_case contract | `v1/messages/route.ts` | NOT_STARTED |
-| H-5 | §8.1 | `POST /api/v1/agents/builder/deploy` with `agent_name`, `skills`, `knowledge_base_ids`, `channels`, `guardrails` | nothing | all | — | NOT_STARTED |
+| H-4 | §8.1 | `POST /api/v1/conversations/ingest` with the PRD's exact body | the PRD's body verbatim, at both `/v1` and `/api/v1`, performing a real ingest; `business_account_id` checked, not ignored | — | `v1/conversations/ingest/route.ts` | VERIFIED |
+| H-5 | §8.1 | `POST /api/v1/agents/builder/deploy` | the PRD's body verbatim, at both prefixes; upserts; refuses unknown skills, unknown or unconnected channels, foreign knowledge entries, unparseable guardrails | — | `v1/agents/builder/deploy/route.ts` | VERIFIED |
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
 | H-1 | — | — | — | — | transport adapter with a deterministic test implementation | pending |
 | H-2 | — | — | — | — | 200 ms threshold asserted both sides of the boundary | pending |
 | H-3 | `test/model-budget.test.ts`, `test/openrouter.test.ts` | `test/selling.test.ts` | — | — | over budget degrades rather than failing | **baseline green** |
-| H-4 | — | — | — | — | the PRD's literal request body is accepted and performs a real ingest | pending |
-| H-5 | — | — | — | — | the PRD's literal request body deploys a real agent | pending |
+| H-4 | — | `test/prd-ingest.test.ts` (13 cases) | — | — | the PRD's literal request body is accepted and performs a real ingest | **green** |
+| H-5 | — | `test/agent-builder.test.ts` (24 cases) | — | — | the PRD's literal request body deploys a real agent | **green** |
 
 ---
 
@@ -254,7 +254,7 @@ Never a claimed number that was not measured.
 | ID | Source | Requirement | Existing | Status |
 | --- | --- | --- | --- | --- |
 | J-1 | §5, §8 | Tenant isolation across every object | **works** — one `resolveWorkspaceId()` choke point, keyset cursors, per-workspace CORS. But nothing structurally *requires* a new route to scope. | IN_PROGRESS |
-| J-2 | §8 | Agent tool execution is a hard security boundary | no tool execution exists yet to bound | NOT_STARTED |
+| J-2 | §8 | Agent tool execution is a hard security boundary | nine checks in `execute.ts`, each with a test that asserts the refusal and that nothing was written | VERIFIED |
 | J-3 | §2, §5 | Every mutation audited | **works** | IMPLEMENTED |
 | J-4 | §4 | Deterministic business math, never model-computed | **works** — the whole `ingest`/`sell` split | IMPLEMENTED |
 | J-5 | — | Money as integer minor units | **works** — paise throughout | IMPLEMENTED |

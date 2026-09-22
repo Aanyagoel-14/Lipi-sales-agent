@@ -7,6 +7,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": here("./src"),
+      // The PRD's own import line (§4.1) resolves against the in-repo SDK.
+      "@lipi-ai/sdk-node": here("./sdk/src/index.ts"),
       // Route handlers reach for Next's request context. Outside a Next server
       // there is none, so the dispatcher supplies one and these stand in.
       "next/headers": here("./test/next/headers.ts"),
