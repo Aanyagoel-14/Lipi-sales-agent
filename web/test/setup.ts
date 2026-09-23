@@ -44,6 +44,11 @@ setShopifyClient(fakeShopify);
 const { setWebhookPoster } = await import("@/server/lib/webhook-endpoint");
 const { fakeEndpoint } = await import("./fakes/webhook-endpoint");
 setWebhookPoster(fakeEndpoint.poster);
+// Rate limits live in one process's memory and the whole suite shares that
+// process, so a test that spends a budget would otherwise spend it for every
+// test after it — which is how one file's login attempts start refusing
+// another file's `signedIn()`.
+const { _resetRateLimitsForTests } = await import("@/server/lib/rate-limit");
 
 beforeAll(() => {
   if (!process.env.DATABASE_URL?.includes("lipi_test")) {
@@ -60,4 +65,5 @@ beforeEach(async () => {
   fakeComposio.reset();
   fakeShopify.reset();
   fakeEndpoint.reset();
+  _resetRateLimitsForTests();
 });

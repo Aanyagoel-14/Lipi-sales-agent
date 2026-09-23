@@ -1,11 +1,11 @@
-import type { Prisma } from "@/generated/prisma/client";
-import { body, json, route } from "@/server/lib/http";
+import type { Channel, Prisma } from "@/generated/prisma/client";
+import { body, HttpError, json, route, searchParams } from "@/server/lib/http";
 import { preflight } from "@/server/lib/origins";
 import { after, paged, pageOf } from "@/server/lib/page";
 import { prisma } from "@/server/lib/prisma";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
 import { ingest } from "@/server/services/ingest";
-import { createConversationBody } from "../contract";
+import { channel, createConversationBody } from "../contract";
 import { conversationSummaryOut } from "../shapes";
 
 /** Enough for a preview line: the twin, the newest message, and how many. */
@@ -31,8 +31,22 @@ export const GET = route(async (req) => {
   const workspaceId = await resolveWorkspaceId();
   const page = pageOf(req);
 
+  // The split-pane workspace's channel rail (PRD §7.1) filters here rather
+  // than in the browser. Filtering a loaded page client-side would show "3 of
+  // 50" and call it the WhatsApp feed, and the cursor would page through the
+  // unfiltered list underneath it.
+  const channels = searchParams(req).getAll("channel").filter(Boolean);
+  const unknown = channels.filter((c) => !channel.safeParse(c).success);
+  if (unknown.length) {
+    throw new HttpError(422, `Unknown channel: ${unknown.join(", ")}`, { channel: unknown });
+  }
+
   const found = await prisma.conversation.findMany({
-    where: { workspaceId, ...after("lastAt", page) },
+    where: {
+      workspaceId,
+      ...(channels.length ? { channel: { in: channels as Channel[] } } : {}),
+      ...after("lastAt", page),
+    },
     // Ends in a unique column, or the anchor is ambiguous.
     orderBy: [{ lastAt: "desc" }, { id: "desc" }],
     include: summaryInclude,

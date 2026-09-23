@@ -29,7 +29,19 @@ import { inboundSchema } from "./messages/schema";
  */
 
 export const channel = z.enum(["whatsapp", "instagram", "facebook", "telegram", "x", "email", "webchat"]);
-export const orderStage = z.enum(["Quoted", "Paid", "Packed", "Shipped", "Delivered", "Returned"]);
+/**
+ * The Order & Supply Twin's states (PRD §5).
+ *
+ * `Inquiry` and `Confirmed` were added when the state machine was completed to
+ * the PRD's chain. Both are additive — no existing member changed spelling and
+ * none was removed — so a consumer that only ever reads the old six keeps
+ * working. What *did* change is the transition rule: `POST /v1/orders/{id}/stage`
+ * moves one step forward, so `Quoted -> Paid` is now `Quoted -> Confirmed ->
+ * Paid`. See `docs/impl/DECISIONS.md` D-018.
+ */
+export const orderStage = z.enum([
+  "Inquiry", "Quoted", "Confirmed", "Paid", "Packed", "Shipped", "Delivered", "Returned",
+]);
 
 const isoString = z.iso.datetime();
 

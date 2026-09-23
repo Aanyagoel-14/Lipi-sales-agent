@@ -61,7 +61,7 @@ export const getInvoices = () => get<{ ageing: Ageing; invoices: Invoice[]; paym
 
 /* Cursor-paged. The first page is server-rendered and later pages are appended
  * from the browser, so a table that grows forever is never fetched whole. */
-export const getConversations = (page: Cursor = {}) =>
+export const getConversations = (page: Cursor & { channel?: string } = {}) =>
   get<Paged<"conversations", ConversationSummary>>("conversations", page);
 export const getOrders = (page: Cursor = {}) => get<Paged<"orders", Order>>("orders", page);
 export const getEvents = (page: Cursor = {}) => get<Paged<"events", TwinEvent>>("events", page);

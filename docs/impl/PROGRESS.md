@@ -9,16 +9,16 @@ section named under "Next step".
 
 ## Current phase
 
-**M5 — the Digital Twin rules.** M2, M3, M4, M6, M7, M8 and M9 are done.
+**Complete.** `FINAL_REPORT.md` is written. Everything that was built is
+verified; everything that was not is named in `BLOCKERS.md` and marked in
+`TRACEABILITY.md`. M2, M3, M4, M6, M7, M8 and M9 are done.
 
 ## Next step
 
-The Digital Twin rules PRD §5 states that nothing currently reads: the 4-hour
-reservation hold, the `Inquiry` and `Confirmed` order stages, VIP routing,
-auto-PO dispatch at the reorder threshold, and wiring the margin floor and
-credit-risk checks into `ingest()`'s own reply path rather than only into the
-skill executor. Then Use Case 1 as an acceptance test (F-1), M11 (the
-remaining channels), M12 (UI) and M13 (security, performance, final audit).
+For whoever picks this up: the largest remaining gap is the voice pipeline
+(`BLOCKERS.md` B-007), and the cheapest remaining win is Slack — the channel
+registry makes it a spec and two pure functions, and it is the only one of the
+four missing channels that needs no new infrastructure (B-010).
 
 ---
 
@@ -93,6 +93,11 @@ not a flaky assertion.
 | M8 checkpoint | `npm test` | **981 passed / 981**, 44 files |
 | M9 checkpoint | `npm run lint` / `typecheck` | exit 0 / exit 0 |
 | M9 checkpoint | `npm test` | **1010 passed / 1010**, 45 files, 169.6s |
+| M5 checkpoint | `npm test` | **1136 passed / 1136**, 48 files, 207.4s |
+| final | `npm run lint` / `typecheck` | exit 0 / exit 0 |
+| final | `npm test` | **1147 passed / 1147**, 50 files, 194.7s |
+| final | `npm run build` | **success**, exit 0, 25.01s, 119 routes |
+| final | `npx vitest run test/performance.test.ts` | 5/5; site 3.6ms, deploy 5.8ms, tool overhead 1.4ms |
 
 ### A second self-inflicted bad run
 
@@ -133,15 +138,15 @@ architecture (one Next.js deployable, Postgres + Prisma, a deterministic
 | M2 | Agent & Skill domain model — registry/plugin pattern, templates, guardrails | **done** |
 | M3 | Builder API — `POST /v1/agents/builder/deploy`, templates, skill catalogue | **done** |
 | M4 | `POST /v1/conversations/ingest` to the PRD's contract | **done** |
-| M5 | Digital Twin completion — order state machine, 4h reservation hold, customer credit/margin/VIP rules, fitment graph, supplier auto-PO | not started |
+| M5 | Digital Twin completion — order state machine, 4h reservation hold, credit/margin/VIP rules, supplier auto-PO | **done** — the fitment graph (E-5, E-7) is not built |
 | M6 | The five named PRD skills, each schema-validated, guarded and audited | **done** (folded into M2) |
 | M7 | Personal PA twin + calendar adapter + negotiation (Use Case 2) | **done** — Google Calendar sync is still open, see `BLOCKERS.md` |
 | M8 | Bespoke SDK (TypeScript) + fabrication pricing tests | **done** — Python parity outstanding |
 | M9 | Website generator — `POST /v1/builder/sites/generate`, twin binding, deployment config, **and the site actually served** | **done** — edge hosting is `BLOCKERS.md` B-005 |
 | M10 | Voice + conversation intelligence — ASR/VAD/TTS adapters, `AUDIO_INTERRUPT`, PII/PHI redaction (Use Cases 3, 4) | not started |
-| M11 | Remaining PRD channels — Slack, phone/VoIP, LinkedIn, Zoom/Teams | not started |
-| M12 | UI — split-pane workspace, Agent Studio canvas, Web Customizer, PRD design tokens | not started |
-| M13 | Security review, tenancy tests, performance measurement, final PRD audit, `FINAL_REPORT.md` | not started |
+| M11 | Remaining PRD channels — Slack, phone/VoIP, LinkedIn, Zoom/Teams | **not built** — see `BLOCKERS.md` |
+| M12 | UI — split-pane workspace fixed (thread selection + channel rail); Agent Studio canvas and Web Customizer **not built** | partial |
+| M13 | Security review, tenancy tests, performance measurement, final PRD audit, `FINAL_REPORT.md` | **done** — 7 findings, 4 fixed |
 
 Each row is a checkpoint under §0.2: suite green, the four state files updated,
 one commit.

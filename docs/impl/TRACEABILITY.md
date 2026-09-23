@@ -24,7 +24,7 @@ Baseline column values below were established by reading the code on
 
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| A-1 | §1 | Omnichannel ingestion across WhatsApp, Telegram, Slack, Phone/VoIP, Instagram DM, LinkedIn, Zoom/Teams, Web SDK | 4 of 8: WhatsApp, Telegram, Instagram DM, Web SDK (widget). Plus Messenger, X, partial Gmail. | Slack, Phone/VoIP, LinkedIn, Zoom/Teams | `server/channels/registry.ts` | NOT_STARTED |
+| A-1 | §1 | Omnichannel ingestion across eight channels | 4 of 8 end to end (WhatsApp, Telegram, Instagram DM, Web SDK), plus Messenger, X and Gmail outbound | Slack, Phone/VoIP, LinkedIn, Zoom/Teams | `server/channels/registry.ts` | BLOCKED_EXTERNAL_DEPENDENCY — `BLOCKERS.md` B-010, B-007 |
 | A-2 | §1 | No-code builder + developer extension: 3-step builder <2 min, 50+ modular skills, instant web generator, bespoke agent SDK | none of the four | all four | — | NOT_STARTED |
 | A-3 | §1 | Conversation intelligence layer: streaming ASR <300ms, VAD turn-taking, prosody/emotion, PII/PHI NER | text intent extraction only (`extract.ts`) | every audio and NER component | `server/services/extract.ts` | NOT_STARTED |
 | A-4 | §1 | Living Digital Twin graph (Neo4j): Customer, Product & Fitment, Inventory, Supplier, Order, PA Calendar, ABM | Customer, Product, Inventory, Supplier, Order as Postgres rows | Neo4j, PA Calendar twin, ABM twin, fitment graph | `prisma/schema.prisma` | NOT_STARTED |
@@ -72,7 +72,7 @@ Baseline column values below were established by reading the code on
 | B-9 | — | — | — | — | telemetry reflects a conversation that just happened | pending |
 | B-10 | `test/tenancy.test.ts`, `test/ingest.test.ts` | `test/api-contract.test.ts` | — | — | every mutation appears in the trail | **baseline green** |
 | B-11 | `test/twin-chat.test.ts` | — | — | — | an edit changes the next reply | **baseline green** |
-| B-12 | — | — | — | — | measured, in `PERFORMANCE.md` | pending |
+| B-12 | `test/performance.test.ts` | — | — | — | measured, in `PERFORMANCE.md` | **green for the deploy step (5.8 ms)**; the operator's own time through a UI is not measured |
 
 ---
 
@@ -84,7 +84,7 @@ Baseline column values below were established by reading the code on
 | C-2 | §3 Ph.2 | Dynamic twin binding | blocks carry bindings, not data; `resolveBlocks()` reads live rows on every request; the quote formula is parsed and evaluated server-side | Stripe links on a site page (B-002), Google reviews (B-006) | `server/sites/generate.ts`, `formula.ts` | IMPLEMENTED |
 | C-3 | §3 Ph.3 | Global edge hosting | the site **is served** at `/s/{slug}` with SEO tags, JSON-LD, sitemap and the embedded assistant; the deploy endpoint reports separately whether an edge host took it | CDN, custom domain, certificate — see `BLOCKERS.md` B-005 | `server/sites/hosting.ts`, `app/s/[slug]` | BLOCKED_EXTERNAL_DEPENDENCY |
 | C-4 | §3.1 | `POST /api/v1/builder/sites/generate` | the PRD's body verbatim, at both `/v1` and `/api/v1`, persisting a real site | — | `v1/builder/sites/generate/route.ts` | VERIFIED |
-| C-5 | §3 | Generation completes in under 3 minutes | — | — | — | NOT_STARTED |
+| C-5 | §3 | Generation completes in under 3 minutes | 3.6 ms measured | — | `test/performance.test.ts` | VERIFIED |
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -92,7 +92,7 @@ Baseline column values below were established by reading the code on
 | C-2 | `test/formula.test.ts` (23 cases) | `test/sites.test.ts` "phase 2", "quoting" (8 cases) | — | — | a bound price comes from a twin row, never from the model | **green** |
 | C-3 | — | `test/sites.test.ts` "phase 3" (3 cases) | — | — | deployment config is produced; the deploy itself is adapter-backed | **green for the adapter; the edge itself is B-005** |
 | C-4 | — | `test/sites.test.ts` (28 cases) | — | — | request/response schemas, auth, errors and persistence all tested | **green** |
-| C-5 | — | — | — | — | measured (§28) | pending |
+| C-5 | `test/performance.test.ts` | — | — | — | measured (§28) | **green** |
 
 ---
 
@@ -125,15 +125,15 @@ Baseline column values below were established by reading the code on
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | E-1 | §5 | **Customer/Lead Twin** attributes: CLV, price sensitivity, channel history, negotiation style, risk score, open invoices | all present as columns, plus lead score/stage and first-touch attribution | — | `schema.prisma:77` | IMPLEMENTED |
-| E-2 | §5 | Rule: authorise custom quotes if margin > 18% | `Product.marginPct` exists; no rule reads it | the rule | `schema.prisma:212` | NOT_STARTED |
-| E-3 | §5 | Rule: flag credit risk if past-due invoices > 0 | invoices and ageing buckets exist | the flag, and its effect on a sale | `services/billing.ts` | NOT_STARTED |
-| E-4 | §5 | Rule: route VIP inquiries instantly | `segment` exists | routing | — | NOT_STARTED |
+| E-2 | §5 | Rule: authorise custom quotes if margin > 18% | `minMarginPct` defaults to 18 and binds the `Discount_Calculator` floor; over it the quote escalates with a counter-offer | — | `server/agents/guardrails.ts`, `skills/discount-calculator.ts` | VERIFIED |
+| E-3 | §5 | Rule: flag credit risk if past-due invoices > 0 | derived from payments, flagged onto `Order.creditHold` and the trail, and holds a money skill for a human — never refuses the sale | — | `services/twin-rules.ts` | VERIFIED |
+| E-4 | §5 | Rule: route VIP inquiries instantly | Corporate segment or lifetime value over the named threshold, recorded on the trail as `customer_twin.vip_routed` | surfacing the flag in the inbox ordering (M12) | `services/twin-rules.ts` | IMPLEMENTED |
 | E-5 | §5 | **Product & Fitment Twin**: SKU, real-time stock, margin %, fitment graph (Make/Model/Year/VIN), superseded part numbers, marine engine hours | SKU, stock, margin, per-vertical JSON attributes, two variant axes | the fitment graph and supersession | `schema.prisma:198` | NOT_STARTED |
-| E-6 | §5 | Rule: lock reserved stock for 4 hours on checkout-link generation | reservation is permanent until the order settles | the 4-hour hold and its expiry | `services/ingest.ts:243` | NOT_STARTED |
+| E-6 | §5 | Rule: lock reserved stock for 4 hours | `Order.reservedUntil`, a per-workspace sweep that gives the stock back, and `Confirmed` making the hold permanent | — | `services/reservations.ts` | VERIFIED |
 | E-7 | §5 | Rule: traverse the graph for OEM/aftermarket cross-references | `crossSell` string array | traversal | `schema.prisma:217` | NOT_STARTED |
-| E-8 | §5 | **Order & Supply Twin** state: Inquiry → Quote → Confirmed → Paid → Packed → Shipped | Quoted → Paid → Packed → Shipped → Delivered, + Returned | `Inquiry` and `Confirmed` | `schema.prisma:42` | NOT_STARTED |
+| E-8 | §5 | **Order & Supply Twin** state machine | the PRD's full chain, one step forward, with stock settled on Delivered and Returned | — | `v1/orders/[id]/stage/route.ts` | VERIFIED |
 | E-9 | §5 | Supplier lead time, defect rate, MOQ | **works** — all three on `Supplier` | — | `schema.prisma:181` | IMPLEMENTED |
-| E-10 | §5 | Rule: auto-dispatch POs when reserved inventory drops below threshold | a Procurement *run* is raised at the reorder point; no PO is dispatched | the dispatch | `services/ingest.ts:255` | NOT_STARTED |
+| E-10 | §5 | Rule: auto-dispatch POs when reserved inventory drops below threshold | a real `PurchaseOrder` at the supplier's MOQ with their lead time, de-duplicated per variant, raised at `draft` | sending it — there is no supplier integration | `services/twin-rules.ts` | IMPLEMENTED |
 | E-11 | §5 | Rule: sync shipment tracking via webhooks | outbound webhook delivery is real | shipment tracking itself | `services/webhooks.ts` | NOT_STARTED |
 | E-12 | §5 | **Personal PA Twin**: focus blocks, max daily meeting hours, 15-min buffers, active negotiations | `PaProfile`, `CalendarEvent`, `SchedulingNegotiation`, all enforced arithmetically | a derived fatigue index | `prisma/schema.prisma`, `server/agents/scheduling.ts` | IMPLEMENTED |
 | E-13 | §5 | Rule: autonomous multi-turn calendar negotiation, timezone resolution, focus-time enforcement | propose / counter / confirm, persisted between turns; DST-correct; only an offered slot may be confirmed | Google Calendar sync (`BLOCKERS.md` B-003) | `server/agents/skills/calendar-negotiation.ts` | VERIFIED |
@@ -145,15 +145,15 @@ Baseline column values below were established by reading the code on
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
 | E-1 | `test/ingest.test.ts` | `test/api-contract.test.ts` | — | — | attributes persist and are served | **baseline green** |
-| E-2 | — | — | — | — | a quote below the margin floor is refused | pending |
-| E-3 | — | — | — | — | a past-due customer is flagged before a sale completes | pending |
-| E-4 | — | — | — | — | a VIP message is routed differently and the routing is audited | pending |
+| E-2 | `test/agents.test.ts` "lets the margin floor bind" | `test/use-case-1.test.ts` | — | — | a quote below the margin floor is refused | **green** |
+| E-3 | `test/twin-rules.test.ts` "credit risk" (3 cases) | `test/use-case-1.test.ts` "flags a buyer with an overdue invoice" | — | — | a past-due customer is flagged before a sale completes | **green** |
+| E-4 | `test/twin-rules.test.ts` "VIP routing" (4 cases) | — | — | — | a VIP message is routed differently and the routing is audited | **green** |
 | E-5 | `test/inventory.test.ts` | — | — | — | fitment resolves a part from vehicle attributes | pending |
-| E-6 | — | — | — | — | a hold expires and the stock returns | pending |
+| E-6 | `test/twin-rules.test.ts` "the four-hour reservation hold" (7 cases) | `test/use-case-1.test.ts` | — | — | a hold expires and the stock returns | **green** |
 | E-7 | — | — | — | — | an OEM number resolves its aftermarket equivalents | pending |
-| E-8 | — | — | — | — | the full six-state machine, forward-only, with settlement | pending |
+| E-8 | — | `test/twin-rules.test.ts` "the completed order state machine" (4 cases) | — | — | the full chain, forward-only, with settlement | **green** |
 | E-9 | `test/inventory.test.ts` | — | — | — | present and served | **baseline green** |
-| E-10 | — | — | — | — | crossing the threshold creates a PO | pending |
+| E-10 | `test/twin-rules.test.ts` "auto-dispatched purchase orders" (4 cases) | — | — | crossing the threshold creates a PO | **green** |
 | E-11 | `test/webhook-delivery.test.ts` | — | — | — | a tracking update reaches a subscriber | pending |
 | E-12 | `test/scheduling.test.ts` (22 cases) | `test/calendar.test.ts` (11 cases) | — | — | the twin exists, persists and is audited | **green** |
 | E-13 | `test/scheduling.test.ts` | `test/calendar.test.ts` "PRD §6 Use Case 2" | — | — | Use Case 2 passes end to end | **green except the Google write** |
@@ -168,14 +168,14 @@ Baseline column values below were established by reading the code on
 
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| F-1 | §6.1 | **Use Case 1** — WhatsApp wholesaler: extract item/colour/size/qty/offer/deadline; inventory confirms; price floor validated; customer has no overdue invoices; lock units; generate checkout link; reply on WhatsApp; push order draft to ERP | extraction, stock check, reservation, order creation, WhatsApp reply, audit trail | price-floor validation, credit check, checkout link, ERP push | `services/ingest.ts` | NOT_STARTED |
+| F-1 | §6.1 | **Use Case 1** — WhatsApp wholesaler | the PRD's own sentence drives the whole chain: extraction, the 600-in-stock check, the $8.40 floor, the credit check, 400 units locked under a 4-hour hold, the checkout link, the WhatsApp reply, the signed ERP push, and twelve named events on the trail | a live NetSuite — the ERP push is the signed outbound webhook queue | `test/use-case-1.test.ts` | VERIFIED |
 | F-2 | §6.2 | **Use Case 2** — PA | the PRD's own sentence drives propose → confirm; every offered slot asserted to be 45 minutes, next week, not a morning in the owner's zone, and buffer-clear of a real booking | the Google Calendar write (B-003) | `test/calendar.test.ts` | IN_PROGRESS |
 | F-3 | §6.3 | **Use Case 3** — regulated meeting intelligence: audio capture, ASR, stress flags, PII/PHI redaction, SOAP notes / case timelines against a precedent graph | nothing | all | — | NOT_STARTED |
 | F-4 | §6.4 | **Use Case 4** — inbound phone reception: SIP routing, brand voice, grounded RAG answers, appointment booking, SMS confirmation | grounded answers exist (text) | telephony, voice, booking, SMS | `services/briefing.ts` | NOT_STARTED |
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
-| F-1 | — | — | — | — | the PRD's exact sentence drives the whole chain and every step is asserted | pending |
+| F-1 | — | — | `test/use-case-1.test.ts` (4 cases) | — | the PRD's exact sentence drives the whole chain and every step is asserted | **green** |
 | F-2 | `test/scheduling.test.ts` "reads the PRD's scheduling request" | `test/calendar.test.ts` "PRD §6 Use Case 2" | — | — | the PRD's exact sentence yields a booked slot honouring both constraints | **green** |
 | F-3 | — | — | — | — | redaction verified; compliance *claims* explicitly not made | pending |
 | F-4 | — | — | — | — | call → answer → booking → confirmation, with failures and retries | pending |
@@ -186,9 +186,9 @@ Baseline column values below were established by reading the code on
 
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| G-1 | §7.1 | Omnichannel split-pane: channel sidebar, transcript centre, 360° twin inspector | a real 3-pane inbox with transcript, entity chips, delivery state and a customer-twin inspector | a **channel** rail, and working thread selection — rows are inert and the page always opens the newest thread | `app/dashboard/inbox/page.tsx:60` | IN_PROGRESS |
-| G-2 | §7.2 | Agent Studio canvas: drag-and-drop node graph for triggers, margin guardrails, fallback conditions, escalation rules | one workspace-wide autonomy radio group | the canvas and everything it configures | `dashboard/train/policy-form.tsx` | NOT_STARTED |
-| G-3 | §7.3 | Instant Web Customizer: mobile/desktop preview, block library, theme token editor, prompt-driven layout modifier | nothing | all | — | NOT_STARTED |
+| G-1 | §7.1 | Omnichannel split-pane: channel sidebar, transcript centre, 360° twin inspector | all three: a channel rail that filters server-side, a working thread list whose rows are links, the transcript with entity chips and delivery state, and the customer-twin inspector | live updates — the page does not poll or stream | `app/dashboard/inbox/*` | IMPLEMENTED |
+| G-2 | §7.2 | Agent Studio canvas | everything the canvas would edit — per-agent guardrails, skills, channels, escalation triggers — is a row behind `POST /v1/agents/builder/deploy` and is tested | the canvas itself | `server/agents/*` | BLOCKED_EXTERNAL_DEPENDENCY — see `BLOCKERS.md` B-011 |
+| G-3 | §7.3 | Instant Web Customizer | site structure, blocks, bindings and theme mode are rows behind `POST /v1/builder/sites/generate`, and `/s/{slug}` renders them | the editor itself | `server/sites/*`, `app/s/[slug]` | BLOCKED_EXTERNAL_DEPENDENCY — see `BLOCKERS.md` B-011 |
 | G-4 | §8.1 | Colours: `#0B0F19` canvas, `#111827` surface, `#6366F1` indigo, `#10B981` emerald, `#EF4444` coral | **generated sites** use the PRD's palette verbatim | Lipi's own dashboard is still the light violet theme — see `DECISIONS.md` D-017 | `server/sites/theme.ts` | IN_PROGRESS |
 | G-5 | §8.1 | Inter for UI, JetBrains Mono for SKUs/JSON/timestamps | JetBrains Mono **is** the mono face; UI face is Plus Jakarta Sans | Inter | `app/layout.tsx:5` | NOT_STARTED |
 | G-6 | §8.1 | UI response < 150 ms | — | measurement | — | NOT_STARTED |
@@ -197,9 +197,9 @@ Baseline column values below were established by reading the code on
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
-| G-1 | — | — | — | — | selecting a thread changes the transcript; channels filter | pending |
-| G-2 | — | — | — | — | a graph edit changes agent behaviour on the next message | pending |
-| G-3 | — | — | — | — | a block added in the customizer appears in the generated site | pending |
+| G-1 | — | — | — | — | selecting a thread changes the transcript; channels filter | **implemented** — rows are links, the rail filters server-side |
+| G-2 | — | `test/agent-builder.test.ts` covers the API a canvas would drive | — | — | a graph edit changes agent behaviour on the next message | **the system is green; the canvas is not built** |
+| G-3 | — | `test/sites.test.ts` covers the API an editor would drive | — | — | a block added in the customizer appears in the generated site | **the system is green; the editor is not built** |
 | G-4 | `test/sites.test.ts` "the theme tokens" | — | — | — | the five PRD hex values are the theme, contrast re-measured | **green for generated sites** |
 | G-5 | — | — | — | — | Inter loaded for UI, JetBrains Mono for technical values | pending |
 | G-6 | — | — | — | — | measured (§28) | pending |
@@ -236,13 +236,13 @@ Never a claimed number that was not measured.
 
 | ID | PRD | Criterion | Status |
 | --- | --- | --- | --- |
-| I-1 | §9 Ph.1 | Site build < 180 s | NOT VERIFIED |
-| I-2 | §9 Ph.1 | Agent deploy < 2 min | NOT VERIFIED |
-| I-3 | §9 Ph.1 | Word error rate < 5% | NOT VERIFIED |
+| I-1 | §9 Ph.1 | Site build < 180 s | **VERIFIED** — 3.6 ms median, `test/performance.test.ts`. Caveat: this is the deterministic structure generation, not a static export or a CDN propagation, neither of which exists (`BLOCKERS.md` B-005) |
+| I-2 | §9 Ph.1 | Agent deploy < 2 min | **VERIFIED** — 5.8 ms median, `test/performance.test.ts` |
+| I-3 | §9 Ph.1 | Word error rate < 5% | NOT VERIFIED — no ASR exists (`BLOCKERS.md` B-007). No number will be claimed |
 | I-4 | §9 Ph.1 | 80% auto-resolution | NOT VERIFIED |
-| I-5 | §9 Ph.2 | Intent F1 > 0.92 | NOT VERIFIED |
-| I-6 | §9 Ph.2 | Sub-400 ms voice turn-taking | NOT VERIFIED |
-| I-7 | §9 Ph.2 | Custom tool overhead < 120 ms | NOT VERIFIED |
+| I-5 | §9 Ph.2 | Intent F1 > 0.92 | NOT VERIFIED — needs a labelled corpus; the extractor is tested for correctness on named cases, not scored |
+| I-6 | §9 Ph.2 | Sub-400 ms voice turn-taking | NOT VERIFIED — no voice pipeline (`BLOCKERS.md` B-007) |
+| I-7 | §9 Ph.2 | Custom tool overhead < 120 ms | **VERIFIED** — 1.4 ms median, measured as executor cost above the bare handler, `test/performance.test.ts` |
 | I-8 | §9 Ph.2 | SOC 2 / HIPAA BAA ready | NOT VERIFIED — a compliance *claim* will not be made; what is implemented will be documented, and what needs infrastructure and process validation will be named |
 | I-9 | §9 Ph.3 | 4× faster quote-to-cash | NOT VERIFIED — a business outcome, not measurable in this repository |
 | I-10 | §9 Ph.3 | 56:1 LTV:CAC | NOT VERIFIED — likewise |

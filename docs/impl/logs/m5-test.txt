@@ -1,0 +1,89 @@
+
+> test
+> npm --prefix web run test
+
+
+> web@0.1.0 test
+> vitest run
+
+
+ RUN  v5.0.0 /Users/aanyagoel/Desktop/Lipi-sales-agent/web
+
+ ❯ test/agents.test.ts (36 tests | 1 failed) 46173ms
+   ❯ the execution boundary (8)
+     × refuses another tenant's agent, and says no more than it would for one that does not exist 40314ms
+ ❯ test/ci.test.ts (12 tests) 3691084ms
+ ❯ test/api-cors.test.ts (19 tests | 1 failed) 3500261ms
+   ❯ a key-authenticated browser call (8)
+     × tells an unauthenticated caller nothing, whatever origin it claims 3496473ms
+ ❯ test/pagination.test.ts (9 tests | 1 failed) 428065ms
+   ❯ cursor pagination (6)
+     × defaults to a bounded page rather than the whole table 425751ms
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/ci.test.ts > db:test:setup
+Error: Hook timed out in 60000ms.
+If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".
+ ❯ test/ci.test.ts:162:3
+    160|
+    161|   beforeAll(drop);
+    162|   afterAll(drop);
+       |   ^
+    163|
+    164|   it("creates the database and applies every migration", async () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/agents.test.ts > the execution boundary > refuses another tenant's agent, and says no more than it would for one that does not exist
+Error: Test timed out in 20000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/agents.test.ts:201:3
+    199|   // same one an id that does not exist gets, so the shape of the answ…
+    200|   // not an oracle for another tenant's agent ids.
+    201|   it("refuses another tenant's agent, and says no more than it would f…
+       |   ^
+    202|     await setup();
+    203|     const mine = await deployAgent(["Inventory_Lookup"]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  test/api-cors.test.ts > a key-authenticated browser call > tells an unauthenticated caller nothing, whatever origin it claims
+Error: Test timed out in 20000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/api-cors.test.ts:101:3
+     99|   });
+    100|
+    101|   it("tells an unauthenticated caller nothing, whatever origin it clai…
+       |   ^
+    102|     await workspaceWithOrigins("owner@test.local", [ORIGIN]);
+    103|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  test/pagination.test.ts > cursor pagination > defaults to a bounded page rather than the whole table
+Error: Test timed out in 20000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+ ❯ test/pagination.test.ts:62:3
+     60|   });
+     61|
+     62|   it("defaults to a bounded page rather than the whole table", async (…
+       |   ^
+     63|     const { user } = await createUser();
+     64|     const workspace = await createWorkspace({ userId: user.id, withCat…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  4 failed | 43 passed (47)
+      Tests  3 failed | 1033 passed (1036)
+   Start at  02:40:54
+   Duration  11627.99s (tests 67%, import 33%)
+
+     Import  221 modules were evaluated 1124 times · 3802.33s total, 33% of tracked time
+             ~3054.72s faster with isolate: false — shared modules are evaluated once per worker instead of once per file
+             learn more: https://vitest.dev/guide/improving-performance#test-isolation
+

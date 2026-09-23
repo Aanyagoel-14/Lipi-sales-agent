@@ -1,0 +1,136 @@
+
+> test
+> npm --prefix web run test
+
+
+> web@0.1.0 test
+> vitest run
+
+
+ RUN  v5.0.0 /Users/aanyagoel/Desktop/Lipi-sales-agent/web
+
+ ❯ test/channels-connect.test.ts (40 tests | 29 failed) 6213ms
+   ❯ the callback (5)
+     × refuses an account Composio says belongs to another workspace 134ms
+     × 404s on an account this workspace never started 225ms
+     × leaves the row in error when a post-connect hook throws 130ms
+   ❯ choosing a WhatsApp number (4)
+     × picks the only number by itself 125ms
+     × leaves the choice open when there are several, and PATCH settles it 129ms
+     × refuses a number that is not on the account 129ms
+     × refuses a number another workspace already sends from 125ms
+   ❯ turning inbound on at connect time (13)
+     × subscribes the WABA, not the number, when WhatsApp connects 133ms
+     × refuses to call WhatsApp connected when Composio cannot say which WABA it is 134ms
+     × leaves the row in error when Meta refuses the subscription 131ms
+     × subscribes the professional account when Instagram connects 131ms
+     × subscribes every Page a Messenger account manages, and picks the only one 167ms
+     × subscribes the account to the deployment's X webhook when X connects 114ms
+     × clears the X row on disconnect, which is what stops a delivery it cannot unsubscribe 118ms
+     × never calls X connected when the activity subscription is refused 121ms
+     × refuses to call X connected when the deployment has registered no webhook 124ms
+     × registers the Telegram webhook against this connection, with a secret only it knows 123ms
+     × never calls Telegram connected when setWebhook fails 159ms
+     × never lets a transport failure put the bot token on screen 132ms
+     × destroys the webhook secret on disconnect, since the webhook itself cannot be withdrawn 116ms
+   ❯ the list (3)
+     × carries the catalog, the webchat snippet and no webhook URL 124ms
+     × marks a channel unavailable when this deployment has no auth config for it 126ms
+     × gives up on a pending row once its Connect Link has expired 129ms
+   ❯ test and disconnect (5)
+     × reports a live connection 133ms
+     × reports a broken one, and says so on the row 134ms
+     × removes the triggers and the account, and clears the row 165ms
+     × retires the old account before linking a new one 127ms
+     × 404s on a channel that was never connected 126ms
+   ❯ tenancy (2)
+     × never lets one workspace act on another's connection 129ms
+ ❯ test/shopify.test.ts (34 tests | 23 failed) 5546ms
+   ❯ shopify disconnect (2)
+     × withdraws the webhooks and leaves no credential behind 123ms
+     × a delivery for a store that is gone is acknowledged and written nowhere 133ms
+   ❯ shopify product import (7)
+     × imports products, maps both of Shopify's handles, and moves stock through applySync 122ms
+     × folds a third option axis into the second rather than losing it 145ms
+     × raises an exception for a variant it cannot map instead of failing the run 139ms
+     × re-running a sync duplicates nothing and double-counts nothing 144ms
+     × carries the watermark forward and holds it when a poll finds nothing 173ms
+     × refuses to sync a store that is not connected 154ms
+   ❯ shopify webhooks (7)
+     × rejects a body whose signature does not check out 109ms
+     × applies a level change to the mapped variant, through applySync 112ms
+     × replays a redelivered level rather than applying it twice 175ms
+     × raises unmapped_sku for an inventory item nobody has imported 114ms
+     × takes a product update and corrects the twin from it 127ms
+     × refuses a signed body that is not a product or a level 113ms
+     × acknowledges a topic it does not serve and a shop it does not know 110ms
+   ❯ shopify order import (6)
+     × brings an order in with its customer, its money in paise, and its first touch 162ms
+     × never re-credits a returning buyer to the campaign that brought them back 110ms
+     × re-importing corrects where an order stands and adds nothing 114ms
+     × does not touch stock: Shopify already counted the sale 116ms
+     × skips a line whose variant this connector has never mapped 136ms
+     × a refunded order stops counting towards lifetime value 148ms
+   ❯ shopify tenancy (2)
+     × keeps one store's import inside its own workspace 123ms
+     × a delivery for one store never moves another store's stock 163ms
+ ❯ test/inventory.test.ts (22 tests | 12 failed) 4560ms
+   ❯ the exception queue (7)
+     × queues a nonsense quantity and a SKU sent twice 173ms
+     × still applies the good rows in a mixed batch 119ms
+     × resolving by mapping fixes every repeat of that SKU and makes the next sync land 160ms
+     × dismisses a SKU this twin does not sell 148ms
+     × will not resolve the same exception twice 113ms
+   ❯ reconciliation (3)
+     × reports a connector never synced as stale, not healthy 152ms
+     × reports healthy only with a recent sync and an empty queue 134ms
+     × counts the variants no connector covers 114ms
+   ❯ inventory connector tenancy (4)
+     × will not map a variant belonging to another workspace 182ms
+     × hides another workspace's connectors and exceptions 121ms
+     × needs a session for the operator routes 159ms
+     × allows one connector per source 143ms
+ ❯ test/sites.test.ts (28 tests | 15 failed) 4491ms
+   ❯ phase 1 — intent to structure (13)
+     × gives a second site with the same name a distinct slug 131ms
+     × refuses an anonymous caller 170ms
+   ❯ phase 2 — dynamic twin binding (3)
+     × binds the catalogue block to live stock, not to a snapshot 126ms
+     × gives the quote block its variables and the endpoint, never the formula 160ms
+     × says there are no reviews rather than inventing any 125ms
+   ❯ quoting from a generated site (6)
+     × computes the price from the site's own formula 127ms
+     × is callable without a credential, and sends CORS headers 149ms
+     × refuses a request that leaves a variable out 135ms
+     × refuses a variable that is not a number or a yes/no 159ms
+     × 404s for a site that does not exist 128ms
+     × 409s for a site with no calculator 127ms
+   ❯ phase 3 — deployment (3)
+     × reports honestly that no edge host is configured, and still serves the site 161ms
+     × records the live URL when a provider does take it 126ms
+     × 404s on another tenant's site 147ms
+   ❯ listing and reading back (1)
+     × lists what the workspace generated and reads one back in full 129ms
+ ❯ test/agent-builder.test.ts (24 tests | 14 failed) 4359ms
+   ❯ step 3 — deploying (11)
+     × refuses guardrails it cannot parse 176ms
+     × refuses a knowledge entry that is not this workspace's 140ms
+     × re-deploying the same name edits the agent rather than growing a second one 127ms
+     × keeps a surviving skill's configuration across a re-deploy 145ms
+     × takes its skills and guardrails from a template when none are stated 129ms
+   ❯ managing a deployed agent (5)
+     × lists and reads back what was deployed 163ms
+     × pauses and resumes 119ms
+     × refuses to edit anything but status through PATCH 127ms
+     × keeps an agent's runs after the agent is deleted 169ms
+     × cannot see, pause or delete another tenant's agent 125ms
+   ❯ executing a skill over HTTP (4)
+     × runs a skill the agent holds and returns what it found 132ms
+     × answers 422 with the field detail when the arguments do not parse 159ms
+     × answers 422 when the agent does not hold the skill 127ms
+     × answers 202 when a guardrail holds the result for a human 122ms
+ ❯ test/prd-ingest.test.ts (13 tests | 3 failed) 3087ms
+   ❯ what the ingest reports back (3)
+     × reports a held reply under a strict approval policy rather than claiming it was sent 164ms
+     × reports the order and invoice when the message actually bought something 129ms
+     × refuses an anonymous caller 158ms

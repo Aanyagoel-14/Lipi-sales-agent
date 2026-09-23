@@ -154,3 +154,91 @@ transport the current single-process Next deployment does not run.
 **None of the §9 voice metrics — WER < 5%, sub-400ms turn-taking — will be
 claimed.** They are marked `NOT VERIFIED` in `TRACEABILITY.md` §I and will
 stay there.
+
+---
+
+## B-008 — `allowedOrigins` is writable by a `write`-scoped API key
+
+**Status:** OPEN, deliberately deferred. Not externally blocked.
+
+`PATCH /v1/workspaces/current` accepts `allowedOrigins` and resolves through
+`resolveWorkspaceId()` with no `sessionOnly` flag, so a leaked API key can add
+a browser origin from which keys may be used. The `/v1/api-keys` routes are
+session-gated for exactly this class of self-perpetuation; this one is not.
+
+Splitting `allowedOrigins` into a session-only route is a breaking change to a
+published endpoint that no PRD requirement asks for. It belongs in a change of
+its own with its own note in the API docs. See `SECURITY_REVIEW.md` F-5.
+
+---
+
+## B-009 — Rate limiting and `recordEvent()` in a transaction
+
+**Status:** OPEN, documented. Both pre-existing.
+
+Rate limits live in one process's memory, so a horizontally scaled deployment
+enforces them per instance. The interface is already the right one, so a shared
+store is a swap rather than a redesign. Model *spend* is unaffected — it is
+counted in Postgres.
+
+`recordEvent()` uses the module-level Prisma client, and a few callers invoke
+it inside a transaction — so a rollback leaves an event claiming something that
+did not happen. None of the code written for this effort does that. Fixing it
+touches the audit path and wants its own change and test.
+
+See `SECURITY_REVIEW.md` F-6 and F-7.
+
+---
+
+## B-010 — Slack, phone/VoIP, LinkedIn and Zoom/Teams
+
+**Status:** OPEN. Not built.
+
+PRD §1 and §2 Step 03 name eight channels. Four are real end to end (WhatsApp,
+Telegram, Instagram DM, the Web SDK widget), plus three the PRD does not list
+(Messenger, X, and Gmail outbound). These four are absent: zero occurrences in
+`web/src`, not in the `Channel` enum, no env keys.
+
+**What each needs.** Slack wants a Slack app and a bot token, and fits the
+existing `ChannelSpec` shape directly — it is the cheapest of the four and the
+only one that needs no new infrastructure. LinkedIn's messaging API is
+partner-gated. Zoom and Teams are meeting platforms rather than message
+channels, and belong with the voice work (B-007) rather than with the
+registry. Phone/VoIP is B-007.
+
+**Why not built here.** The registry makes a channel a spec plus two pure
+functions, so the *shape* is done and adding one is a file. What is not done is
+the credential, and a channel implemented against a provider nobody has
+credentials for is a channel whose tool slugs and payload shapes were never
+checked against reality — which is precisely the caveat already recorded
+against X (`registry.ts:206`). Shipping four more of those would multiply that
+risk rather than reduce it.
+
+The deploy endpoint refuses a channel that is not connected, so an operator
+cannot publish an agent to one of these and believe it is answering.
+
+---
+
+## B-011 — The Agent Studio canvas and the Instant Web Customizer
+
+**Status:** OPEN. Not built.
+
+PRD §7.2 and §7.3: a drag-and-drop node graph for triggers, guardrails,
+fallbacks and escalation, and a split visual preview with a block library, a
+theme-token editor and a prompt-driven layout modifier.
+
+**What exists underneath them.** Everything both would edit. Guardrails,
+skills, channels and escalation triggers are rows behind
+`POST /v1/agents/builder/deploy`; site structure, blocks, bindings and theme
+mode are rows behind `POST /v1/builder/sites/generate`, and
+`/s/{slug}` renders them. Both are editable over HTTP today and covered by
+tests.
+
+**What is missing is the canvas itself** — a graph editor and a drag-and-drop
+block editor, each a substantial piece of interface work with a dependency
+(`react-flow` or equivalent) the repository does not have.
+
+They are recorded rather than half-built: a node graph that renders but does
+not change agent behaviour, or a block library that reorders a preview and not
+the site, would be exactly the fake UI the master prompt forbids. The honest
+position is that the *system* is there and the *canvas* is not.

@@ -1,0 +1,156 @@
+
+> web@0.1.0 build
+> next build
+
+▲ Next.js 16.3.5 (Turbopack)
+- Environments: .env
+⚠ Warning: Next.js inferred your workspace root, but it may not be correct.
+ We detected multiple lockfiles and selected the directory of /Users/aanyagoel/Desktop/Lipi-sales-agent/package-lock.json as the root directory.
+ To silence this warning, set `turbopack.root` in your Next.js config, or consider removing one of the lockfiles if it's not needed.
+   See https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopack#root-directory for more information.
+ Detected additional lockfiles: 
+   * /Users/aanyagoel/Desktop/Lipi-sales-agent/web/package-lock.json
+
+✓ Running next.config.ts took 47ms
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 8.1s
+  Running TypeScript ...
+  Finished TypeScript in 11.5s ...
+  Collecting page data using 7 workers ...
+  Generating static pages using 7 workers (0/82) ...
+  Generating static pages using 7 workers (20/82) 
+  Generating static pages using 7 workers (40/82) 
+  Generating static pages using 7 workers (61/82) 
+✓ Generating static pages using 7 workers (82/82) in 700ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ○ /
+├ ○ /_not-found
+├ ƒ /api/v1/agents/builder/deploy
+├ ƒ /api/v1/builder/sites/generate
+├ ƒ /api/v1/conversations/ingest
+├ ƒ /dashboard
+├ ƒ /dashboard/api-keys
+├ ƒ /dashboard/approvals
+├ ƒ /dashboard/channels
+├ ƒ /dashboard/customers
+├ ƒ /dashboard/data
+├ ƒ /dashboard/events
+├ ƒ /dashboard/inbox
+├ ƒ /dashboard/inventory
+├ ƒ /dashboard/inventory/connectors
+├ ƒ /dashboard/inventory/new
+├ ƒ /dashboard/invoices
+├ ƒ /dashboard/orders
+├ ƒ /dashboard/storefront
+├ ƒ /dashboard/train
+├ ƒ /dashboard/twin
+├ ƒ /dashboard/usage
+├ ƒ /dashboard/webhooks
+├ ƒ /login
+├ ƒ /onboarding
+├ ƒ /s/[slug]
+├ ƒ /s/[slug]/[...path]
+├ ƒ /signup
+├ ƒ /v1/agents
+├ ƒ /v1/agents/[id]
+├ ƒ /v1/agents/[id]/execute
+├ ƒ /v1/agents/builder/deploy
+├ ƒ /v1/agents/runs
+├ ƒ /v1/agents/skills
+├ ƒ /v1/agents/templates
+├ ƒ /v1/api-keys
+├ ƒ /v1/api-keys/[id]
+├ ƒ /v1/approvals
+├ ƒ /v1/approvals/[id]/[decision]
+├ ƒ /v1/auth/login
+├ ƒ /v1/auth/logout
+├ ƒ /v1/auth/me
+├ ƒ /v1/auth/session
+├ ƒ /v1/auth/signup
+├ ƒ /v1/builder/sites
+├ ƒ /v1/builder/sites/[slug]
+├ ƒ /v1/builder/sites/[slug]/deploy
+├ ƒ /v1/builder/sites/[slug]/quote
+├ ƒ /v1/builder/sites/generate
+├ ƒ /v1/catalogue/import
+├ ƒ /v1/catalogue/products
+├ ƒ /v1/catalogue/products/[id]
+├ ƒ /v1/catalogue/products/[id]/stock
+├ ƒ /v1/catalogue/seed
+├ ƒ /v1/catalogue/template
+├ ƒ /v1/channels
+├ ƒ /v1/channels/[channel]
+├ ƒ /v1/channels/[channel]/connect
+├ ƒ /v1/channels/[channel]/test
+├ ƒ /v1/channels/callback
+├ ƒ /v1/channels/catalog
+├ ƒ /v1/conversations
+├ ƒ /v1/conversations/[id]
+├ ƒ /v1/conversations/[id]/reply
+├ ƒ /v1/conversations/ingest
+├ ƒ /v1/conversions
+├ ƒ /v1/customers
+├ ƒ /v1/customers/[id]
+├ ƒ /v1/dashboard/overview
+├ ƒ /v1/events
+├ ƒ /v1/health
+├ ƒ /v1/inventory/[id]/sync
+├ ƒ /v1/inventory/connectors
+├ ƒ /v1/inventory/connectors/[id]
+├ ƒ /v1/inventory/connectors/[id]/mappings
+├ ƒ /v1/inventory/connectors/[id]/mappings/[mappingId]
+├ ƒ /v1/inventory/connectors/[id]/rotate
+├ ƒ /v1/inventory/connectors/[id]/runs
+├ ƒ /v1/inventory/exceptions
+├ ƒ /v1/inventory/exceptions/[id]/resolve
+├ ƒ /v1/inventory/reservations/sweep
+├ ƒ /v1/inventory/shopify/callback
+├ ƒ /v1/inventory/shopify/install
+├ ƒ /v1/inventory/shopify/sync
+├ ƒ /v1/invoices
+├ ƒ /v1/invoices/[number]/pdf
+├ ƒ /v1/messages
+├ ƒ /v1/openapi.json
+├ ƒ /v1/orders
+├ ƒ /v1/orders/[id]/stage
+├ ƒ /v1/products
+├ ƒ /v1/products/[id]
+├ ƒ /v1/twin/briefing
+├ ƒ /v1/twin/chat
+├ ƒ /v1/twin/examples
+├ ƒ /v1/twin/examples/[id]
+├ ƒ /v1/twin/knowledge
+├ ƒ /v1/twin/knowledge/[id]
+├ ƒ /v1/twin/sell
+├ ƒ /v1/twin/test
+├ ƒ /v1/twin/voice
+├ ƒ /v1/usage/models
+├ ƒ /v1/waitlist
+├ ƒ /v1/webchat/[workspaceId]/contact
+├ ƒ /v1/webchat/[workspaceId]/message
+├ ƒ /v1/webchat/[workspaceId]/session
+├ ƒ /v1/webchat/[workspaceId]/updates
+├ ƒ /v1/webhooks
+├ ƒ /v1/webhooks/[id]
+├ ƒ /v1/webhooks/deliveries
+├ ƒ /v1/webhooks/deliveries/[id]/redeliver
+├ ƒ /v1/webhooks/dispatch
+├ ƒ /v1/workspaces
+├ ƒ /v1/workspaces/complete
+├ ƒ /v1/workspaces/current
+├ ƒ /webhooks/composio
+├ ƒ /webhooks/meta
+├ ƒ /webhooks/shopify
+├ ƒ /webhooks/telegram/[connectionId]
+└ ƒ /webhooks/x
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+real 25.01
+user 64.20
+sys 8.06

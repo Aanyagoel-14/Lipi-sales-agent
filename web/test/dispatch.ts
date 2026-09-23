@@ -87,8 +87,19 @@ class Pending implements PromiseLike<Result> {
     return this;
   }
 
-  query(params: Record<string, string | number>): this {
-    for (const [key, value] of Object.entries(params)) this.params.set(key, String(value));
+  /**
+   * `append`, not `set`, and arrays are spread.
+   *
+   * Several endpoints document a repeatable parameter — `?stage=` on
+   * conversions, `?status=` on webhook deliveries, `?channel=` on
+   * conversations. `set` collapsed a repeat to its last value, so a test that
+   * passed two of them asserted against one and nobody could tell. That made
+   * every repeatable parameter in the API effectively untested.
+   */
+  query(params: Record<string, string | number | (string | number)[]>): this {
+    for (const [key, value] of Object.entries(params)) {
+      for (const one of Array.isArray(value) ? value : [value]) this.params.append(key, String(one));
+    }
     return this;
   }
 
@@ -117,7 +128,9 @@ class Pending implements PromiseLike<Result> {
 
   private async run(): Promise<Result> {
     const [pathname, inlineQuery] = this.path.split("?");
-    for (const [key, value] of new URLSearchParams(inlineQuery ?? "")) this.params.set(key, value);
+    // `append` for the same reason as `query()` above: `?a=1&a=2` in a path
+    // means both, and `set` meant only the second.
+    for (const [key, value] of new URLSearchParams(inlineQuery ?? "")) this.params.append(key, value);
 
     const found = match(pathname!);
     const search = this.params.size ? `?${this.params}` : "";

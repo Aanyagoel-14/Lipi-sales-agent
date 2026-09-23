@@ -3,10 +3,21 @@ import { body, HttpError, json, route } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
 import { requireUser } from "@/server/lib/session";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
+import { firmUpReservation } from "@/server/services/reservations";
 import { recordEvent } from "../../../events";
 
-/** Moving an order on. Stage order is enforced so history cannot go backwards by accident. */
-const STAGES = ["Quoted", "Paid", "Packed", "Shipped", "Delivered"] as const;
+/**
+ * Moving an order on. Stage order is enforced so history cannot go backwards
+ * by accident.
+ *
+ * `Inquiry` and `Confirmed` complete the PRD's chain (§5): Inquiry -> Quote ->
+ * Confirmed -> Paid -> Packed -> Shipped, with Delivered beyond it. This is a
+ * breaking change to the transition rule and not to the vocabulary — every
+ * old member kept its spelling — so a caller that read stages still reads
+ * them, and a caller that moved `Quoted -> Paid` now moves
+ * `Quoted -> Confirmed -> Paid`. Recorded in docs/impl/DECISIONS.md D-018.
+ */
+const STAGES = ["Inquiry", "Quoted", "Confirmed", "Paid", "Packed", "Shipped", "Delivered"] as const;
 
 export const POST = route<{ id: string }>(async (req, { id: orderId }) => {
   const user = await requireUser();
@@ -47,6 +58,23 @@ export const POST = route<{ id: string }>(async (req, { id: orderId }) => {
 
   await prisma.$transaction(async (tx) => {
     await tx.order.update({ where: { id: orderId }, data: { stage: data.stage, blocked: null } });
+
+    // Reaching `Confirmed` is the customer agreeing, which is the moment a
+    // four-hour hold stops being provisional: the stock stays reserved until
+    // the order settles rather than being swept back (PRD §5,
+    // `services/reservations.ts`). Clearing it here rather than in the sweep
+    // keeps "is this hold provisional" a single readable fact on the row.
+    if (data.stage === "Confirmed" && order.reservedUntil) {
+      await firmUpReservation(tx, orderId);
+      await recordEvent(workspaceId, "inventory_twin.hold_confirmed", "inventory",
+        `order=${orderId} qty=${order.qty} held_until=${order.reservedUntil.toISOString()}`);
+    }
+
+    // Returned before anything shipped releases the hold too: the customer has
+    // walked away, and stock nobody is buying belongs back on the shelf.
+    if (data.stage === "Returned" && order.reservedUntil) {
+      await tx.order.update({ where: { id: orderId }, data: { reservedUntil: null } });
+    }
 
     if (data.stage === "Delivered") {
       await tx.variant.update({

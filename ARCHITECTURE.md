@@ -442,6 +442,121 @@ system is a *reader* of that log rather than a second record of what happened.
 Only a real connection with `connected` status may appear as connected in the
 dashboard.
 
+
+## Agents, skills and the execution boundary
+
+A workspace used to have exactly one implicit agent, and "which agent acted"
+was a string literal chosen by a branch inside `ingest()` — `"Sales"`,
+`"Inventory"`, `"Procurement"`, `"Support"`. That is a reasonable shape for a
+fixed product and an impossible one for a builder, because there is nothing to
+configure, nothing to deploy and nothing for a guardrail to attach to.
+
+An **agent** is now a row. It holds skills, guardrails and the channels it is
+published to. Voice and knowledge stay on the workspace: how a business sounds
+and what it may claim are properties of the business, and duplicating them per
+agent is how two agents quote different return policies at the same customer.
+
+A **skill** is a declarative spec plus a pure `run`, collected in one array in
+`server/agents/registry.ts` — the same shape `server/channels/registry.ts`
+has, and for the same reason. Adding one is a file and a line. `AgentSkill.skill`
+is a registry slug rather than a foreign key, because skills are code and a
+table of them would let a tenant name one with no implementation.
+
+**`server/agents/execute.ts` is the only place a skill runs**, and every check
+lives there rather than inside the skills. The caller is, in the general case,
+a language model that has chosen a function name and a bag of arguments, so a
+check inside a skill is a check the next skill's author has to remember to
+copy. In order, all before `run()` or all before the result is visible:
+
+1. the skill exists in the registry
+2. the agent is this workspace's (the same refusal as one that does not exist)
+3. the agent holds the skill — the allowed-tool list
+4. it is enabled
+5. the arguments satisfy the skill's own schema
+6. nothing in the request trips an escalation trigger
+7. the quoted value is inside `maxSingleQuoteValue`
+8. the customer has no past-due invoices, when the agent cares
+9. the workspace's approval policy allows it
+
+A refusal is a **value**, not an exception: a model gets a structured "no" it
+can act on, and the route renders it as 422. Checks 7–9 can only hold a result
+back; they never edit one, because quietly halving a number to fit a ceiling
+would be the fact/voice split broken from the other end.
+
+A skill never touches `prisma`. It gets a `TwinStore` built per execution and
+closed over one workspace, and no method on it takes a `workspaceId` — a skill
+that could pass one could pass somebody else's.
+
+### The SDK
+
+`web/sdk/` is `@lipi-ai/sdk-node`. A `CustomSkill` produces exactly the
+`SkillSpec` a built-in skill produces and runs through exactly the same
+executor, so a third-party skill gets the allowed-tool check, the schemas, the
+guardrails, the tenant scoping and the audit trail for free — and cannot skip
+any of them. The SDK is a translation layer and nothing more: JSON-schema-ish
+parameters into strict Zod, major units into integer minor units, and the PRD's
+snake_case draft fields into the store's camelCase.
+
+## The Personal PA twin
+
+`PaProfile` holds the owner's working hours, focus blocks, buffer rule and
+daily meeting ceiling; `CalendarEvent` holds what is on the calendar;
+`SchedulingNegotiation` holds a proposal that spans turns, because "find 45
+minutes with Dr. Chen" is a proposal, possibly a counter, and a confirmation
+spread over hours.
+
+`server/agents/scheduling.ts` decides which slots are acceptable, arithmetically
+and with no database and no model. A model may read "avoid mornings" out of a
+sentence; it may not decide whether 14:00 on Wednesday is free, because the
+owner's buffers and focus blocks are facts. Instants are stored and compared in
+UTC and converted to the owner's zone only for questions about their day, which
+is what keeps a meeting from moving an hour twice a year.
+
+Only a slot that was actually offered may be confirmed — otherwise confirmation
+steps around every rule the proposal step exists to enforce — and a
+counter-offer is checked against the owner's rules rather than accepted because
+the counterpart suggested it.
+
+## Generated sites
+
+`POST /v1/builder/sites/generate` turns a business profile into a structure:
+pages, blocks, schema.org JSON-LD and a sitemap, computed deterministically.
+Which pages exist is a *fact* about a business, and a model asked to invent one
+will eventually generate a booking page for a business that cannot take
+bookings. Each block carries an empty slot for model-written copy, which can be
+regenerated without moving a page.
+
+**The structure holds no business data.** A catalogue block *names* the
+catalogue; `resolveBlocks()` reads live rows on every request. A site generated
+in March shows September's prices in September, and adding a product changes
+every site that binds to the catalogue with no migration and no regeneration.
+
+`/s/{slug}` serves it, with SEO tags, the JSON-LD and the embedded assistant.
+Without that, "generated a website" is a row of JSON an operator has to take on
+trust.
+
+The quote formula (`server/sites/formula.ts`) is a tokeniser and a Pratt parser
+over a tiny grammar — numbers, variables, arithmetic, comparison, a ternary,
+grouping — and never `eval`. An operator writes it and a stranger's browser
+supplies the variables. It resolves only names somebody put in the scope
+(`Object.hasOwn`, not `in`, because every object literal inherits
+`constructor` and `__proto__`), bounds its own recursion depth, and refuses a
+missing variable rather than defaulting it to zero. The formula itself never
+reaches the browser.
+
+## Reservation holds
+
+Stock reserved by a quote is held for four hours and then given back
+(`server/services/reservations.ts`). Before that, `Variant.reserved` only ever
+went up until an order settled, so an abandoned quote held stock for ever and
+the twin reported the business as having less to sell than it had — the more
+quotes it produced, the wronger it got.
+
+`Order.reservedUntil` is null once the hold is no longer provisional, which is
+what reaching `Confirmed` means. The sweep is per workspace and bounded, and
+re-reads inside its transaction so two of them racing cannot decrement the same
+reservation twice.
+
 ## Security and reliability
 
 - Opaque server-side sessions and workspace membership checks protect tenancy.
@@ -480,12 +595,16 @@ dashboard.
    Meta webhook cannot authenticate.
 2. Add customer and invoice import connectors with provenance metadata.
    Shopify orders import; no other source's do.
-3. Add idempotent provider-message handling using external message IDs. The
-   channel adapters already parse them; the webhook route discards them, so a
-   provider retry runs the ingest loop twice.
-4. Add saved evaluation suites with expected outcomes and release gates.
-5. Release reserved stock on order completion, cancellation and rejection.
-   `reserved` currently only ever increments.
+3. Add saved evaluation suites with expected outcomes and release gates.
+4. Gmail inbound. The parser and the outbound send are real, but
+   `upsertTrigger()` is never called, so a connected Gmail shows "Live" and
+   delivers nothing.
+5. Narrow `matchVariant()`. It loads every product and every variant for the
+   workspace on every inbound message, inside the ingest transaction.
+6. Move rate limits out of process memory, and give `recordEvent()` an
+   overload that takes the caller's transaction.
 
 Done: inventory connectors with idempotency, cursors, reconciliation and an
-operator-visible exception queue; a real Shopify connector on top of them.
+operator-visible exception queue; a real Shopify connector on top of them;
+idempotent provider-message handling on the external message id; reserved stock
+released on delivery, return and hold expiry.

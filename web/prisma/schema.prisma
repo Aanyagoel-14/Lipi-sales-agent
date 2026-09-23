@@ -39,8 +39,25 @@ enum Sensitivity {
   High
 }
 
+/**
+ * The Order & Supply Twin's state machine (PRD §5).
+ *
+ * The PRD writes it as Inquiry -> Quote -> Confirmed -> Paid -> Packed ->
+ * Shipped. `Quoted` is this codebase's spelling of the PRD's "Quote" and
+ * predates it; renaming a stored enum member to change a participle is not
+ * worth a migration. `Delivered` and `Returned` are beyond the PRD's chain and
+ * were already here — an order that has shipped still has to arrive, and some
+ * of them come back.
+ *
+ * `Inquiry` is an order that exists without a price: somebody asked, nothing
+ * has been quoted, nothing is reserved. `Confirmed` is the customer having
+ * agreed, before money moves, and is where a four-hour reservation hold stops
+ * being provisional (`services/reservations.ts`).
+ */
 enum OrderStage {
+  Inquiry
   Quoted
+  Confirmed
   Paid
   Packed
   Shipped
@@ -191,6 +208,8 @@ model Supplier {
   responseHours Int
   products      Product[]
 
+  purchaseOrders PurchaseOrder[]
+
   @@index([workspaceId])
   @@map("suppliers")
 }
@@ -220,6 +239,8 @@ model Product {
   variants Variant[]
   orders   Order[]
 
+  purchaseOrders PurchaseOrder[]
+
   @@index([supplierId])
   @@index([workspaceId])
   @@map("products")
@@ -246,6 +267,7 @@ model Variant {
 
   inventoryMappings InventoryMapping[]
   orders            Order[]
+  purchaseOrders    PurchaseOrder[]
 
   // One row per size/colour per product: the twin is variant-native.
   @@unique([productId, optionA, optionB])
@@ -269,6 +291,26 @@ model Order {
   createdAt DateTime
   blocked   String?
 
+  /// When the stock reserved for this order lapses.
+  ///
+  /// PRD §5, Product & Fitment Twin: "Locks reserved stock for 4 hours upon
+  /// checkout link generation." Before this column a reservation was
+  /// permanent until the order settled, so an abandoned quote held stock
+  /// against a customer who never came back and the twin reported the
+  /// business as having less to sell than it had.
+  ///
+  /// Null once the hold is no longer provisional: an order that reaches
+  /// `Confirmed` or beyond holds its stock until it settles.
+  reservedUntil DateTime?
+
+  /// The customer twin had money outstanding when this order was raised.
+  ///
+  /// PRD §5, Customer/Lead Twin: "flags credit risk if past-due invoices > 0".
+  /// A flag for a human, never an automatic refusal — a good customer with
+  /// one late invoice is still a good customer, and deciding otherwise is not
+  /// a sales agent's call to make unattended.
+  creditHold Boolean @default(false)
+
   customerId String
   customer   Customer @relation(fields: [customerId], references: [id])
   productId  String
@@ -284,6 +326,8 @@ model Order {
   @@index([customerId])
   @@index([workspaceId])
   @@index([variantId])
+  /// The sweep reads exactly this: holds that have lapsed.
+  @@index([reservedUntil])
   @@map("orders")
 }
 
@@ -601,6 +645,7 @@ model Workspace {
   paProfiles           PaProfile[]
   negotiations         SchedulingNegotiation[]
   sites                GeneratedSite[]
+  purchaseOrders       PurchaseOrder[]
 
   @@map("workspaces")
 }
@@ -1583,4 +1628,59 @@ model GeneratedSite {
 
   @@index([workspaceId, createdAt])
   @@map("generated_sites")
+}
+
+
+/**
+ * Where a purchase order has got to. Deliberately short: this system raises
+ * POs and hands them to a person, it does not run a procurement workflow.
+ */
+enum PurchaseOrderStatus {
+  draft
+  sent
+  received
+  cancelled
+}
+
+/**
+ * A restock, raised automatically (PRD §5, Order & Supply Twin).
+ *
+ * "Auto-dispatches POs when reserved inventory drops below threshold." Until
+ * now crossing the reorder point raised an `AgentRun` whose `action` read
+ * "Draft restock of …" — a sentence in a log, which nobody can act on, count
+ * or reconcile against what actually arrived.
+ *
+ * Quantity is the supplier's MOQ or the shortfall, whichever is larger,
+ * because ordering below a minimum is an order the supplier will refuse.
+ *
+ * `draft`, never `sent`: dispatching money to a supplier is a commitment, and
+ * there is no supplier integration here to dispatch it through. What is
+ * automatic is the *raising* — the PO exists, with its quantity and its
+ * expected date, for a human to send.
+ */
+model PurchaseOrder {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id  String @id @default(cuid())
+  qty Int
+
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId  String
+  variant    Variant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  status PurchaseOrderStatus @default(draft)
+  /// Why it was raised, in the operator's own terms.
+  reason String
+  /// `createdAt` plus the supplier's average lead time.
+  expectedOn DateTime
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId, status])
+  @@index([variantId, status])
+  @@map("purchase_orders")
 }

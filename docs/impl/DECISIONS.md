@@ -438,3 +438,177 @@ This is the *generated sites'* palette. Applying it to Lipi's own dashboard is
 G-4 and a separate change — that app has a carefully built light theme with
 measured contrast ratios recorded per token, and re-theming it is a piece of
 work with its own verification, not a find-and-replace.
+
+---
+
+## D-018 — The order state machine gains `Inquiry` and `Confirmed`, and that is a breaking change to transitions
+
+**Derives from:** PRD §5, Order & Supply Twin — "State (Inquiry → Quote →
+Confirmed → Paid → Packed → Shipped)"; master prompt §31.
+
+The stored chain was `Quoted → Paid → Packed → Shipped → Delivered`, with
+`Returned` reachable from anywhere, and `POST /v1/orders/{id}/stage` enforcing
+one step forward.
+
+**Decision.** `Inquiry` and `Confirmed` are added. `Quoted` keeps its spelling
+— it is this codebase's word for the PRD's "Quote", and renaming a stored enum
+member to change a participle is not worth a migration. `Delivered` and
+`Returned` stay; an order that has shipped still has to arrive.
+
+**What breaks, precisely.** The *vocabulary* is additive — no member changed
+spelling and none was removed — so a consumer that reads stages keeps working,
+and `docs/openapi.json` gained two enum values and nothing else. The
+*transition rule* is not additive: a caller that moved `Quoted → Paid` now has
+to move `Quoted → Confirmed → Paid`, and gets a 409 naming the next stage if it
+does not.
+
+**Consumers checked and updated.** One test exercised the endpoint
+(`test/tenancy.test.ts`, a 404 case, unaffected). Shopify's importer writes
+stages directly rather than transitioning, so it is unaffected. The dashboard's
+`StageAction` reads the next stage from the API. Nothing else in the repository
+calls it.
+
+**Rejected:** allowing a skip over `Confirmed` (then it is not a state, it is a
+label, and the four-hour hold has nothing to end on); a compatibility window
+accepting both (two transition rules, and the wrong one is the one that stays).
+
+---
+
+## D-019 — A reservation lapses after four hours, and confirming makes it permanent
+
+**Derives from:** PRD §5 — "Locks reserved stock for 4 hours upon checkout link
+generation".
+
+`Variant.reserved` only ever went up until an order settled. A customer who
+asked for four polos and never came back held four polos for ever, so the twin
+reported the business as having less to sell than it had — and the more quotes
+it produced the wronger it got, which is the worst shape a bug can have because
+the system punishes its own success.
+
+**Decision.** `Order.reservedUntil`, stamped when `ingest()` reserves, cleared
+when the order reaches `Confirmed`. `releaseExpiredReservations()` gives back
+the stock of any lapsed hold on a provisional stage, and is reachable as a tick
+at `POST /v1/inventory/reservations/sweep` — the same shape as
+`/v1/webhooks/dispatch`, because this deployment has no scheduler.
+
+Sub-decisions:
+
+- **Null means "does not lapse."** That is what an order past `Confirmed`
+  carries, and it is also what every pre-existing order carries. Backfilling
+  history to a four-hour window would have released stock a live quote was
+  legitimately holding, so the migration writes nothing.
+- **The sweep is per workspace and bounded to 500.** A tick that swept every
+  tenant would be a tick any tenant could make expensive.
+- **The release re-reads inside its transaction and clamps the decrement at
+  zero.** Two sweeps racing must not decrement the same reservation twice, and
+  stock arithmetic that can go negative produces a twin reporting negative
+  availability.
+
+---
+
+## D-020 — Credit risk and VIP routing flag; they never refuse
+
+**Derives from:** PRD §5, Customer/Lead Twin — "flags credit risk if past-due
+invoices > 0", "routes VIP inquiries instantly".
+
+**Decision.** Both are read once per message, after the customer twin is
+settled, in `services/twin-rules.ts`. `creditRisk` derives what is owed from
+payments rather than from a stored status, because `services/billing.ts` is
+explicit that storing it lets the total drift — and two definitions of "paid"
+is how a customer gets chased for money they sent.
+
+Neither refuses a sale. The credit verdict lands on `Order.creditHold`, on the
+event trail, and — through the skill executor — on the approval a money skill
+raises. Declining a sale because an invoice is late is a decision with a
+relationship attached to it, and not one to make unattended.
+
+The VIP threshold (`VIP_LIFETIME_VALUE`) is a figure the PRD does not give. It
+is named, and it sits next to the rule it governs rather than inline in a
+condition where the next reader has to work out what the number meant.
+
+---
+
+## D-021 — Crossing the reorder point raises a purchase order, not a sentence
+
+**Derives from:** PRD §5 — "Auto-dispatches POs when reserved inventory drops
+below threshold".
+
+Crossing the threshold used to push an `AgentRun` whose `action` read "Draft
+restock of …". Prose in a log: nobody can count it, reconcile it against what
+arrived, or send it to a supplier.
+
+**Decision.** A `PurchaseOrder` row, at `draft`, for the supplier's MOQ or the
+shortfall back to twice the reorder point, whichever is larger — ordering below
+a minimum is an order the supplier refuses, and ordering exactly the shortfall
+puts the twin back at the threshold it just crossed. `expectedOn` is the
+supplier's own average lead time.
+
+**`draft`, never `sent`.** Dispatching money to a supplier is a commitment and
+there is no supplier integration here to dispatch through. What is automatic is
+the *raising*.
+
+**De-duplicated per variant.** The reorder point is crossed again by every
+subsequent message until stock arrives; a rule that raised a PO each time would
+bury the operator in duplicates of a decision they had already made. The
+`AgentRun` is still raised either way, so the operator sees the threshold was
+hit — only the PO is de-duplicated.
+
+---
+
+## D-022 — The auth throttle does not bucket "unknown" as an address
+
+**Derives from:** master prompt §19; `SECURITY_REVIEW.md` F-3.
+
+`clientIp()` answers `"unknown"` when no `x-forwarded-for` or `x-real-ip` is
+set. The first version of the throttle keyed on that value like any other, and
+the full suite immediately went red: every test that logs in shares one bucket,
+so the twenty-first `signedIn()` of the run was refused.
+
+That is a test failure exposing a **production** bug. A deployment not behind a
+proxy that sets those headers would put every one of its users in one bucket,
+and the first twenty failed logins would lock out everybody — while an attacker
+who sets the header themselves would not be in that bucket at all. The control
+would be simultaneously useless and dangerous.
+
+**Decision.** When the address is unknown, the per-address ceiling is skipped
+and the per-email one still applies. You cannot rate-limit by address without
+an address, and the per-email ceiling is the half that actually protects a
+password.
+
+The suite also resets the limiter in `test/setup.ts`'s `beforeEach`, alongside
+the Composio, Shopify and webhook fakes — rate limits are process-global state
+and the whole suite shares one process, so one file's attempts would otherwise
+be spent on behalf of every file after it.
+
+---
+
+## D-023 — Inbox selection is a URL, not client state
+
+**Derives from:** PRD §7.1 (the split-pane workspace); master prompt §6.
+
+The thread list rendered inert `<li>`s and the page always opened
+`conversations[0]`. It looked like a selector and selected nothing, and a
+keyboard user could not reach a second thread at all — the same category of
+defect as a button that claims to deploy an agent and does not.
+
+**Decision.** A thread is `?thread=<id>` and the feed is `?channel=<name>`,
+both read by the server component. Rows are `<Link>`s.
+
+Selection *could* have been `useState`, since the transcript is already on the
+page — but it is not: the list carries previews only and a transcript is
+fetched by id, so opening one is a real navigation. Making it a URL gives it a
+link an operator can send to a colleague, a working back button, and rows that
+are genuinely links to anything reading the page rather than looking at it.
+`scroll: false`, because below `xl` the transcript sits *above* the list and
+jumping to the top of the document on every selection would push it off screen.
+
+**The channel rail filters on the server.** `/v1/conversations` takes a
+repeatable `?channel=`. Filtering the loaded page in the browser would show
+three of fifty rows and call it the WhatsApp feed, and the cursor would go on
+paging through the unfiltered list underneath it. `usePaged` now carries the
+filter into later pages for the same reason, and resets its rows when the
+filter changes.
+
+The rail offers only channels this workspace has actually heard from: a filter
+that can only ever return nothing is a control that teaches an operator to
+distrust the others.

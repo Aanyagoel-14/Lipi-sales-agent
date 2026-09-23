@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
+import { AUTH_EMAIL_LIMIT, AUTH_IP_LIMIT } from "@/server/lib/auth-throttle";
 import { prisma } from "@/server/lib/prisma";
+import { _resetRateLimitsForTests } from "@/server/lib/rate-limit";
 
 beforeEach(resetDatabase);
 
@@ -80,5 +82,105 @@ describe("session", () => {
 
     await prisma.session.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
     await a.get("/v1/customers").expect(401);
+  });
+});
+
+describe("the password endpoints have a budget", () => {
+  // These two were the only unauthenticated write endpoints in the API with no
+  // ceiling at all, which made them the cheapest place to guess a password or
+  // to learn which addresses have accounts.
+  beforeEach(_resetRateLimitsForTests);
+  afterEach(_resetRateLimitsForTests);
+
+  it("refuses a caller that has spent the per-address budget", async () => {
+    await createUser();
+
+    for (let attempt = 1; attempt <= AUTH_IP_LIMIT; attempt++) {
+      await agent()
+        .post("/v1/auth/login")
+        .set("x-forwarded-for", "203.0.113.7")
+        .send({ email: `nobody${attempt}@test.local`, password: "wrong-password" })
+        .expect(401);
+    }
+
+    const refused = await agent()
+      .post("/v1/auth/login")
+      .set("x-forwarded-for", "203.0.113.7")
+      .send({ email: "owner@test.local", password: "testing12345" })
+      .expect(429);
+
+    expect(refused.headers["retry-after"]).toBeDefined();
+    expect(refused.body.error).toContain("Too many attempts");
+  });
+
+  // An attacker with a thousand addresses defeats the address budget, which is
+  // why there is a second one on the account being attacked.
+  it("refuses a distributed attempt on one account", async () => {
+    await createUser();
+
+    for (let attempt = 1; attempt <= AUTH_EMAIL_LIMIT; attempt++) {
+      await agent()
+        .post("/v1/auth/login")
+        .set("x-forwarded-for", `198.51.100.${attempt}`)
+        .send({ email: "owner@test.local", password: "wrong-password" })
+        .expect(401);
+    }
+
+    await agent()
+      .post("/v1/auth/login")
+      .set("x-forwarded-for", "198.51.100.200")
+      .send({ email: "owner@test.local", password: "testing12345" })
+      .expect(429);
+  });
+
+  // The refusal must not say which of the two ceilings was hit: a distinct
+  // message for the per-email one would confirm that the address has an
+  // account, which is the enumeration the login route already guards against.
+  it("says the same thing whichever budget refused it", async () => {
+    await createUser();
+
+    for (let attempt = 1; attempt <= AUTH_EMAIL_LIMIT; attempt++) {
+      await agent()
+        .post("/v1/auth/login")
+        .set("x-forwarded-for", `192.0.2.${attempt}`)
+        .send({ email: "owner@test.local", password: "wrong-password" })
+        .expect(401);
+    }
+    const byEmail = await agent()
+      .post("/v1/auth/login")
+      .set("x-forwarded-for", "192.0.2.250")
+      .send({ email: "owner@test.local", password: "wrong-password" })
+      .expect(429);
+
+    for (let attempt = 1; attempt <= AUTH_IP_LIMIT; attempt++) {
+      await agent()
+        .post("/v1/auth/login")
+        .set("x-forwarded-for", "203.0.113.99")
+        .send({ email: `spread${attempt}@test.local`, password: "wrong-password" })
+        .expect(401);
+    }
+    const byAddress = await agent()
+      .post("/v1/auth/login")
+      .set("x-forwarded-for", "203.0.113.99")
+      .send({ email: "someone@test.local", password: "wrong-password" })
+      .expect(429);
+
+    expect(byEmail.body.error).toBe(byAddress.body.error);
+  });
+
+  it("throttles signup too", async () => {
+    for (let attempt = 1; attempt <= AUTH_IP_LIMIT; attempt++) {
+      await agent()
+        .post("/v1/auth/signup")
+        .set("x-forwarded-for", "203.0.113.42")
+        .send({ email: `new${attempt}@test.local`, name: "New Person", password: "testing12345" })
+        .expect(201);
+    }
+
+    await agent()
+      .post("/v1/auth/signup")
+      .set("x-forwarded-for", "203.0.113.42")
+      .send({ email: "onemore@test.local", name: "New Person", password: "testing12345" })
+      .expect(429);
   });
 });

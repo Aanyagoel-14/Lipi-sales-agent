@@ -1,3 +1,4 @@
+import { throttleAuth } from "@/server/lib/auth-throttle";
 import { body, HttpError, json, route } from "@/server/lib/http";
 import { verifyPassword } from "@/server/lib/passwords";
 import { prisma } from "@/server/lib/prisma";
@@ -6,6 +7,10 @@ import { credentials } from "../schemas";
 
 export const POST = route(async (req) => {
   const data = await body(req, credentials, "Check the form");
+
+  // Before the password is hashed or the database is read: a refused attempt
+  // must cost a map lookup, not an Argon2 hash.
+  throttleAuth(req, data.email);
 
   const user = await prisma.user.findUnique({
     where: { email: data.email },

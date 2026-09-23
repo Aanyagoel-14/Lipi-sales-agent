@@ -608,7 +608,9 @@
           "stage": {
             "type": "string",
             "enum": [
+              "Inquiry",
               "Quoted",
+              "Confirmed",
               "Paid",
               "Packed",
               "Shipped",
@@ -2263,7 +2265,9 @@
               "items": {
                 "type": "string",
                 "enum": [
+                  "Inquiry",
                   "Quoted",
+                  "Confirmed",
                   "Paid",
                   "Packed",
                   "Shipped",

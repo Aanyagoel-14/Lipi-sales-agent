@@ -76,8 +76,9 @@ One envelope, at every status:
 | --- | --- |
 | `GET /v1/customers` | Customer twins, most recently active first |
 | `GET /v1/customers/{id}` | One twin |
-| `GET /v1/conversations` | Threads, newest activity first, one preview line each |
+| `GET /v1/conversations` | Threads, newest activity first, one preview line each. `?channel=whatsapp` narrows it, and repeats |
 | `POST /v1/conversations` | Deliver a message and get the thread plus the reply |
+| `POST /v1/conversations/ingest` | The same, in the PRD's own contract — see below |
 | `GET /v1/conversations/{id}` | One thread with its messages |
 | `GET /v1/products` | The catalogue, A–Z, with the workspace's suppliers |
 | `GET /v1/products/{id}` | One product with its variants and live stock |
@@ -90,6 +91,42 @@ One envelope, at every status:
 | `POST /v1/webhooks/dispatch` | Run one pass of the outbound queue |
 | `GET /v1/webhooks/deliveries` | Delivery log, newest first. `?status=dead` for the dead letter |
 | `POST /v1/webhooks/deliveries/{id}/redeliver` | Queue a finished delivery again |
+
+### Agents
+
+| | |
+| --- | --- |
+| `GET /v1/agents/templates` | The agent templates you can start from, with their default guardrails |
+| `GET /v1/agents/skills` | Every skill an agent can be assembled from |
+| `POST /v1/agents/builder/deploy` | Build or re-publish an agent. An upsert on the name |
+| `GET /v1/agents` | Every agent this workspace has built |
+| `GET`/`PATCH`/`DELETE /v1/agents/{id}` | One agent: read, pause or resume, remove |
+| `POST /v1/agents/{id}/execute` | Run one of the agent's skills |
+| `GET /v1/agents/runs` | What the agents have done |
+
+### Sites
+
+| | |
+| --- | --- |
+| `POST /v1/builder/sites/generate` | Generate a site from a business profile |
+| `GET /v1/builder/sites` | The sites this workspace has generated |
+| `GET /v1/builder/sites/{slug}` | One site, with the structure it generated |
+| `POST /v1/builder/sites/{slug}/deploy` | Ask an edge host to take it |
+| `POST /v1/builder/sites/{slug}/quote` | A price from the site's own formula. **Public** |
+
+### Inventory
+
+| | |
+| --- | --- |
+| `POST /v1/inventory/reservations/sweep` | Give back the stock of every hold that has lapsed |
+
+### The PRD's own paths
+
+Three endpoints answer at `/api/v1/...` as well as `/v1/...`, because that is
+how the product specification writes them: `conversations/ingest`,
+`agents/builder/deploy` and `builder/sites/generate`. The alias re-exports the
+canonical handler — the same function, not a copy — so there is one
+implementation and the two prefixes cannot drift.
 
 ### Starting a conversation
 
@@ -205,3 +242,93 @@ response back to. Prefer one of these instead:
 - **Your own server**: keep the key there and proxy. See the React note.
 - **A trusted browser context** — an internal tool behind your own login, where the key is
   injected per session rather than baked into a bundle — is what the allow-list is for.
+
+---
+
+## Deploying an agent
+
+`POST /v1/agents/builder/deploy` takes the product specification's own body:
+
+```json
+{
+  "agent_name": "Wholesale Sales Assistant",
+  "skills": ["Inventory_Lookup", "Discount_Calculator", "Stripe_Invoice"],
+  "knowledge_base_ids": [],
+  "channels": ["WHATSAPP", "TELEGRAM", "WEB_SDK"],
+  "guardrails": {
+    "max_autonomous_discount_pct": 0.12,
+    "human_escalation_triggers": ["DISPUTE", "REFUND_OVER_500"]
+  }
+}
+```
+
+It is an **upsert on `agent_name`**: publishing twice edits the agent rather
+than growing a second one with the same name and half the traffic. A skill
+removed from the list is actually removed; the configuration of a skill that
+survives is kept.
+
+Everything is validated before anything is written — the skills must exist, the
+channels must be known **and connected**, the knowledge entries must be this
+workspace's, and the guardrails must parse. Publishing to a channel that is not
+connected is a `409`: an agent that is "live" and silent is worse than one that
+failed to deploy.
+
+`WEB_SDK` is the embedded widget and needs no connection; it is its own
+transport.
+
+## Executing a skill
+
+`POST /v1/agents/{id}/execute` is the endpoint an external orchestrator — or a
+model — calls to make an agent do something.
+
+```json
+{ "skill": "Inventory_Lookup", "arguments": { "product": "Polo Classic", "optionA": "L" } }
+```
+
+| | |
+| --- | --- |
+| `200` | it ran |
+| `202` | it ran and a guardrail is holding the result for a person. `escalationReason` says which |
+| `422` | it did not run: unknown skill, a skill this agent does not hold, or arguments that do not match the skill's schema. `details` names the field |
+
+A `422` here is not a server error — you sent something that was understood and
+not permitted, and the reason is written for a caller to act on.
+
+## Conversation ingest, the specification's contract
+
+`POST /v1/conversations/ingest` (also at `/api/v1/conversations/ingest`) takes
+a different shape from `POST /v1/conversations`, because the product
+specification prints it:
+
+```json
+{
+  "source_channel": "WHATSAPP",
+  "external_sender_id": "+254711998877",
+  "payload": { "type": "text", "content": "Need 400 blue XL polos before Friday." },
+  "metadata": { "business_account_id": "waba_991823" }
+}
+```
+
+`metadata.business_account_id` is optional and **checked**, not ignored: it has
+to name a channel connection in your workspace, on the channel you named. An id
+that belongs to somebody else is a `404`, the same answer as one that does not
+exist.
+
+Only `payload.type: "text"` is ingested. Anything else is a `422` rather than a
+`201` for a message that never reached anybody.
+
+## Quoting from a generated site
+
+`POST /v1/builder/sites/{slug}/quote` is public and CORS-enabled — a generated
+site is served to strangers and the calculator on it has to work for them.
+
+```json
+{ "variables": { "BASE_VEHICLE_SIZE": 3, "COATING_GRADE": 120, "PAINT_CORRECTION": true } }
+```
+
+It answers `{ "amountMinorUnits": 61000 }`. The formula never leaves the
+server.
+
+A variable the formula needs and the request did not supply is a `422`, never a
+zero: quoting a price from a value nobody gave is how a customer is promised
+something the business did not agree to.
