@@ -53,8 +53,32 @@ export function unregisterSkill(slug: string) {
   registered.delete(slug.trim().toLowerCase());
 }
 
-/** Every custom skill this process currently holds. */
-export const registeredSkills = () => [...registered.values()];
+
+/**
+ * The product specification names these skills twice and does not agree with
+ * itself.
+ *
+ * §2 Step 01 lists them as `Inventory_Lookup`, `Discount_Calculator`,
+ * `Stripe_Invoice`, `Lead_Scoring`, `Calendar_Negotiation`. §8.1's deploy
+ * contract — the body an integrator will copy, because it is the one printed
+ * as a request — uses `SKILL_INVENTORY_LOOKUP`, `SKILL_DISCOUNT_NEGOTIATOR`
+ * and `SKILL_STRIPE_CHECKOUT`.
+ *
+ * Both are accepted. Picking one and refusing the other would mean an
+ * integrator who copied the specification's own example got
+ * "Unknown skill" back, which is a needlessly unhelpful way to be right.
+ * The canonical spelling is the spec's and is what gets stored and reported,
+ * so the alias never leaks past this lookup.
+ */
+const SPEC_ALIASES: Record<string, string> = {
+  skill_inventory_lookup: "inventory_lookup",
+  skill_discount_negotiator: "discount_calculator",
+  skill_discount_calculator: "discount_calculator",
+  skill_stripe_checkout: "stripe_invoice",
+  skill_stripe_invoice: "stripe_invoice",
+  skill_lead_scoring: "lead_scoring",
+  skill_calendar_negotiation: "calendar_negotiation",
+};
 
 /**
  * The spec for a slug, or undefined.
@@ -65,7 +89,8 @@ export const registeredSkills = () => [...registered.values()];
  * see the reason for. The stored and reported spelling is always the spec's.
  */
 export const skillFor = (slug: string): SkillSpec<never> | undefined => {
-  const key = slug.trim().toLowerCase();
+  const raw = slug.trim().toLowerCase();
+  const key = SPEC_ALIASES[raw] ?? raw;
   return bySlug.get(key) ?? registered.get(key);
 };
 
@@ -73,6 +98,16 @@ export const skillFor = (slug: string): SkillSpec<never> | undefined => {
 export function unknownSkills(slugs: string[]): string[] {
   return slugs.filter((slug) => !skillFor(slug));
 }
+
+/**
+ * What a caller's spelling is actually called.
+ *
+ * Deploy stores this rather than what arrived, so an agent built from the
+ * specification's §8.1 example and one built from its §2 list hold the same
+ * rows — and the allowed-tool check at execution time compares like with like
+ * however each of them was written.
+ */
+export const canonicalSkill = (slug: string): string => skillFor(slug)?.slug ?? slug;
 
 /** What the builder renders a catalogue from. No `run`, no schemas — data. */
 export const skillCatalogue = () =>

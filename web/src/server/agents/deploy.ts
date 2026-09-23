@@ -4,7 +4,7 @@ import { recordEvent } from "../lib/events";
 import { HttpError } from "../lib/http";
 import { prisma } from "../lib/prisma";
 import { parseGuardrails } from "./guardrails";
-import { unknownSkills } from "./registry";
+import { canonicalSkill, unknownSkills } from "./registry";
 import { templateFor } from "./templates";
 
 /**
@@ -99,13 +99,17 @@ export async function deployAgent(workspaceId: string, input: DeployRequest) {
     throw new HttpError(422, `Unknown template "${input.template}"`);
   }
 
-  const skills = [...new Set(input.skills?.length ? input.skills : (template?.skills ?? []))];
-  const missing = unknownSkills(skills);
+  const asked = [...new Set(input.skills?.length ? input.skills : (template?.skills ?? []))];
+  const missing = unknownSkills(asked);
   if (missing.length) {
     throw new HttpError(422, `Unknown skill${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`, {
       skills: missing,
     });
   }
+  // Stored under the registry's own spelling, so an agent built from the
+  // specification's §8.1 example and one built from its §2 list hold the same
+  // rows — and `execute.ts` compares like with like whichever was used.
+  const skills = [...new Set(asked.map(canonicalSkill))];
 
   /* ------------------------------------------------------- where it runs */
   const channels: Channel[] = [];

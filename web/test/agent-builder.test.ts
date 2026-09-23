@@ -137,6 +137,54 @@ describe("step 3 — deploying", () => {
     expect(row.channels).toEqual(["webchat"]);
   });
 
+  // The specification names these skills twice and does not agree with itself:
+  // §2 Step 01 lists `Inventory_Lookup`, §8.1's deploy example — the body an
+  // integrator copies, because it is the one printed as a request — says
+  // `SKILL_INVENTORY_LOOKUP`. Refusing one of them would mean somebody who
+  // copied the specification's own example got "Unknown skill" back.
+  it("accepts the specification's §8.1 skill spellings and stores the canonical ones", async () => {
+    const agent = await setup();
+    const res = await agent
+      .post("/v1/agents/builder/deploy")
+      .send({
+        agent_name: "Wholesale Sales Assistant",
+        skills: ["SKILL_INVENTORY_LOOKUP", "SKILL_DISCOUNT_NEGOTIATOR", "SKILL_STRIPE_CHECKOUT"],
+        knowledge_base_ids: [],
+        channels: ["WEB_SDK"],
+        guardrails: { max_autonomous_discount_pct: 0.12 },
+      })
+      .expect(201);
+
+    expect(res.body.agent.skills).toEqual(
+      ["Inventory_Lookup", "Discount_Calculator", "Stripe_Invoice"],
+    );
+
+    const row = await prisma.agent.findFirstOrThrow({ where: { workspaceId }, include: { skills: true } });
+    expect(row.skills.map((s) => s.skill).sort()).toEqual(
+      ["Discount_Calculator", "Inventory_Lookup", "Stripe_Invoice"],
+    );
+  });
+
+  // And the allowed-tool check has to compare like with like, whichever
+  // spelling built the agent.
+  it("executes a skill on an agent built from the §8.1 spellings", async () => {
+    const agent = await setup();
+    const deployed = await agent
+      .post("/v1/agents/builder/deploy")
+      .send({ agent_name: "Runner", skills: ["SKILL_INVENTORY_LOOKUP"], channels: ["WEB_SDK"] })
+      .expect(201);
+
+    await agent
+      .post(`/v1/agents/${deployed.body.agent.id}/execute`)
+      .send({ skill: "SKILL_INVENTORY_LOOKUP", arguments: { product: "Polo Classic" } })
+      .expect(200);
+
+    await agent
+      .post(`/v1/agents/${deployed.body.agent.id}/execute`)
+      .send({ skill: "Inventory_Lookup", arguments: { product: "Polo Classic" } })
+      .expect(200);
+  });
+
   it("refuses a skill the registry does not know, and names it", async () => {
     const agent = await setup();
     const res = await agent

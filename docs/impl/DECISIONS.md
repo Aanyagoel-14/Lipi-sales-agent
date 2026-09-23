@@ -612,3 +612,34 @@ filter changes.
 The rail offers only channels this workspace has actually heard from: a filter
 that can only ever return nothing is a control that teaches an operator to
 distrust the others.
+
+---
+
+## D-024 — The PRD names its skills twice, and both spellings are accepted
+
+**Derives from:** PRD §2 Step 01 versus §8.1.
+
+The specification does not agree with itself. §2 Step 01 lists the skills as
+`Calendar_Negotiation`, `Inventory_Lookup`, `Discount_Calculator`,
+`Stripe_Invoice`, `Lead_Scoring`. §8.1's deploy contract — the body an
+integrator will copy, because it is the one printed as a request — uses
+`SKILL_INVENTORY_LOOKUP`, `SKILL_DISCOUNT_NEGOTIATOR` and
+`SKILL_STRIPE_CHECKOUT`.
+
+Found by smoke-testing the built application with the §8.1 body verbatim and
+getting `Unknown skill: SKILL_INVENTORY_LOOKUP` back.
+
+**Decision.** Both are accepted. `skillFor()` resolves the §8.1 spellings
+through an alias table, and deploy stores the **canonical** name, so an agent
+built from either list holds the same rows and the allowed-tool check at
+execution time compares like with like.
+
+Picking one and refusing the other would be defensible and needlessly
+unhelpful: an integrator who copied the specification's own example would get
+an error naming a skill the specification told them to ask for.
+
+**Rejected:** renaming the registry to §8.1's `SKILL_*` form (it is the less
+descriptive of the two, and `SKILL_DISCOUNT_NEGOTIATOR` names a behaviour —
+negotiating — that the skill deliberately does not have); accepting only §2's
+form and documenting the discrepancy (documentation nobody reads before their
+first request fails).

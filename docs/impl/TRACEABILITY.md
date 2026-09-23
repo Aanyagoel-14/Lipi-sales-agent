@@ -25,20 +25,20 @@ Baseline column values below were established by reading the code on
 | ID | PRD | Requirement | Existing | Missing | Files | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | A-1 | §1 | Omnichannel ingestion across eight channels | 4 of 8 end to end (WhatsApp, Telegram, Instagram DM, Web SDK), plus Messenger, X and Gmail outbound | Slack, Phone/VoIP, LinkedIn, Zoom/Teams | `server/channels/registry.ts` | BLOCKED_EXTERNAL_DEPENDENCY — `BLOCKERS.md` B-010, B-007 |
-| A-2 | §1 | No-code builder + developer extension: 3-step builder <2 min, 50+ modular skills, instant web generator, bespoke agent SDK | none of the four | all four | — | NOT_STARTED |
+| A-2 | §1 | No-code builder + developer extension | **three of the four**: the builder (measured at 5.8 ms, §I-2), the web generator (3.6 ms, §I-1), the SDK. Skills are a registry with five entries | 45 more skills; a browser UI for the builder's first two steps | `server/agents/*`, `server/sites/*`, `web/sdk/` | IMPLEMENTED |
 | A-3 | §1 | Conversation intelligence layer: streaming ASR <300ms, VAD turn-taking, prosody/emotion, PII/PHI NER | text intent extraction only (`extract.ts`) | every audio and NER component | `server/services/extract.ts` | NOT_STARTED |
-| A-4 | §1 | Living Digital Twin graph (Neo4j): Customer, Product & Fitment, Inventory, Supplier, Order, PA Calendar, ABM | Customer, Product, Inventory, Supplier, Order as Postgres rows | Neo4j, PA Calendar twin, ABM twin, fitment graph | `prisma/schema.prisma` | NOT_STARTED |
-| A-5 | §1 | Autonomous agent orchestration: Sales Negotiator, Personal PA, Procurement, Support, Compliance, Expert Voice | four agent *labels* emitted by an if/else in `ingest()` | any agent entity, orchestration, PA, compliance, expert voice | `server/services/ingest.ts:433` | NOT_STARTED |
-| A-6 | §1 | Enterprise connectors: ERP (SAP/NetSuite), CRM (Salesforce/HubSpot), Stripe, Twilio SIP, Google Calendar, edge webhooks | outbound webhooks (real, signed, retried); Shopify; generic push inventory connector | ERP, CRM, Stripe, Twilio, Google Calendar | `server/services/webhooks.ts`, `shopify.ts` | NOT_STARTED |
+| A-4 | §1 | Living Digital Twin graph: Customer, Product & Fitment, Inventory, Supplier, Order, PA Calendar, ABM | **six of seven** as Postgres rows, all event-sourced: Customer, Product, Inventory, Supplier, Order, **PA Calendar** | Neo4j itself, the ABM twin, the fitment graph | `prisma/schema.prisma` | IN_PROGRESS |
+| A-5 | §1 | Autonomous agent orchestration | agents are rows with skills, guardrails and channels; a Personal PA that negotiates and books; Sales and Procurement acting through the ingest loop and through skills | a Compliance engine and an Expert Voice, both of which need the voice pipeline | `server/agents/*` | IMPLEMENTED |
+| A-6 | §1 | Enterprise connectors | signed, retried outbound webhooks (the ERP push shape, asserted in Use Case 1); Shopify; push inventory connectors; a Stripe adapter | a named ERP or CRM integration, Twilio, Google Calendar | `services/webhooks.ts`, `lib/payments.ts` | IN_PROGRESS |
 
 | ID | Unit | Integration | E2E | Manual | Acceptance criterion | Final |
 | --- | --- | --- | --- | --- | --- | --- |
 | A-1 | — | — | — | — | every listed channel has inbound + outbound + audit | pending |
-| A-2 | — | — | — | — | all four capabilities reachable from the product | pending |
+| A-2 | `test/agents.test.ts`, `test/sdk.test.ts`, `test/sites.test.ts` | `test/agent-builder.test.ts` | — | smoke test, `PROGRESS.md` | all four capabilities reachable from the product | **three of four green** |
 | A-3 | — | — | — | — | ASR/VAD/NER present behind adapters with deterministic tests | pending |
-| A-4 | — | — | — | — | seven twin types modelled, mutated and audited | pending |
-| A-5 | — | — | — | — | agents are data, not branches | pending |
-| A-6 | — | — | — | — | each connector present or recorded in `BLOCKERS.md` | pending |
+| A-4 | `test/twin-rules.test.ts`, `test/scheduling.test.ts` | `test/calendar.test.ts`, `test/use-case-1.test.ts` | — | — | seven twin types modelled, mutated and audited | **six of seven green** |
+| A-5 | `test/agents.test.ts` (36 cases) | `test/agent-builder.test.ts` | — | smoke test | agents are data, not branches | **green** |
+| A-6 | — | `test/webhook-delivery.test.ts`, `test/use-case-1.test.ts` | — | — | each connector present or recorded in `BLOCKERS.md` | **green for what exists; the rest are B-002, B-003, B-007** |
 
 ---
 

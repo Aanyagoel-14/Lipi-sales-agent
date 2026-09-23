@@ -95,7 +95,7 @@ not a flaky assertion.
 | M9 checkpoint | `npm test` | **1010 passed / 1010**, 45 files, 169.6s |
 | M5 checkpoint | `npm test` | **1136 passed / 1136**, 48 files, 207.4s |
 | final | `npm run lint` / `typecheck` | exit 0 / exit 0 |
-| final | `npm test` | **1147 passed / 1147**, 50 files, 194.7s |
+| final | `npm test` | **1149 passed / 1149**, 50 files, 190.3s |
 | final | `npm run build` | **success**, exit 0, 25.01s, 119 routes |
 | final | `npx vitest run test/performance.test.ts` | 5/5; site 3.6ms, deploy 5.8ms, tool overhead 1.4ms |
 
@@ -187,3 +187,50 @@ and two nullable columns on `agent_runs`.
 **Tests added:** `test/agents.test.ts` (36), `test/scheduling.test.ts` (22),
 `test/calendar.test.ts` (11), `test/agent-builder.test.ts` (24),
 `test/prd-ingest.test.ts` (13), `test/sdk.test.ts` (26).
+
+---
+
+## The final smoke test
+
+`npm run build` then `npx next start -p 3999`, against `lipi_dev`. Not the test
+harness — the real production build, over HTTP, with the dev `.env` (which has
+a live OpenRouter key).
+
+| Step | Result |
+| --- | --- |
+| `GET /v1/health` | `{"status":"ok","service":"lipi-api"}` |
+| `POST /v1/auth/signup` | 200, session cookie set |
+| `POST /v1/workspaces` | 200, catalogue seeded |
+| `POST /api/v1/builder/sites/generate` (the PRD's body, the PRD's path) | 201, slug `apex-ceramic-detailing`, 3 pages |
+| `GET /s/apex-ceramic-detailing` | **200, 24,451 bytes** |
+| — its `<title>` and `<meta description>` | generated from the profile |
+| — its JSON-LD | `LocalBusiness`, Austin TX, `ReserveAction` |
+| — its catalogue block | all four seeded products, at live prices, 8 "available" counts |
+| — its theme | `--site-canvas:#0B0F19`, the PRD's own value |
+| — the formula in the page source | **absent**, as designed |
+| `POST /v1/builder/sites/{slug}/quote`, no credential | 200, `{"amountMinorUnits":61000}` — 3 × 120 + 250 |
+| — the same, with a variable missing | **422** `No value was given for COATING_GRADE` |
+| `POST /api/v1/agents/builder/deploy` | 201, three skills, guardrails parsed |
+| `POST /v1/agents/{id}/execute` | 200, `Checked POLO-CLASSIC-L-OLIVE: 22 available`, two events |
+| — a skill the agent does not hold | **422**, named |
+| `POST /api/v1/conversations/ingest` | 201, real order, real invoice, `voiced_by: "openrouter"` |
+
+The last line is worth its own note: that reply was written by a model, over
+the network, and every number in it — the order id, the invoice number, ₹2,392
+— came from the rows `ingest()` had already written. The fact/voice split
+working against a live provider, not a fake.
+
+The smoke test also found the only bug that the whole test suite had missed:
+the specification's own §8.1 deploy body was refused, because it names the
+skills differently from §2. Fixed, and now covered — see `DECISIONS.md` D-024.
+
+Data created by the smoke test was deleted from `lipi_dev` afterwards.
+
+### One more environment note
+
+Something on this machine — a file-sync client, most likely — periodically
+creates `filename 2.ext` duplicates. Two appeared inside `web/src/generated/`
+and `web/.next/types/` during this session and broke `tsc` with duplicate
+identifier errors that have nothing to do with the code. `find . -name '* 2.*'
+-not -path './node_modules/*' -delete` clears them. CI checks out fresh and is
+unaffected.

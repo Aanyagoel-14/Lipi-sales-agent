@@ -117,7 +117,15 @@ database `lipi_dev`, 7 migrations applied and seeded. Dashboard login `demo@lipi
 must never be committed or echoed into output. The Supabase pooler is unreachable from this
 network; the old value is kept commented in `.env`.
 
-`lipi_test` does not exist yet — Phase 0 creates it.
+`lipi_test` exists and the suite runs against it. `npm run db:test:setup` creates it from scratch and is idempotent.
+
+Postgres 15's binaries are not on `PATH` by default on this machine; prefix
+with `export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"`.
+
+**Run one vitest at a time.** The suite talks to one real Postgres with
+`fileParallelism: false`, so a second concurrent run — or a `prisma generate`
+during one — produces `deadlock detected` on `resetDatabase()`'s `TRUNCATE`
+and a cascade of failures that look like logic errors and are not.
 
 ---
 

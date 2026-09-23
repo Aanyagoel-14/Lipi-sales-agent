@@ -70,13 +70,13 @@ sections.
 | --- | --- |
 | Requirements inventoried | **80** |
 | `VERIFIED` — a named test exercises the behaviour and passed | **30** |
-| `IMPLEMENTED` — built and tested, one element outstanding | **20** |
-| `IN_PROGRESS` | **4** |
+| `IMPLEMENTED` — built and tested, one element outstanding | **22** |
+| `IN_PROGRESS` | **6** |
 | `BLOCKED_EXTERNAL_DEPENDENCY` — adapter built, live path needs a credential | **5** |
-| `NOT_STARTED` | **21** |
+| `NOT_STARTED` | **17** |
 
-Ten of the twenty-one not started are the §9 and §8.1 metrics, which are
-accounted for individually in §G. The other eleven are three coherent areas:
+Ten of the seventeen not started are the §9 and §8.1 metrics, which are
+accounted for individually in §G. The other seven are three coherent areas:
 
 - **Voice and telephony** (A-3, F-3, F-4, H-1, H-2, and the metrics that
   depend on them). No ASR, no VAD, no TTS, no SIP. This is the largest gap.
@@ -106,7 +106,7 @@ All commands run from the repository root, which forwards into `web/`.
 | --- | --- |
 | `npm run lint` | **pass**, exit 0 |
 | `npm run typecheck` | **pass**, exit 0 |
-| `npm test` | **1147 passed / 1147**, 50 files, 194.7 s |
+| `npm test` | **1149 passed / 1149**, 50 files, 190.3 s |
 | `npm run build` | **success**, exit 0, 25.01 s, 119 routes |
 
 Baseline for comparison: **826 passed / 826**, 37 files, 137.7 s.
@@ -129,7 +129,7 @@ Baseline for comparison: **826 passed / 826**, 37 files, 137.7 s.
 | `test/inbox-filter.test.ts` | 6 | the channel rail's server-side filter |
 | `test/performance.test.ts` | 5 | the PRD acceptance criteria that can be measured |
 
-311 tests added, and the 826 that were already here still pass.
+The 826 tests that were already here still pass.
 
 ### Regression
 
@@ -147,6 +147,22 @@ One test harness bug was found and fixed: `test/dispatch.ts` collapsed repeated
 query parameters with `set` instead of `append`, so every repeatable parameter
 in the API (`?stage=`, `?status=`, `?channel=`) had never been tested with more
 than one value.
+
+### The smoke test
+
+The suite is not the only evidence. `npm run build` then `npx next start`,
+against the real production build over HTTP, exercised: signup, workspace
+creation, site generation at the PRD's own path, the served page at `/s/{slug}`
+(200, 24 KB, with the generated title, the JSON-LD, all four seeded products at
+live prices, and `--site-canvas:#0B0F19`), the public quote endpoint with and
+without a missing variable, agent deployment, skill execution, a skill the
+agent does not hold, and the PRD's ingest contract — which came back
+`voiced_by: "openrouter"`, a reply written by a live model in which every
+number came from the rows `ingest()` had already written.
+
+It found the one defect the whole suite had missed: the specification's §8.1
+deploy body was refused, because §8.1 names the skills differently from §2. See
+`PROGRESS.md` for the full transcript and `DECISIONS.md` D-024 for the fix.
 
 ---
 
@@ -289,7 +305,7 @@ PRD §9, each marked exactly once. No metric is claimed that was not measured.
 | --- | --- |
 | `PROGRESS.md` | the baseline, the milestone ledger, every verification command and its result |
 | `TRACEABILITY.md` | one row per PRD requirement, with the test that proves it |
-| `DECISIONS.md` | 23 decisions, each with the alternatives rejected and why |
+| `DECISIONS.md` | 24 decisions, each with the alternatives rejected and why |
 | `BLOCKERS.md` | 11 entries: what is missing, what stands in for it, what it would take |
 | `SECURITY_REVIEW.md` | 7 findings, 4 fixed; and what was reviewed and found sound |
 | `PERFORMANCE.md` | every measurement, with the command that produced it |

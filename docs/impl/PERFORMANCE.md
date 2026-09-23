@@ -109,7 +109,7 @@ routes, the seven `/v1/agents/*` routes and the three `/api/v1/*` aliases.
 | | |
 | --- | --- |
 | Baseline, before this effort | 826 tests, 37 files, 137.7 s |
-| Now | **1147 tests, 50 files, 194.7 s** |
+| Now | **1149 tests, 50 files, 190.3 s** |
 
 The suite runs against a real Postgres with `fileParallelism: false`, so its
 duration is dominated by sequential database round trips rather than by CPU.

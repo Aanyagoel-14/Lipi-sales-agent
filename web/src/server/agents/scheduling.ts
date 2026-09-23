@@ -47,7 +47,6 @@ export const schedulingConstraintsSchema = z.object({
 
 export type SchedulingConstraints = z.infer<typeof schedulingConstraintsSchema>;
 
-export const DEFAULT_CONSTRAINTS: SchedulingConstraints = schedulingConstraintsSchema.parse({});
 
 /** The owner's own rules, read off `PaProfile`. */
 export type OwnerRules = {
