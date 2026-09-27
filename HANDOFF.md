@@ -4,7 +4,7 @@ This document is the operating manual for the autonomous loop that works the bac
 `docs/Priority-list.md`. It assumes no context from the session that set it up.
 
 The loop is **not** the phase protocol in `CLAUDE.md`. That protocol is for a human-driven
-session working one phase from `~/Desktop/Lipi-plan/`. This is a different thing running against
+session working one phase from `~/Developer/Lipi-plan/`. This is a different thing running against
 a different backlog: GitHub issues labelled `sandcastle` on the fork. Both are live. Do not let
 an agent working a phase and the loop edit the same files at the same time.
 
@@ -52,7 +52,7 @@ it is just slower to start (about 80 s instead of 6 s).
 ## 3. Run it
 
 ```
-cd ~/Desktop/Lipi-sales-agent
+cd ~/Developer/Lipi-sales-agent
 git checkout sandcastle/integration     # the merge phase merges into whatever branch you are on
 npm run sandcastle
 ```
@@ -206,7 +206,7 @@ bootstraps in 81 s from the cache alone.
 - Branches are left behind. `git branch --list 'sandcastle/issue-*'` lists them.
 - Push when you are satisfied: `git push fork sandcastle/integration`, then open one PR per
   logical group rather than one enormous one.
-- Update the ledger in `~/Desktop/Lipi-plan/PHASE_PLAN.md` for anything that overlaps a planned
+- Update the ledger in `~/Developer/Lipi-plan/PHASE_PLAN.md` for anything that overlaps a planned
   phase, so the two backlogs do not silently diverge.
 
 ## 9. Adding work

@@ -1,10 +1,10 @@
 # CLAUDE.md — how to implement a phase
 
 This repo is being built out phase by phase. The plan lives **outside the repo**, at
-`~/Desktop/Lipi-plan/`:
+`~/Developer/Lipi-plan/`:
 
 ```
-~/Desktop/Lipi-plan/
+~/Developer/Lipi-plan/
 ├── HANDOFF.md                  the gap register — what is not built and why
 ├── PHASE_PLAN.md               the master index: 36 phases, 4 milestones, ledger, decisions
 └── phases/
@@ -26,7 +26,7 @@ have to load the master plan or the register.
 
 Fresh session, no carried context. Read, in this order:
 
-1. `~/Desktop/Lipi-plan/phases/phase-NN-*.md` — the only plan file you need
+1. `~/Developer/Lipi-plan/phases/phase-NN-*.md` — the only plan file you need
 2. The files that phase's **Files** table names
 3. The tests that already cover them
 
@@ -75,7 +75,7 @@ All three green before committing. A skipped test is a failed test.
 ### 7. Budget discipline
 
 If the session passes **~120k tokens** and the suite is not green: stop, commit what is green,
-and move the remainder into a phase `N.5` file in `~/Desktop/Lipi-plan/phases/`. Do not spill
+and move the remainder into a phase `N.5` file in `~/Developer/Lipi-plan/phases/`. Do not spill
 into the next phase's budget — the sizing only works if each phase holds its edges.
 
 Signs you are over budget: re-reading a file you already read, running the full suite more than
@@ -90,7 +90,7 @@ gh pr create      # end the body with the Generated-with line
 
 Then:
 
-- tick the phase's row in the ledger in `~/Desktop/Lipi-plan/PHASE_PLAN.md`
+- tick the phase's row in the ledger in `~/Developer/Lipi-plan/PHASE_PLAN.md`
 - write the phase's **Hand to next** facts into the next phase's file, under a
   `## Notes from the previous phase` heading
 - record every decision the phase forced, with the alternatives rejected
@@ -121,6 +121,18 @@ network; the old value is kept commented in `.env`.
 
 Postgres 15's binaries are not on `PATH` by default on this machine; prefix
 with `export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"`.
+
+**Keep this checkout out of a synced folder.** It lived under an
+iCloud-synced `~/Desktop` until 2026-09-27 and now lives in
+`~/Developer/Lipi-sales-agent`, which iCloud does not touch. While it was
+synced, iCloud rewrote files underneath the tools: `next dev` bound its port
+and then hung with no banner, Turbopack died with `failed to rename
+CURRENT.next to CURRENT`, 2,652 `* 2.*` conflict copies accumulated in
+`node_modules` and `src/generated` (breaking `tsc` and crashing eslint), and
+`npm run lint` took twenty minutes at one per cent CPU. The same commands now
+take ten and eighteen seconds. `distDir` is `.next.nosync` — sync clients skip
+that suffix — which protects the build output but not `node_modules`, so the
+folder itself has to stay unsynced.
 
 **Run one vitest at a time.** The suite talks to one real Postgres with
 `fileParallelism: false`, so a second concurrent run — or a `prisma generate`
