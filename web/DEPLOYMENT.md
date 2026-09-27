@@ -34,7 +34,8 @@ secrets in your host — never commit `.env`):
 |---|---|---|
 | `DATABASE_URL` | yes | `postgresql://user:pass@host:5432/dbname` |
 | `APP_SECRET` | yes | ≥16 random chars. Encrypts every stored channel/connector secret. **Generate once, store safely, never rotate casually** — rotating it invalidates every stored credential and every connected channel/connector must be reconnected. |
-| `PUBLIC_URL` | yes | This deployment's own public HTTPS origin, e.g. `https://app.example.com`. Used to build webhook URLs handed to Telegram/Meta. |
+| `PUBLIC_URL` | yes | This deployment's own public HTTPS origin, e.g. `https://app.example.com`. Used to build the webhook URLs handed to Telegram/Meta and the push URLs handed to inventory connectors — outbound only. The app does not call itself through it. |
+| `INTERNAL_URL` | no | Where this app reaches itself, when `http://127.0.0.1:$PORT` is not that address. Server components fetch their own route handlers; a host that cannot serve itself on loopback needs this named. Vercel is detected without it. |
 | `OPENROUTER_API_KEY` | no | Enables LLM-based intent extraction and the operator's twin-chat feature. Without it, intent extraction falls back to deterministic rules (still fully functional, just less flexible on ambiguous phrasing) and twin-chat is unavailable. |
 | `OPENROUTER_MODEL` | no | Defaults to a fast model; used for per-message intent extraction. |
 | `OPENROUTER_CHAT_MODEL` | no | Used only for the operator's own twin-chat, can be a stronger/slower model. |

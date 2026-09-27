@@ -1,5 +1,6 @@
 web/node_modules/
 web/.next/
+web/.next.nosync/
 web/.env
 web/.env.*
 !web/.env.example
