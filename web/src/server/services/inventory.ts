@@ -332,6 +332,10 @@ export async function reconcile(workspaceId: string) {
         name: c.name,
         status: c.status,
         cursor: c.cursor,
+        /* The store an OAuth connector speaks to. Not a credential, and the
+         * operator needs to see which one they connected. Null for a pushed
+         * connector, which has no identity of its own at the source. */
+        shop: c.externalId,
         lastSyncIso: c.lastSyncAt?.toISOString() ?? null,
         lastError: c.lastError,
         appliedCount: c.appliedCount,

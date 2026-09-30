@@ -1,8 +1,24 @@
-import { json, route } from "@/server/lib/http";
-import { after, paged, pageOf } from "@/server/lib/page";
+import { Prisma, type Channel } from "@/generated/prisma/client";
+import { body, HttpError, json, route, searchParams } from "@/server/lib/http";
+import { preflight } from "@/server/lib/origins";
+import { after, paged, pageOf, type Page } from "@/server/lib/page";
 import { prisma } from "@/server/lib/prisma";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
-import { customerOut, messageOut } from "../shapes";
+import { ingest } from "@/server/services/ingest";
+import { channel, createConversationBody } from "../contract";
+import { conversationSummaryOut } from "../shapes";
+
+/** Enough for a preview line: the twin, the newest message, and how many. */
+const summaryInclude = {
+  customer: true,
+  messages: { orderBy: { sentAt: "desc" }, take: 1 },
+  _count: { select: { messages: true } },
+} as const satisfies Prisma.ConversationInclude;
+
+type SummaryRow = Prisma.ConversationGetPayload<{ include: typeof summaryInclude }>;
+
+const summaryOf = (c: SummaryRow) =>
+  conversationSummaryOut({ ...c, messageCount: c._count.messages, lastMessage: c.messages[0] });
 
 /**
  * The thread list carries a preview, not the thread.
@@ -15,15 +31,29 @@ export const GET = route(async (req) => {
   const workspaceId = await resolveWorkspaceId();
   const page = pageOf(req);
 
+  // The split-pane workspace's channel rail (PRD §7.1) filters here rather
+  // than in the browser. Filtering a loaded page client-side would show "3 of
+  // 50" and call it the WhatsApp feed, and the cursor would page through the
+  // unfiltered list underneath it.
+  const channels = searchParams(req).getAll("channel").filter(Boolean);
+  const unknown = channels.filter((c) => !channel.safeParse(c).success);
+  if (unknown.length) {
+    throw new HttpError(422, `Unknown channel: ${unknown.join(", ")}`, { channel: unknown });
+  }
+
+  if (searchParams(req).get("by") === "customer") {
+    return json(await byCustomer(workspaceId, channels as Channel[], page));
+  }
+
   const found = await prisma.conversation.findMany({
-    where: { workspaceId, ...after("lastAt", page) },
+    where: {
+      workspaceId,
+      ...(channels.length ? { channel: { in: channels as Channel[] } } : {}),
+      ...after("lastAt", page),
+    },
     // Ends in a unique column, or the anchor is ambiguous.
     orderBy: [{ lastAt: "desc" }, { id: "desc" }],
-    include: {
-      customer: true,
-      messages: { orderBy: { sentAt: "desc" }, take: 1 },
-      _count: { select: { messages: true } },
-    },
+    include: summaryInclude,
     take: page.take,
   });
 
@@ -31,15 +61,87 @@ export const GET = route(async (req) => {
   // under an open cursor. The client dedupes by id for that reason.
   const { rows, nextCursor } = paged(found, page, (c) => c.lastAt);
 
-  return json({
-    nextCursor,
-    conversations: rows.map((c) => ({
-      id: c.id, customerId: c.customerId, channel: c.channel, subject: c.subject,
-      unread: c.unread, lastAtIso: c.lastAt.toISOString(), intent: c.intent,
-      signals: c.signals,
-      messageCount: c._count.messages,
-      lastMessage: c.messages[0] ? messageOut(c.messages[0]) : null,
-      customer: customerOut(c.customer),
-    })),
-  });
+  return json({ nextCursor, conversations: rows.map(summaryOf) });
 });
+
+/**
+ * One row per person per channel, for the inbox.
+ *
+ * `ingest()` opens a conversation per inbound message, so the plain list
+ * shows somebody who has written five times as five rows. The inbox asks for
+ * this instead: each (customer, channel) pair is represented by its newest
+ * conversation, and its count is the whole pair's. The plain list is left as
+ * it was — integrators page it and address rows by id.
+ *
+ * The newest row per pair is chosen before the cursor applies. Applied the
+ * other way round, page two would pick an older conversation of somebody
+ * already shown on page one and list them again.
+ */
+async function byCustomer(workspaceId: string, channels: Channel[], page: Page) {
+  const anchor = page.anchor ? new Date(Number(page.anchor.key)) : null;
+  if (anchor && !Number.isFinite(anchor.getTime())) throw new HttpError(422, "That page cursor is not valid");
+
+  const latest = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM (
+      SELECT DISTINCT ON ("customerId", channel) id, "lastAt"
+      FROM conversations
+      WHERE "workspaceId" = ${workspaceId}
+        ${channels.length ? Prisma.sql`AND channel::text IN (${Prisma.join(channels)})` : Prisma.empty}
+      ORDER BY "customerId", channel, "lastAt" DESC, id DESC
+    ) newest
+    ${anchor ? Prisma.sql`WHERE "lastAt" < ${anchor} OR ("lastAt" = ${anchor} AND id < ${page.anchor!.id})` : Prisma.empty}
+    ORDER BY "lastAt" DESC, id DESC
+    LIMIT ${page.take}`;
+
+  const found = await prisma.conversation.findMany({
+    where: { workspaceId, id: { in: latest.map((r) => r.id) } },
+    orderBy: [{ lastAt: "desc" }, { id: "desc" }],
+    include: summaryInclude,
+  });
+  const { rows, nextCursor } = paged(found, page, (c) => c.lastAt);
+
+  const counts = rows.length
+    ? await prisma.$queryRaw<{ customerId: string; channel: string; n: bigint }[]>`
+        SELECT c."customerId", c.channel::text AS channel, count(m.id) AS n
+        FROM conversations c JOIN messages m ON m."conversationId" = c.id
+        WHERE c."workspaceId" = ${workspaceId}
+          AND c."customerId" IN (${Prisma.join(rows.map((r) => r.customerId))})
+        GROUP BY 1, 2`
+    : [];
+  const countOf = (c: SummaryRow) =>
+    Number(counts.find((n) => n.customerId === c.customerId && n.channel === c.channel)?.n ?? c._count.messages);
+
+  return {
+    nextCursor,
+    conversations: rows.map((c) =>
+      conversationSummaryOut({ ...c, messageCount: countOf(c), lastMessage: c.messages[0] }),
+    ),
+  };
+}
+
+/**
+ * Starts a conversation from the integrator's own site.
+ *
+ * The same message that `POST /v1/messages` takes, answered with the thread
+ * it landed in. Both call `ingest()` — there is one path that decides what is
+ * true about a message, and an integration must not get a second one that
+ * could disagree with it.
+ *
+ * A handle that has written before resolves to its existing customer twin,
+ * which is where continuity lives; the thread is per message, exactly as it
+ * is for `/v1/messages`, and changing that is not this endpoint's business.
+ */
+export const POST = route(async (req) => {
+  const data = await body(req, createConversationBody, "Invalid conversation");
+  const workspaceId = await resolveWorkspaceId();
+  const result = await ingest({ ...data, workspaceId });
+
+  const conversation = await prisma.conversation.findFirstOrThrow({
+    where: { id: result.conversationId, workspaceId },
+    include: summaryInclude,
+  });
+
+  return json({ conversation: summaryOf(conversation), reply: result.reply }, 201);
+});
+
+export const OPTIONS = route(preflight);

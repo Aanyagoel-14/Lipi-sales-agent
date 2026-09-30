@@ -227,6 +227,10 @@
   /* Sixth channel, added with Messenger. Green is the one hue the five
    * above leave open, so a six-line chart still separates at a glance. */
   --color-series-6: #3d8b37;
+  /* Seventh, added with X. The six above use every hue that separates on
+   * white, so this one is neutral rather than a seventh colour crowding
+   * them — which is also what X's own mark looks like. 8.2:1 on white. */
+  --color-series-7: #4b4f5c;
 
   --color-ramp-1: #b8a7f4;
   --color-ramp-2: #9a80ee;

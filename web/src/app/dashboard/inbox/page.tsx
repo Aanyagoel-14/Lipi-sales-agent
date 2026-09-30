@@ -53,14 +53,45 @@ const DELIVERY: Record<Exclude<DeliveryState, "sent">, string> = {
   held: "awaiting approval",
 };
 
-export default async function InboxPage() {
-  const data = await getConversations();
+/**
+ * Which thread is open, and which feed the list is showing.
+ *
+ * Both are search parameters rather than client state. The transcript is
+ * fetched on the server by id — the list carries previews only — so selecting
+ * a thread is a navigation, and a navigation is what gives it a URL an
+ * operator can send to a colleague and a back button that works.
+ */
+type Props = { searchParams: Promise<{ thread?: string; channel?: string }> };
 
-  // May be empty: a new workspace has had no conversations yet.
-  const summary = data.conversations[0];
-  // The list carries previews only, so the open thread is fetched by id. One
-  // thread's messages, not every thread's.
-  const active = summary ? (await getConversation(summary.id)).conversation : null;
+export default async function InboxPage({ searchParams }: Props) {
+  const { thread, channel } = await searchParams;
+
+  // An unknown channel is dropped rather than 500ing the page: a hand-edited
+  // URL should show the inbox, not an error.
+  const filter = channel && channel in channelLabel ? channel : undefined;
+  const data = await getConversations(filter ? { channel: filter } : {});
+
+  // Which channels this workspace has actually heard from, so the rail never
+  // offers a filter that can only return nothing. Read unfiltered, or
+  // selecting WhatsApp would leave WhatsApp as the only chip on screen.
+  const all = filter ? await getConversations() : data;
+  const channels = [...new Set(all.conversations.map((c) => c.channel))].sort();
+
+  // The named thread when it is one of this workspace's, otherwise the newest
+  // in the current feed. May be neither: a new workspace has had no
+  // conversations yet.
+  //
+  // A named thread can be missing from the list and still be real: the list
+  // shows each person's newest conversation, so a link made before their
+  // latest message names an older one. It opens that person's chat rather
+  // than silently switching to somebody else's.
+  const named = thread && !data.conversations.some((c) => c.id === thread)
+    ? await getConversation(thread).then((r) => r.conversation, () => null)
+    : null;
+  const summary = named
+    ? data.conversations.find((c) => c.customerId === named.customerId && c.channel === named.channel)
+    : data.conversations.find((c) => c.id === thread) ?? data.conversations[0];
+  const active = named ?? (summary ? (await getConversation(summary.id)).conversation : null);
 
   return (
     <>
@@ -70,11 +101,22 @@ export default async function InboxPage() {
       />
 
       {!active ? (
-        <EmptyState
-          title="No conversations yet"
-          body="Once a channel is connected, every message your customers send lands here and updates the twins. You can try the loop now without waiting for a real message."
-          action={{ href: "/dashboard/train", label: "Send a test message" }}
-        />
+        filter ? (
+          // A filter that matched nothing is a different situation from an
+          // empty inbox, and telling an operator to "send a test message"
+          // when they have fifty threads on another channel reads as a bug.
+          <EmptyState
+            title={`No ${channelLabel[filter as keyof typeof channelLabel]} conversations`}
+            body="Nothing has arrived on this channel yet. Other channels may have threads waiting."
+            action={{ href: "/dashboard/inbox", label: "Show every channel" }}
+          />
+        ) : (
+          <EmptyState
+            title="No conversations yet"
+            body="Once a channel is connected, every message your customers send lands here and updates the twins. You can try the loop now without waiting for a real message."
+            action={{ href: "/dashboard/train", label: "Send a test message" }}
+          />
+        )
       ) : (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[20rem_1fr_18rem]">
         {/* Stacked, the list would sit above the thread it selects, so reading
@@ -84,7 +126,9 @@ export default async function InboxPage() {
           <ThreadList
             initial={data.conversations}
             nextCursor={data.nextCursor}
-            activeId={active.id}
+            activeId={summary?.id ?? active.id}
+            channel={filter ?? null}
+            channels={channels}
           />
         </div>
 
@@ -113,11 +157,16 @@ export default async function InboxPage() {
                       {m.delivery && m.delivery !== "sent" ? (
                         <>
                           {" · "}
-                          <span
-                            className={m.delivery === "failed" ? "text-magenta" : undefined}
-                            title={m.deliveryError ?? undefined}
-                          >
+                          <span className={m.delivery === "failed" ? "text-magenta" : undefined}>
                             {DELIVERY[m.delivery]}
+                            {/* The provider's own reason, in the thread rather
+                                than in a `title` — a tooltip does not exist on
+                                a phone, and this is the line that separates
+                                "the channel is down" from "this one chat
+                                cannot be reached". A live channel showing four
+                                undelivered messages and no reason reads as a
+                                broken product. */}
+                            {m.deliveryError ? ` · ${m.deliveryError}` : null}
                           </span>
                         </>
                       ) : null}

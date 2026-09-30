@@ -18,18 +18,37 @@ export function usePaged<K extends string, T extends { id: string }>(
   key: K,
   initial: T[],
   initialCursor: string | null,
+  /**
+   * Filters the server already applied to the first page, re-sent with every
+   * later one. Without this, page two of "the WhatsApp feed" is page two of
+   * the unfiltered list, and the rail quietly stops meaning anything.
+   */
+  filters?: Record<string, string>,
 ) {
   const [rows, setRows] = useState(initial);
   const [cursor, setCursor] = useState(initialCursor);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // A filter change re-renders the server component with a different first
+  // page, so the hook has to start again rather than append the new feed to
+  // the old one's rows.
+  const signature = JSON.stringify(filters ?? {});
+  const [lastSignature, setLastSignature] = useState(signature);
+  if (signature !== lastSignature) {
+    setLastSignature(signature);
+    setRows(initial);
+    setCursor(initialCursor);
+    setError(null);
+  }
+
   async function more() {
     if (!cursor || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const body = await apiJson<Paged<K, T>>(`${path}?cursor=${encodeURIComponent(cursor)}`);
+      const query = new URLSearchParams({ ...(filters ?? {}), cursor });
+      const body = await apiJson<Paged<K, T>>(`${path}?${query}`);
       const next = body[key] as T[];
       // Guard against a duplicate anchor row rendering twice if a write landed
       // between pages.

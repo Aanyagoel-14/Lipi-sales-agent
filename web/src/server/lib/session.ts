@@ -8,6 +8,15 @@ export const SESSION_COOKIE = "lipi_session";
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * The wizard's record of which workspace the browser is looking at. It
+ * belongs to whoever was signed in when it was written, so it goes whenever
+ * the session does: left behind, it names the previous user's workspace, the
+ * membership check in `resolveWorkspaceId` refuses it with a 403, and every
+ * dashboard read fails for the new user.
+ */
+const WORKSPACE_COOKIES = ["lipi_workspace_id", "lipi_workspace"];
+
+/**
  * Opaque server-side sessions. The cookie carries a random id and nothing
  * else, so it asserts no claims a client could tamper with, and revoking a
  * session is a row delete rather than a token blacklist.
@@ -21,7 +30,9 @@ export async function createSession(userId: string) {
 
   await prisma.session.create({ data: { id, userId, expiresAt } });
 
-  (await cookies()).set(SESSION_COOKIE, id, {
+  const jar = await cookies();
+  for (const name of WORKSPACE_COOKIES) jar.delete(name);
+  jar.set(SESSION_COOKIE, id, {
     httpOnly: true,
     sameSite: "lax",
     secure: env.NODE_ENV === "production",
@@ -35,6 +46,7 @@ export async function destroySession() {
   const id = jar.get(SESSION_COOKIE)?.value;
   if (id) await prisma.session.deleteMany({ where: { id } });
   jar.delete(SESSION_COOKIE);
+  for (const name of WORKSPACE_COOKIES) jar.delete(name);
 }
 
 export type Authed = {
@@ -66,6 +78,15 @@ export async function currentUser(): Promise<Authed | null> {
     name: session.user.name,
     workspaceIds: session.user.memberships.map((m) => m.workspaceId),
   };
+}
+
+/**
+ * Whether the request carries a session cookie at all — not whether it is a
+ * live one. Used to catch a request that presents both credentials, which is
+ * a caller's bug rather than a choice for this app to resolve.
+ */
+export async function hasSessionCookie(): Promise<boolean> {
+  return Boolean((await cookies()).get(SESSION_COOKIE)?.value);
 }
 
 export async function requireUser(): Promise<Authed> {

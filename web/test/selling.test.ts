@@ -157,6 +157,32 @@ describe("voicing the reply", () => {
     expect(message.text).toBe("Lovely, those are reserved for you.");
   });
 
+  it("grounds the prompt in the policies the message asks about, and says which", async () => {
+    await setup();
+    let system = "";
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      system = JSON.parse(init.body).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Both of those, yes." } }] }), { status: 200 });
+    });
+
+    const result = await buy("do you do bulk pricing for 200 units, and what is your returns window?");
+
+    expect(system).toContain("POLICY THAT ANSWERS THIS MESSAGE");
+    expect(system).toContain("Orders above 100 units qualify for tiered pricing");
+    expect(system).toContain("Unworn items can be returned within 14 days");
+    expect(result.knowledgeUsed.map((k) => k.title).sort()).toEqual(["Returns window", "Volume discounts"]);
+  });
+
+  it("reports the template's own entry when there is no model to ground", async () => {
+    await setup();
+    env.OPENROUTER_API_KEY = undefined;
+
+    const result = await buy("what is your returns policy for unworn items?");
+
+    expect(result.voicedBy).toBe("template");
+    expect(result.knowledgeUsed.map((k) => k.title)).toEqual(["Returns window"]);
+  });
+
   it("falls back to the composed reply when the model fails, keeping the order", async () => {
     await setup();
     vi.stubGlobal("fetch", async () => new Response("no credits", { status: 402 }));
@@ -167,6 +193,88 @@ describe("voicing the reply", () => {
     expect(result.degraded).toContain("402");
     expect(result.order).not.toBeNull();
     expect(result.reply).toContain("Reserved");
+  });
+
+  /**
+   * Same salesperson, different surface. The length and formatting rule is
+   * chosen from the channel rather than applied to the model's output after
+   * the fact — trimming a reply to fit a bubble would cut a verified price in
+   * half, which is a number nobody computed.
+   */
+  it("asks for the reply the channel can actually render", async () => {
+    await setup();
+    // A key turns on the model-backed extractor too, and it posts to the
+    // same endpoint; only the sales prompt is of interest here.
+    const prompts: string[] = [];
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      const system: string = JSON.parse(init.body).messages[0].content;
+      if (system.startsWith("You are a salesperson")) prompts.push(system);
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply: "Olive is in." }) } }] }), { status: 200 });
+    });
+
+    await sell({ workspaceId, channel: "webchat", handle: "web:v1", text: "do you have olive polos" });
+    await sell({ workspaceId, channel: "whatsapp", handle: "+91 90 000 5555", text: "do you have olive polos" });
+
+    const [web, whatsapp] = prompts;
+    expect(web).toContain("renders as markdown");
+    expect(whatsapp).toContain("WhatsApp message");
+    expect(whatsapp).not.toContain("renders as markdown");
+  });
+
+  /**
+   * Progressive contact capture (#16). The twin asks in words, so the ask is
+   * a fact in the briefing like every other: what to ask for is decided by
+   * the lead score before the model is called, and the model only words it.
+   */
+
+  /** The briefings the salesperson was handed, in order, with the model
+   *  answering `reply` every time. A turn calls the model more than once —
+   *  extraction has its own prompt — so the salesperson's is picked out by
+   *  the line it opens with. */
+  function capturedPrompts(reply: string) {
+    const prompts: string[] = [];
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      const system: string = JSON.parse(init.body).messages[0].content;
+      if (system.startsWith("You are a salesperson")) prompts.push(system);
+      return new Response(JSON.stringify({ choices: [{ message: { content: reply } }] }), { status: 200 });
+    });
+    return prompts;
+  }
+
+  it("tells the model what to ask for, once the lead is worth asking", async () => {
+    await setup();
+    const prompts = capturedPrompts("Reserved.");
+
+    const result = await sell({ workspaceId, channel: "webchat", handle: "web:v1", text: "I need 2 blue XL polos" });
+
+    expect(result.contactAsk).toBe("name");
+    expect(prompts[0]).toContain("ASK THEM FOR: their name");
+  });
+
+  it("says nothing about contact details on a cold first message", async () => {
+    await setup();
+    const prompts = capturedPrompts("Hello!");
+
+    const result = await sell({ workspaceId, channel: "webchat", handle: "web:v2", text: "hi" });
+
+    expect(result.contactAsk).toBeNull();
+    // The colon is the fact line. The rules block names the marker itself
+    // ("only when the block above says ASK THEM FOR"), and that sentence is
+    // in every prompt whether or not there is anything to ask for.
+    expect(prompts[0]).not.toContain("ASK THEM FOR:");
+  });
+
+  it("tells the model what it was just given, so it does not ask for it again", async () => {
+    await setup();
+    const prompts = capturedPrompts("Got it.");
+
+    const result = await sell({
+      workspaceId, channel: "webchat", handle: "web:v3",
+      text: "I need 2 blue XL polos, mail me at priya@shop.test",
+    });
+
+    expect(result.contactAsk).toBe("name");
+    expect(prompts[0]).toContain("THEY JUST GAVE YOU: their email");
   });
 
   it("refuses a reply that uses a banned phrase", async () => {
@@ -254,26 +362,26 @@ describe("what a customer is allowed to see", () => {
 
   it("shows a customer availability, not the reservation behind it", async () => {
     await setup();
-    const { buildCustomerCatalogue } = await import("@/server/services/briefing");
+    const { buildGrounding } = await import("@/server/services/briefing");
     await prisma.variant.updateMany({
       where: { optionA: "XL", optionB: "Cobalt", product: { workspaceId, name: "Polo Classic" } },
       data: { stock: 10, reserved: 4 },
     });
 
-    const catalogue = await buildCustomerCatalogue(workspaceId);
+    const { text: catalogue } = await buildGrounding(workspaceId, { text: "what do you have?" });
     expect(catalogue).toContain("XL / Cobalt (6)");
     expect(catalogue).not.toContain("4 reserved");
   });
 
   it("marks a variant with nothing left as sold out", async () => {
     await setup();
-    const { buildCustomerCatalogue } = await import("@/server/services/briefing");
+    const { buildGrounding } = await import("@/server/services/briefing");
     await prisma.variant.updateMany({
       where: { optionA: "XL", optionB: "Cobalt", product: { workspaceId, name: "Polo Classic" } },
       data: { stock: 3, reserved: 3 },
     });
 
-    const catalogue = await buildCustomerCatalogue(workspaceId);
+    const { text: catalogue } = await buildGrounding(workspaceId, { text: "what do you have?" });
     expect(catalogue).toMatch(/Sold out:.*XL \/ Cobalt/);
   });
 });
@@ -320,5 +428,177 @@ describe("a sale that is already made", () => {
     expect(result.order).not.toBeNull();
     env.OPENROUTER_API_KEY = undefined;
     vi.unstubAllGlobals();
+  });
+});
+
+describe("objections, alternatives and what may answer them", () => {
+  beforeEach(() => { env.OPENROUTER_API_KEY = "test-key"; });
+  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); });
+
+  /** Answers with whatever the model is told to say, and keeps the prompt. */
+  function modelSays(reply: string) {
+    const seen = { system: "" };
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      seen.system = JSON.parse(init.body).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply }) } }] }), { status: 200 });
+    });
+    return seen;
+  }
+
+  it("refuses a discount the model invented, and sends the plain reply instead", async () => {
+    await setup();
+    modelSays("I can do 15% off if you take two today.");
+
+    const result = await buy("that is more than I wanted to spend on 2 blue XL polos");
+
+    expect(result.voicedBy).toBe("template");
+    expect(result.degraded).toContain("unauthorised discount");
+    expect(result.reply).not.toContain("15%");
+    expect(result.reply).not.toMatch(/discount/i);
+  });
+
+  it("hands the model in-stock alternatives when what they asked for is gone", async () => {
+    await setup();
+    await prisma.variant.updateMany({
+      where: { optionA: "XL", optionB: "Cobalt", product: { workspaceId, name: "Polo Classic" } },
+      data: { stock: 0, reserved: 0 },
+    });
+    const seen = modelSays("That size is gone, but M is here.");
+
+    const result = await buy("I need 2 blue XL polos");
+
+    expect(seen.system).toContain("WHAT TO PUT IN FRONT OF THEM");
+    expect(seen.system).toMatch(/which is sold out: Polo Classic in .+ available/);
+    expect(result.recommended.some((r) => r.kind === "alternative" && r.available > 0)).toBe(true);
+    // Nothing was sold, so nothing was reserved.
+    expect(result.order).toBeNull();
+  });
+
+  it("tells the model it may not invent a discount", async () => {
+    await setup();
+    const seen = modelSays("Those are reserved.");
+
+    await buy("I need 2 blue XL polos");
+
+    expect(seen.system).toContain("You may NEVER offer a discount");
+    expect(seen.system).toContain("HANDLING AN OBJECTION IS A MATTER OF WORDS");
+  });
+});
+
+describe("the grounding block", () => {
+  /** A second product in an existing category, so neighbours have something to be. */
+  async function addPolo(name: string) {
+    const supplier = await prisma.supplier.findFirstOrThrow({ where: { workspaceId } });
+    await prisma.product.create({
+      data: {
+        id: `prd_${name.toLowerCase().replace(/\W/g, "")}`, workspaceId, name, category: "Polo",
+        axes: ["Size", "Colour"], price: 150_000, marginPct: 40, leadTimeDays: 5,
+        crossSell: [], supplierId: supplier.id,
+        variants: { create: [{ optionA: "L", optionB: "Cobalt", stock: 7, reserved: 0, sku: `${name}-L-COB` }] },
+      },
+    });
+  }
+
+  it("carries every policy the message asks about, not just the first", async () => {
+    await setup();
+    const { buildGrounding } = await import("@/server/services/briefing");
+
+    const grounding = await buildGrounding(workspaceId, {
+      text: "do you do bulk pricing for 200 units, and what is your returns window?",
+      intent: "quote_request",
+    });
+
+    expect(grounding.knowledge.map((k) => k.title).sort()).toEqual(["Returns window", "Volume discounts"]);
+    expect(grounding.text).toContain("Unworn items can be returned within 14 days");
+    expect(grounding.text).toContain("Orders above 100 units qualify for tiered pricing");
+  });
+
+  it("puts the matched product and its category neighbours in front", async () => {
+    await setup();
+    await addPolo("Polo Sport");
+    const { buildGrounding } = await import("@/server/services/briefing");
+
+    const { text } = await buildGrounding(workspaceId, {
+      text: "I need 2 blue XL polos",
+      intent: "buy",
+      matched: { product: "Polo Classic", variant: "XL / Cobalt" },
+    });
+
+    expect(text.indexOf("Polo Classic")).toBeLessThan(text.indexOf("Polo Sport"));
+    // Alphabetically the belt leads the catalogue; relevance puts it behind both polos.
+    expect(text.indexOf("Polo Sport")).toBeLessThan(text.indexOf("Leather Belt"));
+  });
+
+  it("takes every price and count from the database", async () => {
+    await setup();
+    await prisma.product.updateMany({ where: { workspaceId, name: "Polo Classic" }, data: { price: 123400 } });
+    await prisma.variant.updateMany({
+      where: { optionA: "XL", optionB: "Cobalt", product: { workspaceId, name: "Polo Classic" } },
+      data: { stock: 10, reserved: 4 },
+    });
+    const { buildGrounding } = await import("@/server/services/briefing");
+
+    const { text } = await buildGrounding(workspaceId, { text: "how much is a polo?", intent: "other" });
+
+    expect(text).toContain("₹1,234 each");
+    expect(text).toContain("XL / Cobalt (6)");
+    // The reservation behind the number is still none of a customer's business.
+    expect(text).not.toContain("4 reserved");
+  });
+
+  it("stays inside its ceiling with 500 knowledge entries, keeping the ones that answer", async () => {
+    await setup();
+    const { buildGrounding, GROUNDING_MAX_CHARS } = await import("@/server/services/briefing");
+    await prisma.knowledgeEntry.createMany({
+      data: Array.from({ length: 500 }, (_, i) => ({
+        workspaceId, kind: "faq" as const, title: `Filler ${i}`,
+        // Long, because a taught policy is often a few paragraphs: twenty of
+        // these are already past the ceiling on their own.
+        body: `An entry about nothing in particular, number ${i}. `.repeat(20),
+      })),
+    });
+
+    const grounding = await buildGrounding(workspaceId, {
+      text: "do you do bulk pricing for 200 units, and what is your returns window?",
+      intent: "quote_request",
+    });
+
+    expect(grounding.text.length).toBeLessThanOrEqual(GROUNDING_MAX_CHARS);
+    // Trimmed, not merely short: the entries that answer nothing are the ones cut.
+    expect(grounding.text.split("Filler").length - 1).toBeLessThan(20);
+    expect(grounding.text).toContain("Returns window");
+    expect(grounding.text).toContain("Volume discounts");
+    expect(grounding.text).toContain("Polo Classic");
+  });
+
+  it("says so when what it lists is not the whole catalogue", async () => {
+    await setup();
+    const supplier = await prisma.supplier.findFirstOrThrow({ where: { workspaceId } });
+    // Past the page the block reads, and named so they sort last: a model told
+    // nothing would answer "we do not sell that" for the products off the page.
+    await prisma.product.createMany({
+      data: Array.from({ length: 40 }, (_, i) => ({
+        id: `prd_filler_${i}`, workspaceId, name: `Zz Filler ${i}`, category: "Filler",
+        axes: ["Size", "Colour"], price: 10000, marginPct: 10, leadTimeDays: 3,
+        crossSell: [], supplierId: supplier.id,
+      })),
+    });
+    const { buildGrounding } = await import("@/server/services/briefing");
+
+    const { text } = await buildGrounding(workspaceId, { text: "what do you have?" });
+
+    expect(text).toContain("This is not the whole catalogue");
+  });
+
+  it("is deterministic — the same message and workspace build the same block", async () => {
+    await setup();
+    const { buildGrounding } = await import("@/server/services/briefing");
+    const focus = { text: "returns on a bulk order of polos", intent: "other" };
+
+    const first = await buildGrounding(workspaceId, focus);
+    const second = await buildGrounding(workspaceId, focus);
+
+    expect(second.text).toBe(first.text);
+    expect(second.knowledge).toEqual(first.knowledge);
   });
 });

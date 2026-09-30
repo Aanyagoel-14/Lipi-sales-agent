@@ -2,20 +2,22 @@ import { after } from "next/server";
 import type { Channel } from "@/generated/prisma/client";
 import { prisma } from "@/server/lib/prisma";
 import { checkRateLimit } from "@/server/lib/rate-limit";
-import { ingest } from "@/server/services/ingest";
+import { sell } from "@/server/services/selling";
 import { sendReply } from "./outbound";
-import type { ParsedMessage } from "./registry";
+import { specFor, type ParsedMessage } from "./registry";
 
 /**
  * The one way a customer message enters the building.
  *
- * Three transports reach it — the single Meta callback, the per-connection
- * Telegram route, and (next phase) Composio's trigger webhook — and each of
- * them authenticates its own caller, because each is authenticated
- * differently: Meta signs the raw bytes, Telegram echoes a secret header,
- * Composio signs a Standard Webhooks envelope. What happens *after* that is
- * the same three steps every time, and they are here so there is one copy of
- * them to reason about rather than one per transport.
+ * Three transports reach it — the single Meta callback, the single X
+ * callback and the per-connection Telegram route — and Composio's trigger
+ * webhook is the fourth, once the trigger-channels phase routes it here
+ * rather than logging. Each authenticates its own caller, because each is
+ * authenticated differently: Meta signs the raw bytes, X signs them base64
+ * under its app's consumer secret, Telegram echoes a secret header, Composio
+ * signs a Standard Webhooks envelope. What happens *after* that is the same
+ * three steps every time, and they are here so there is one copy of them to
+ * reason about rather than one per transport.
  *
  * Nothing in this module decides whether a request is genuine. It is called
  * only once the caller has proved itself, and the rate limit below is placed
@@ -30,6 +32,11 @@ import type { ParsedMessage } from "./registry";
  * every Meta tenant now arrives on one URL from Meta's own address range, so
  * an IP bucket would be a single global bucket that one busy workspace could
  * close for everyone.
+ *
+ * This is the default. A channel whose provider imposes something tighter
+ * says so in its own spec (`inboundLimit`) rather than being named here:
+ * what a provider allows is a property of the channel, and a list of
+ * exceptions at the door is how one gets missed when a channel is added.
  */
 export const INBOUND_LIMIT = 120;
 export const INBOUND_WINDOW_MS = 60_000;
@@ -50,17 +57,20 @@ export const rateLimitKey = (connectionId: string) => `webhook:${connectionId}`;
  *
  * The only rows this writes itself are the idempotency claims and the
  * connection's `lastEventAt`. Everything else a message causes happens inside
- * `ingest()`'s transaction, and the reply that follows is `sendReply`'s to
- * record. `status` is deliberately untouched: the route this replaced set it
- * to `connected` on every accepted delivery, which quietly healed a channel
- * whose credential had expired for sending — inbound arriving says nothing
- * about whether outbound works.
+ * `ingest()`'s transaction — which `sell()` runs, so the facts are decided
+ * here exactly as they are for the website and only the words differ — and
+ * the reply that follows is `sendReply`'s to record. `status` is deliberately
+ * untouched: the route this replaced set it to `connected` on every accepted
+ * delivery, which quietly healed a channel whose credential had expired for
+ * sending — inbound arriving says nothing about whether outbound works.
  */
 export async function receive(
   connection: ReceivingConnection,
   messages: ParsedMessage[],
 ): Promise<Response> {
-  const limited = checkRateLimit(rateLimitKey(connection.id), INBOUND_LIMIT, INBOUND_WINDOW_MS);
+  const ceiling = specFor(connection.channel)?.inboundLimit
+    ?? { max: INBOUND_LIMIT, windowMs: INBOUND_WINDOW_MS };
+  const limited = checkRateLimit(rateLimitKey(connection.id), ceiling.max, ceiling.windowMs);
   if (!limited.allowed) {
     return new Response(null, { status: 429, headers: { "Retry-After": String(limited.retryAfterSeconds) } });
   }
@@ -99,7 +109,14 @@ export async function receive(
 
     for (const message of fresh) {
       try {
-        const result = await ingest({
+        // The salesperson, not the form letter. `sell()` is the same call the
+        // website makes: it runs the ingest transaction, then voices the
+        // outcome and writes those words onto the reply row ingest composed
+        // into. Which is why this stays one message per inbound message —
+        // there is one row, and the voiced reply replaces the draft in it
+        // rather than joining it. Voicing is inside `sell()` and behind the
+        // idempotency claim above, so a retried webhook costs no model call.
+        const result = await sell({
           workspaceId: connection.workspaceId,
           channel: connection.channel,
           handle: message.handle,
@@ -108,25 +125,20 @@ export async function receive(
         });
 
         // Only send when the workspace's policy actually cleared it. The
-        // reply ingest just persisted is the message being delivered, so
+        // reply `sell()` persisted is the message being delivered, so
         // `sendReply` can record the outcome on it; a failure is that
         // message's state, not the connection's, and is not caught here.
-        if (result.replySent) {
-          const reply = await prisma.message.findFirst({
-            where: { conversationId: result.conversationId, from: "agent" },
-            orderBy: { sentAt: "desc" },
+        if (!result.held) {
+          await sendReply({
+            workspaceId: connection.workspaceId,
+            conversationId: result.conversationId,
+            messageId: result.replyMessageId,
           });
-          if (reply) {
-            await sendReply({
-              workspaceId: connection.workspaceId,
-              conversationId: result.conversationId,
-              messageId: reply.id,
-            });
-          }
         }
       } catch (error) {
-        // Ingest itself failing is a bug in the loop, not a broken channel,
-        // so it is logged and the connection is left alone.
+        // The loop itself failing is a bug in the loop, not a broken channel,
+        // so it is logged and the connection is left alone. A model that is
+        // down is not one of these: `sell()` answers from the template.
         console.error(`[inbound:${connection.channel}] ${(error as Error).message}`);
       }
     }

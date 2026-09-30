@@ -1,0 +1,6 @@
+.env
+logs/
+worktrees/
+issues.json
+blockers.json
+DECISIONS.md

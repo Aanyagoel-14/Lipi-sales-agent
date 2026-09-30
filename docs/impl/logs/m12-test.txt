@@ -1,0 +1,17 @@
+
+> test
+> npm --prefix web run test
+
+
+> web@0.1.0 test
+> vitest run
+
+
+ RUN  v5.0.0 /Users/aanyagoel/Desktop/Lipi-sales-agent/web
+
+
+ Test Files  50 passed (50)
+      Tests  1147 passed (1147)
+   Start at  19:18:41
+   Duration  194.66s (tests 96%, setup 3%, import 1%, transform 1%)
+

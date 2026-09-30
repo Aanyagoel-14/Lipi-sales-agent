@@ -43,7 +43,96 @@ export function verifyMetaSignature(raw: Buffer, header: string | undefined, app
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * Shopify signs a webhook body with the *app's* API secret, base64 rather
+ * than hex, and the deployment has one app — so this is the Meta story again
+ * and the same rule applies: the raw bytes are what was signed, so the body
+ * must never be parsed and re-serialised before it gets here.
+ */
+export function verifyShopifyWebhook(raw: Buffer, header: string | undefined, apiSecret: string): boolean {
+  if (!header) return false;
+  const expected = createHmac("sha256", apiSecret).update(raw).digest("base64");
+  return secretsMatch(expected, header);
+}
+
+/**
+ * X's one signing construction, which both halves of its webhook contract
+ * use: HMAC-SHA256 under the *app's* consumer secret, base64 where Meta's is
+ * hex, prefixed `sha256=`. Written once because a delivery we verified with
+ * one spelling and a challenge we answered with another would both look like
+ * a channel that simply receives nothing.
+ */
+const xDigest = (signed: Buffer | string, consumerSecret: string): string =>
+  `sha256=${createHmac("sha256", consumerSecret).update(signed).digest("base64")}`;
+
+/**
+ * X signs an Account Activity delivery with the consumer secret — Meta's
+ * story again, and the same rule about the raw bytes — and hands over the
+ * digest in `x-twitter-webhooks-signature`.
+ */
+export function verifyXSignature(raw: Buffer, header: string | undefined, consumerSecret: string): boolean {
+  return header !== undefined && secretsMatch(xDigest(raw, consumerSecret), header);
+}
+
+/**
+ * The answer to X's Challenge-Response Check: the token X sent, signed the
+ * way a delivery is.
+ *
+ * X makes this GET on registration, after every manual re-validation and
+ * once an hour thereafter; a webhook that stops answering it is marked
+ * invalid and stops receiving events, so this is not a one-off setup step.
+ */
+export function crcResponseToken(crcToken: string, consumerSecret: string): string {
+  return xDigest(crcToken, consumerSecret);
+}
+
+/**
+ * The OAuth callback is signed differently: Shopify HMACs the query string
+ * itself, with `hmac` removed, the remaining parameters sorted by key and
+ * joined as `key=value&…`, and the digest in hex. `signature` is dropped too
+ * — it belongs to the retired app-proxy scheme and Shopify excludes it.
+ *
+ * This proves the redirect came from Shopify. It does not prove the operator
+ * meant to start it, which is what `installState` is for.
+ */
+export function verifyShopifyCallback(search: string, apiSecret: string): boolean {
+  const given = new URLSearchParams(search).get("hmac");
+  if (!given) return false;
+
+  // Over the pairs exactly as they arrived, percent-encoding included —
+  // decoding first would sign a different string than Shopify signed for any
+  // value carrying a reserved character (`host` is base64 and routinely does).
+  const message = search
+    .replace(/^\?/, "")
+    .split("&")
+    .filter((pair) => pair && !/^(hmac|signature)=/.test(pair))
+    .sort()
+    .join("&");
+
+  return secretsMatch(createHmac("sha256", apiSecret).update(message).digest("hex"), given);
+}
+
 export const newWebhookSecret = () => randomBytes(24).toString("base64url");
+
+/**
+ * The signature Lipi puts on a webhook it *sends*.
+ *
+ * Meta and Shopify both sign the raw bytes with a shared secret and hand over
+ * the digest in a header, and `verifyMetaSignature` above is how we check
+ * theirs — so outbound is the same convention turned around rather than a
+ * second one. Two differences, both deliberate:
+ *
+ * The timestamp is inside the signed message, not only beside it. Signing the
+ * body alone makes every delivery replayable for ever by anyone who once saw
+ * one; signing `<timestamp>.<body>` lets the subscriber refuse anything older
+ * than its own tolerance, and it cannot be moved without breaking the digest.
+ *
+ * The digest is hex and prefixed `sha256=`, which is Meta's spelling, so a
+ * subscriber who has already written a Meta verifier changes only the secret.
+ */
+export function signWebhookBody(secret: string, timestamp: number, body: string): string {
+  return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
+}
 
 /** Constant-time compare for shared secrets that arrive in a header. */
 export function secretsMatch(a: string, b: string): boolean {

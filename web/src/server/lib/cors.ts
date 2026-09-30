@@ -3,13 +3,17 @@ import { checkRateLimit, clientIp } from "./rate-limit";
 
 /**
  * The webchat widget runs on the operator's own website — a different
- * origin from this app — and carries no session cookie, so its two public
- * endpoints (`/v1/webchat/[workspaceId]/session` and `/message`) need CORS
- * rather than the normal same-origin dashboard API. `*` is deliberate, not
- * an oversight: like an Intercom or Stripe publishable key, the workspace
- * id in the URL is meant to be embedded in public page source, and these
- * two endpoints accept no cookie and touch no other tenant's data no
- * matter which origin calls them.
+ * origin from this app — and carries no session cookie, so its public
+ * endpoints (`/v1/webchat/[workspaceId]/session`, `/message`, `/updates`
+ * and `/contact`) need CORS rather than the normal same-origin dashboard
+ * API. `*` is deliberate, not an oversight: like an Intercom or Stripe
+ * publishable key, the workspace id in the URL is meant to be embedded in
+ * public page source, and these endpoints accept no cookie and touch no
+ * other tenant's data no matter which origin calls them.
+ *
+ * A browser calling the rest of `/v1` with an API key is a different trust
+ * question and gets a different answer — a per-workspace allow-list, in
+ * `origins.ts`. Nothing here applies to it, and nothing there loosens this.
  */
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -25,8 +29,17 @@ export const corsPreflight = () => new Response(null, { status: 204, headers: CO
  * seconds, plus a background poll every few seconds — see widget.js) while
  * still bounding the cost of a scripted abuser hammering one endpoint. See
  * rate-limit.ts for why this is IP-keyed rather than workspace/visitor-keyed.
+ *
+ * Raised from 30 when the widget moved its `/session` call from "the panel
+ * opened" to "the page loaded": every page view now spends a request, and
+ * every visitor spends them, not only the ones who chat. One visitor
+ * browsing five pages with the panel open already costs 5 + 15 polls + their
+ * own messages — and an office or carrier NAT puts several such visitors
+ * behind one address, where 30 was refusing real traffic rather than abuse.
+ * What this bounds is requests, not model spend; a per-workspace budget for
+ * the latter is a different control and is not built here.
  */
-const WEBCHAT_LIMIT = 30;
+const WEBCHAT_LIMIT = 60;
 const WEBCHAT_WINDOW_MS = 60_000;
 
 /** Same shape as `route()` in http.ts, but every response — success or

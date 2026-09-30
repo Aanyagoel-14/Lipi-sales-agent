@@ -1,4 +1,5 @@
 import { env } from "../env";
+import { recordModelCall, type ModelMeter, type ModelUsage } from "./metering";
 
 /**
  * One place that talks to OpenRouter.
@@ -6,9 +7,24 @@ import { env } from "../env";
  * Three callers were building the same request by hand, which is how a fix
  * like `reasoning.exclude` ends up applied to two of them and forgotten on the
  * third.
+ *
+ * It is also the one place that knows a call happened, which is why the meter
+ * lives here rather than in the three services: `meter` is a required
+ * argument, so a fourth model-backed path cannot be written without saying
+ * whose budget it spends.
  */
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+
+/** What a caller may say about the request itself, apart from who pays for it. */
+type CompletionOptions = {
+  messages: ChatMessage[];
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  responseFormat?: unknown;
+  timeoutMs?: number;
+};
 
 /**
  * Reasoning models put their scratchpad in the reply.
@@ -80,13 +96,10 @@ export function unglueTrailingSentence(text: string): string {
 /** Both formatting repairs, in the order they have to run. */
 const tidy = (text: string) => unglueTrailingSentence(tidyMarkdownLists(text));
 
-export async function chatForReply(options: {
-  messages: ChatMessage[];
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  timeoutMs?: number;
-}): Promise<string> {
+/** The response format is this function's own, so a caller does not set one. */
+export async function chatForReply(
+  options: Omit<CompletionOptions, "responseFormat"> & { meter: ModelMeter },
+): Promise<string> {
   const content = await chatCompletion({
     ...options,
     responseFormat: {
@@ -119,14 +132,106 @@ export async function chatForReply(options: {
   return tidy(content);
 }
 
-export async function chatCompletion(options: {
-  messages: ChatMessage[];
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  responseFormat?: unknown;
-  timeoutMs?: number;
-}): Promise<string> {
+/**
+ * A failure that already knows what it cost.
+ *
+ * A reply cut off at the token limit, or a body that arrived without content,
+ * was billed in full — the tokens are in the response that is about to be
+ * thrown away. Carrying them on the error is what lets the meter charge for
+ * them instead of recording a free failure.
+ */
+class ModelCallFailed extends Error {
+  /** True when the provider reported its own error rather than a bad reply. */
+  constructor(message: string, readonly usage: ModelUsage | null, readonly upstream = false) {
+    super(message);
+    this.name = "ModelCallFailed";
+  }
+}
+
+type OpenRouterUsage = { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+
+const usageFrom = (usage: OpenRouterUsage | undefined): ModelUsage | null =>
+  usage
+    ? {
+        promptTokens: usage.prompt_tokens ?? null,
+        completionTokens: usage.completion_tokens ?? null,
+        totalTokens: usage.total_tokens ?? null,
+      }
+    : null;
+
+/**
+ * The models to try, in order.
+ *
+ * A caller that names a model gets that model and nothing else: extraction
+ * pins `OPENROUTER_MODEL` because it needs a strict schema filler, and quietly
+ * swapping in a different one would change what gets reserved. A caller that
+ * does not is asking for "a reply", and the default chat model is a free tier
+ * that answers "Service temporarily overloaded" at busy hours — so it falls
+ * back to `OPENROUTER_MODEL`, which is paid and routinely available, rather
+ * than degrading every conversation to the composed reply.
+ */
+function modelChain(pinned: string | undefined): string[] {
+  if (pinned) return [pinned];
+  return [...new Set([env.OPENROUTER_CHAT_MODEL, env.OPENROUTER_MODEL])];
+}
+
+export async function chatCompletion(options: CompletionOptions & { meter: ModelMeter }): Promise<string> {
+  const models = modelChain(options.model);
+
+  for (const [index, model] of models.entries()) {
+    const started = Date.now();
+    try {
+      const { content, usage } = await request(model, options);
+      await recordModelCall({ ...options.meter, model, latencyMs: Date.now() - started, ok: true, usage });
+      return content;
+    } catch (error) {
+      // Every way out of `request()` comes through here, including the abort a
+      // timeout raises, so a workspace whose calls all time out still burns its
+      // call budget rather than retrying for free for ever. Each attempt is its
+      // own row: a fallback is a second call, and it is billed as one.
+      await recordModelCall({
+        ...options.meter,
+        model,
+        latencyMs: Date.now() - started,
+        ok: false,
+        usage: error instanceof ModelCallFailed ? error.usage : null,
+        error: (error as Error).message,
+      });
+      if (index === models.length - 1 || !isTransient(error)) throw error;
+      console.warn(`[openrouter] ${model} unavailable, trying ${models[index + 1]}: ${(error as Error).message}`);
+    }
+  }
+
+  // Unreachable: the chain is never empty and its last entry always throws.
+  throw new Error("No model to try");
+}
+
+/**
+ * Whether another model could plausibly succeed where this one failed.
+ *
+ * Overload, rate limits and upstream 5xx are the provider's state, not the
+ * request's, so a different model is worth one more call. A timeout is not
+ * retried — the caller has already waited the full budget once — and neither
+ * is a 402 or a 4xx, which the next model would refuse just the same.
+ */
+function isTransient(error: unknown): boolean {
+  if (error instanceof ModelCallFailed) return error.upstream;
+  if (error instanceof ProviderRefused) return error.status === 408 || error.status === 429 || error.status >= 500;
+  return false;
+}
+
+class ProviderRefused extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`OpenRouter ${status}: ${body.slice(0, 200)}`);
+    this.name = "ProviderRefused";
+  }
+}
+
+/** The call itself. `model` is resolved by the caller, which is what meters it. */
+async function request(
+  model: string,
+  options: CompletionOptions,
+): Promise<{ content: string; usage: ModelUsage | null }> {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -136,32 +241,43 @@ export async function chatCompletion(options: {
       "X-Title": "Lipi AI",
     },
     body: JSON.stringify({
-      model: options.model ?? env.OPENROUTER_CHAT_MODEL,
+      model,
       temperature: options.temperature ?? 0.2,
       max_tokens: options.maxTokens,
       // Ignored by models that do not reason; harmless on those that do not.
       reasoning: { exclude: true },
+      // OpenRouter's default routing weighs price, and for a strict JSON
+      // schema that picked providers taking over a hundred seconds for a
+      // one-line reply — past the timeout, so a customer got the composed
+      // reply every time. Sorted by latency the same call answered in two.
+      provider: { sort: "latency" },
       messages: options.messages,
       ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
     }),
     signal: AbortSignal.timeout(options.timeoutMs ?? 45_000),
   });
 
-  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new ProviderRefused(res.status, await res.text());
 
   const body = (await res.json()) as {
     choices?: { message?: { content?: string }; finish_reason?: string }[];
+    usage?: OpenRouterUsage;
     error?: { message?: string };
   };
 
+  const usage = usageFrom(body.usage);
   const choice = body.choices?.[0];
   const content = stripReasoning(choice?.message?.content ?? "");
-  if (!content) throw new Error(body.error?.message ?? "OpenRouter returned no content");
+  // OpenRouter reports an upstream failure ("Service temporarily overloaded")
+  // as a 200 whose body carries `error` instead of a choice.
+  if (!content) throw new ModelCallFailed(body.error?.message ?? "OpenRouter returned no content", usage, Boolean(body.error));
 
   // A reply cut off at the token limit is not a shorter reply, it is a
   // fragment -- and for a reasoning model the fragment is usually its own
   // deliberation. Better to fail and let the caller send something correct.
-  if (choice?.finish_reason === "length") throw new Error("OpenRouter reply hit the token limit");
+  if (choice?.finish_reason === "length") {
+    throw new ModelCallFailed("OpenRouter reply hit the token limit", usage);
+  }
 
-  return content;
+  return { content, usage };
 }

@@ -39,6 +39,7 @@ const schema = z.object({
   COMPOSIO_AUTH_CONFIG_INSTAGRAM: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_FACEBOOK: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_TELEGRAM: z.string().optional(),
+  COMPOSIO_AUTH_CONFIG_X: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_GMAIL: z.string().optional(),
   // Lipi's own Meta app: one App Secret and one verify token for the whole
   // deployment, set once in the Meta app against `/webhooks/meta`. Meta
@@ -47,7 +48,64 @@ const schema = z.object({
   // there is no per-tenant equivalent and never was.
   META_APP_SECRET: z.string().optional(),
   META_VERIFY_TOKEN: z.string().optional(),
+
+  // ------------------------------------------------------------------- X --
+  // Lipi's own X app, the same shape as the Meta one. X signs every Account
+  // Activity delivery with the app's *consumer secret* and proves ownership
+  // of the callback with a challenge signed by the same key, so this is what
+  // `/webhooks/x` verifies against — there is no per-tenant equivalent. The
+  // webhook itself is registered once per deployment (`POST /2/webhooks`)
+  // and its id is what each tenant's activity is subscribed to.
+  X_API_SECRET: z.string().optional(),
+  X_WEBHOOK_ID: z.string().optional(),
+
+  // ------------------------------------------------------------- Shopify --
+  // Lipi's own Shopify app, one per deployment. The API key identifies it on
+  // the consent screen; the secret both signs the OAuth callback and every
+  // webhook body, the way META_APP_SECRET does for Meta. Optional, because a
+  // deployment that offers no Shopify install has no use for either — and
+  // absent means the install route refuses rather than half-works.
+  SHOPIFY_API_KEY: z.string().optional(),
+  SHOPIFY_API_SECRET: z.string().optional(),
+  // What the operator is asked to consent to. Kept in configuration rather
+  // than in code: adding a scope changes what the consent screen says, and
+  // that is a deployment's decision to make and to re-request.
+  SHOPIFY_SCOPES: z.string().default("read_products,read_inventory,read_orders"),
+  // Pinned, never "latest": a floating version means Shopify can change the
+  // shape of a payload the twin trusts without anything here changing.
+  SHOPIFY_API_VERSION: z.string().default("2025-01"),
+
+  // -------------------------------------------------------------- Stripe --
+  // Checkout links. Optional, and absent means the `Stripe_Invoice` skill
+  // still issues a real invoice with a real downloadable PDF — it just
+  // reports that no payment link could be created and why. It never invents
+  // a URL; see `server/lib/payments.ts` for why that distinction is the whole
+  // point of the seam.
+  STRIPE_SECRET_KEY: z.string().optional(),
+  // What checkout links are denominated in. Invoices are stored in the minor
+  // units of whatever the deployment sells in; this is the ISO code that goes
+  // on the payment page.
+  STRIPE_CURRENCY: z.string().length(3).default("INR"),
+
+  // ------------------------------------------------------------- hosting --
+  // Edge deployment for generated sites (PRD §3 Phase 3). Optional, and
+  // absent means a generated site is still really served — at this
+  // deployment's own origin, under `/s/{slug}` — it simply gets no CDN, no
+  // custom domain and no certificate. See `server/sites/hosting.ts`.
+  VERCEL_TOKEN: z.string().optional(),
+  CLOUDFLARE_API_TOKEN: z.string().optional(),
 }).superRefine((value, ctx) => {
+  // Half a Shopify app is worse than none: an install that starts and cannot
+  // finish, or a webhook that can never be verified.
+  const shopify = ["SHOPIFY_API_KEY", "SHOPIFY_API_SECRET"] as const;
+  if (shopify.some((key) => value[key]) && !shopify.every((key) => value[key])) {
+    ctx.addIssue({
+      code: "custom",
+      path: [shopify.find((key) => !value[key])!],
+      message: "SHOPIFY_API_KEY and SHOPIFY_API_SECRET are only useful together",
+    });
+  }
+
   // A Meta channel that can be connected but whose webhooks can never be
   // verified is a channel that silently receives nothing. Rather than let a
   // deployment discover that from an empty inbox, it is a boot failure:
@@ -63,6 +121,20 @@ const schema = z.object({
       code: "custom",
       path: [key],
       message: `${key} is required when a Meta channel is offered (${offered.join(", ")}); inbound cannot be verified without it`,
+    });
+  }
+}).superRefine((value, ctx) => {
+  // The same rule for X, for the same reason: without the app's consumer
+  // secret no delivery can be verified and the CRC challenge cannot be
+  // answered, and without the webhook id no tenant can be subscribed to it.
+  if (!value.COMPOSIO_AUTH_CONFIG_X) return;
+
+  for (const key of ["X_API_SECRET", "X_WEBHOOK_ID"] as const) {
+    if (value[key]) continue;
+    ctx.addIssue({
+      code: "custom",
+      path: [key],
+      message: `${key} is required when X is offered (COMPOSIO_AUTH_CONFIG_X is set); DMs cannot be received without it`,
     });
   }
 });

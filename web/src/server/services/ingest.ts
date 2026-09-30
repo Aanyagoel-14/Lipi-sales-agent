@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { toRupees } from "../lib/money";
-import { prisma } from "../lib/prisma";
+import { prisma, type Tx } from "../lib/prisma";
+import { contactHeld, planContactCapture } from "./contacts";
 import { extract, vocabularyFor, type ExtractionResult } from "./extract";
-import { scoreLead, type LeadStage } from "./leads";
+import { nextContactAsk, scoreLead, type ContactField, type LeadStage } from "./leads";
+import { holdEffect, holdUntil } from "./reservations";
+import { creditEffect, creditRisk, planRestock, raiseRestock, vipEffect, vipRouting } from "./twin-rules";
 import { composeReply, DEFAULT_VOICE, findKnowledge, voiceViolations, type ReplyParts } from "./voice";
+import type { TwinEffect } from "../lib/events";
 import type { Channel } from "@/generated/prisma/client";
 
 /**
@@ -25,6 +29,9 @@ const REORDER_POINT = 6;
 
 const id = (prefix: string) => `${prefix}_${randomUUID().slice(0, 8)}`;
 
+/** Spreads a `TwinEffect` into `record()`'s three arguments. */
+const effectArgs = (effect: TwinEffect): [string, string, string] => [effect.type, effect.twin, effect.payload];
+
 export type IngestInput = {
   workspaceId: string;
   channel: Channel;
@@ -41,10 +48,40 @@ export type IngestResult = {
   order: { id: string; valueInr: number } | null;
   reply: string;
   replySent: boolean;
+  /**
+   * The row the reply above was written to. Whoever delivers it — the webhook
+   * loop, the approval queue — sends *that* message rather than re-reading
+   * "the newest agent message", so there is no window in which two of them
+   * disagree about which one was composed for this turn.
+   */
+  replyMessageId: string;
   voiceViolations: string[];
+  /**
+   * What this message gave the twin about how to reach them, and whether the
+   * address it gave already sits on another twin in this workspace — which is
+   * a flag for the operator, never a merge (see `services/contacts.ts`).
+   */
+  contact: { captured: ContactField[]; duplicateEmail: boolean };
+  /**
+   * The one contact detail the twin should ask for on this turn, or null.
+   * `sell()` puts it in front of the model and the widget renders a field for
+   * it; the composed reply below never asks, because a form letter with two
+   * questions in it gets neither answered.
+   */
+  contactAsk: ContactField | null;
   knowledgeUsed: { title: string; kind: string } | null;
   agentRuns: { agent: string; action: string; status: "needs_approval" | "done" }[];
-  events: Effect[];
+  events: TwinEffect[];
+  /**
+   * The Customer Twin rules the PRD states (§5), as this message saw them.
+   *
+   * `creditHold` is "flags credit risk if past-due invoices > 0" — a flag, not
+   * a refusal. `vip` is "routes VIP inquiries instantly", and names why.
+   * `reservedUntil` is the four-hour hold, null when nothing was reserved.
+   */
+  creditHold: boolean;
+  vip: "segment" | "lifetime_value" | null;
+  reservedUntil: string | null;
 };
 
 class DryRunComplete extends Error {
@@ -57,11 +94,6 @@ function needsApproval(policy: "everything" | "money_only" | "nothing", touchesM
   if (policy === "nothing") return false;
   return touchesMoney;
 }
-
-/** The transactional client Prisma hands to $transaction. */
-type Tx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
-
-type Effect = { type: string; twin: string; payload: string };
 
 export async function ingest(input: IngestInput, options: { dryRun?: boolean } = {}): Promise<IngestResult> {
   const now = new Date();
@@ -86,11 +118,24 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     optionsB: [...new Set(live.flatMap((p) => p.variants.map((v) => v.optionB)))],
     axes: (live[0]?.axes as [string, string]) ?? undefined,
   });
-  const extracted = await extract(input.text, vocab, now);
+  // Resolved before the transaction, and only so the budget below has a thread
+  // to count against: the transaction reads the customer again and that read
+  // is the authoritative one. Null on a twin's first ever message, which is
+  // also the one message that cannot have exceeded a per-conversation cap.
+  const existingCustomer = await prisma.customer.findFirst({
+    where: { handle: input.handle, workspaceId: workspace.id },
+    select: { id: true },
+  });
+  const extracted = await extract(
+    input.text,
+    vocab,
+    { workspaceId: workspace.id, customerId: existingCustomer?.id },
+    now,
+  );
 
   try {
     return await prisma.$transaction(async (tx) => {
-    const effects: Effect[] = [];
+    const effects: TwinEffect[] = [];
     const record = (type: string, twin: string, payload: string) => effects.push({ type, twin, payload });
 
     /* ---------------------------------------------------- customer twin */
@@ -132,14 +177,45 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     const previousSizeProfileLength = customer.sizeProfile.length;
     const segmentChanged = segment !== customer.segment;
 
+    // How to reach them, when they happened to say it (#16). Recognised by
+    // pattern in `extract()`, decided in `contacts.ts`, and folded into the
+    // update this loop was already making rather than written beside it —
+    // one message still mutates the twin once, inside the one transaction
+    // (invariant 1).
+    const contact = await planContactCapture(tx, {
+      workspaceId: workspace.id,
+      customer,
+      detected: extracted.contact,
+      source: "volunteered",
+      now,
+    });
+    for (const event of contact.events) record(event.type, event.twin, event.payload);
+
     customer = await tx.customer.update({
       where: { id: customer.id },
-      data: { lastSeenAt: now, sizeProfile, segment },
+      data: { lastSeenAt: now, sizeProfile, segment, ...contact.update },
     });
 
     if (sizeProfile.length !== previousSizeProfileLength || segmentChanged || learned) {
       record("customer_twin.updated", "customer", `${customer.id} size_profile=[${sizeProfile.join(", ")}] segment=${segment}`);
     }
+
+    /* -------------------------------------------- the customer twin rules */
+    // PRD §5: "flags credit risk if past-due invoices > 0" and "routes VIP
+    // inquiries instantly". Both are read here, once, against the twin as it
+    // stands after this message — so a purchase order that has just promoted
+    // somebody to Corporate is routed as the VIP they now are.
+    //
+    // Neither refuses anything. The credit flag lands on the order and on the
+    // approval it raises; the VIP flag lands on the event trail and on the
+    // run's severity. Declining a sale because an invoice is late is a
+    // decision with a relationship attached to it, and not one to make
+    // unattended.
+    const credit = await creditRisk(tx, workspace.id, customer.id, now);
+    if (credit.hold) record(...effectArgs(creditEffect(customer.id, credit)));
+
+    const vip = vipRouting(customer);
+    if (vip) record(...effectArgs(vipEffect(customer.id, vip)));
 
     /* ------------------------------------------------------ conversation */
     const conversation = await tx.conversation.create({
@@ -180,6 +256,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     // even under a policy of "nothing".
     const runs: { agent: string; action: string; touchesMoney: boolean; ms: number; mandatory?: boolean }[] = [];
     let order: { id: string; valueInr: number } | null = null;
+    let reservedUntil: Date | null = null;
     let parts: ReplyParts;
 
     const wants = extracted.quantity ?? 1;
@@ -193,6 +270,10 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         const remaining = available - wants;
         record("inventory_twin.reserved", "inventory", `sku=${match.sku} qty=${wants} remaining=${remaining}`);
 
+        // The hold is provisional and says so: four hours, then the sweep
+        // gives the stock back (PRD §5, `services/reservations.ts`).
+        reservedUntil = holdUntil(now);
+
         const created = await tx.order.create({
           data: {
             id: id("ord"), workspaceId: workspace.id, variant: `${match.variant.optionA} / ${match.variant.optionB}`,
@@ -200,17 +281,22 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
             channel: input.channel, createdAt: now, customerId: customer.id,
             productId: match.product.id, variantId: match.variant.id,
             blocked: extracted.deadline ? `Deliver by ${extracted.deadline}` : null,
+            reservedUntil,
+            creditHold: credit.hold,
           },
         });
         order = { id: created.id, valueInr: toRupees(created.value) };
         record("order_twin.created", "order", `${created.id} status=quoted value=${toRupees(created.value)}`);
+        record(...effectArgs(holdEffect(created.id, wants, reservedUntil)));
 
         runs.push({ agent: "Sales", action: `Quoted ${wants} × ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}, reserved stock`, touchesMoney: true, ms: 1200 });
         runs.push({ agent: "Inventory", action: `Reserved ${wants} units, ${remaining} left unreserved`, touchesMoney: false, ms: 380 });
 
         if (remaining <= REORDER_POINT) {
           record("inventory_twin.threshold_breached", "inventory", `sku=${match.sku} reorder_point=${REORDER_POINT}`);
-          runs.push({ agent: "Procurement", action: `Draft restock of ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}`, touchesMoney: true, ms: 2100 });
+          await dispatchRestock(tx, {
+            workspaceId: workspace.id, match, available: remaining, now, record, runs,
+          });
         }
 
         parts = {
@@ -243,6 +329,8 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         const remaining = available - wants;
         record("inventory_twin.reserved", "inventory", `sku=${match.sku} qty=${wants} remaining=${remaining} via=purchase_order`);
 
+        reservedUntil = holdUntil(now);
+
         const created = await tx.order.create({
           data: {
             id: id("ord"), workspaceId: workspace.id, variant: `${match.variant.optionA} / ${match.variant.optionB}`,
@@ -250,6 +338,8 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
             channel: input.channel, createdAt: now, customerId: customer.id,
             productId: match.product.id, variantId: match.variant.id,
             blocked: extracted.deadline ? `Deliver by ${extracted.deadline}` : "Purchase order awaiting confirmation",
+            reservedUntil,
+            creditHold: credit.hold,
           },
         });
         order = { id: created.id, valueInr: toRupees(created.value) };
@@ -264,7 +354,9 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
 
         if (remaining <= REORDER_POINT) {
           record("inventory_twin.threshold_breached", "inventory", `sku=${match.sku} reorder_point=${REORDER_POINT}`);
-          runs.push({ agent: "Procurement", action: `Draft restock of ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}`, touchesMoney: true, ms: 2100 });
+          await dispatchRestock(tx, {
+            workspaceId: workspace.id, match, available: remaining, now, record, runs,
+          });
         }
 
         parts = {
@@ -380,6 +472,10 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       record("lead.scored", "customer", `${customer.id} score=${leadScore} stage=${leadStage}`);
     }
 
+    // Asked of the twin as it stands after this message, so a detail given in
+    // the same breath is never asked for again.
+    const contactAsk = nextContactAsk(leadScore, leadStage, contactHeld(customer));
+
     /* -------------------------------------------------- agents and reply */
     const held = needsApproval(workspace.approvalPolicy, false);
 
@@ -412,7 +508,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     // no message at all, so there was nothing for an approval to release.
     // Still one write on either branch, so the transaction is unchanged in
     // shape — only the held path stopped losing the reply it drafted.
-    await tx.message.create({
+    const replyMessage = await tx.message.create({
       data: {
         from: "agent", text: reply, sentAt: new Date(now.getTime() + 1000),
         conversationId: conversation.id,
@@ -441,8 +537,14 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       order,
       reply,
       replySent: !held,
+      replyMessageId: replyMessage.id,
       voiceViolations: violations,
+      contact: { captured: contact.captured, duplicateEmail: contact.duplicateEmailOf !== null },
+      contactAsk,
       knowledgeUsed: knowledge ? { title: knowledge.title, kind: knowledge.kind } : null,
+      creditHold: credit.hold,
+      vip,
+      reservedUntil: reservedUntil?.toISOString() ?? null,
       agentRuns: runs.map((r) => ({
         agent: r.agent,
         action: r.action,
@@ -459,6 +561,70 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     if (error instanceof DryRunComplete) return error.result;
     throw error;
   }
+}
+
+/**
+ * Crossing the reorder point, as a purchase order rather than a sentence.
+ *
+ * PRD §5, Order & Supply Twin: "Auto-dispatches POs when reserved inventory
+ * drops below threshold." Until now this raised an `AgentRun` whose `action`
+ * read "Draft restock of ..." — prose in a log, which nobody can count,
+ * reconcile against what arrived, or send to a supplier.
+ *
+ * `planRestock` returns null when this variant already has an open PO, because
+ * the reorder point is crossed again by *every* subsequent message until stock
+ * arrives, and a rule that raised one each time would bury the operator in
+ * duplicates of a decision they already made. The run is still raised either
+ * way, so the operator sees that the threshold was hit; only the PO is
+ * de-duplicated.
+ */
+async function dispatchRestock(
+  tx: Tx,
+  opts: {
+    workspaceId: string;
+    match: NonNullable<Awaited<ReturnType<typeof matchVariant>>>;
+    available: number;
+    now: Date;
+    record: (type: string, twin: string, payload: string) => void;
+    runs: { agent: string; action: string; touchesMoney: boolean; ms: number; mandatory?: boolean }[];
+  },
+) {
+  const { match, record, runs } = opts;
+  const label = `${match.product.name} ${match.variant.optionA} ${match.variant.optionB}`;
+
+  const plan = await planRestock(tx, {
+    workspaceId: opts.workspaceId,
+    productId: match.product.id,
+    variantId: match.variant.id,
+    supplierId: match.product.supplierId,
+    available: opts.available,
+    reorderPoint: REORDER_POINT,
+    now: opts.now,
+  });
+
+  if (!plan) {
+    runs.push({
+      agent: "Procurement",
+      action: `${label} is at the reorder point; a purchase order is already open`,
+      touchesMoney: false,
+      ms: 240,
+    });
+    return;
+  }
+
+  record(...effectArgs(await raiseRestock(tx, {
+    workspaceId: opts.workspaceId,
+    productId: match.product.id,
+    variantId: match.variant.id,
+    plan,
+  })));
+
+  runs.push({
+    agent: "Procurement",
+    action: `Raised a draft purchase order for ${plan.qty} × ${label}, expected ${plan.expectedOn.toISOString().slice(0, 10)}`,
+    touchesMoney: true,
+    ms: 2100,
+  });
 }
 
 function signalsFor(e: ExtractionResult, axes: [string, string]) {

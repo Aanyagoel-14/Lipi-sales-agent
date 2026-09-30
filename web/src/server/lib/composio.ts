@@ -94,6 +94,8 @@ export interface ComposioClient {
     authConfigId: string,
     apiKey: string,
     field?: string,
+    /** Non-secret companions of the key, keyed by Composio's field name (WhatsApp's `generic_id`). */
+    extra?: Record<string, string>,
   ): Promise<{ connectedAccountId: string; status: AccountStatus }>;
   getAccount(id: string): Promise<ComposioAccount>;
   deleteAccount(id: string): Promise<void>;
@@ -290,11 +292,13 @@ class RealComposio implements ComposioClient {
     return { redirectUrl: request.redirectUrl, connectedAccountId: request.id };
   }
 
-  async initiateApiKey(userId: string, authConfigId: string, apiKey: string, field = "generic_api_key") {
+  async initiateApiKey(
+    userId: string, authConfigId: string, apiKey: string, field = "generic_api_key", extra: Record<string, string> = {},
+  ) {
     const sdk = await this.client();
     const { AuthScheme } = await import("@composio/core");
     const request = await sdk.connectedAccounts.initiate(userId, authConfigId, {
-      config: AuthScheme.APIKey({ [field]: apiKey }),
+      config: AuthScheme.APIKey({ ...extra, [field]: apiKey }),
     });
     return { connectedAccountId: request.id, status: (request.status ?? "INITIALIZING") as AccountStatus };
   }

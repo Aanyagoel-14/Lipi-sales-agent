@@ -21,6 +21,8 @@ enum Channel {
   instagram
   facebook
   telegram
+  /// X (formerly Twitter) direct messages.
+  x
   email
   webchat
 }
@@ -37,8 +39,25 @@ enum Sensitivity {
   High
 }
 
+/**
+ * The Order & Supply Twin's state machine (PRD §5).
+ *
+ * The PRD writes it as Inquiry -> Quote -> Confirmed -> Paid -> Packed ->
+ * Shipped. `Quoted` is this codebase's spelling of the PRD's "Quote" and
+ * predates it; renaming a stored enum member to change a participle is not
+ * worth a migration. `Delivered` and `Returned` are beyond the PRD's chain and
+ * were already here — an order that has shipped still has to arrive, and some
+ * of them come back.
+ *
+ * `Inquiry` is an order that exists without a price: somebody asked, nothing
+ * has been quoted, nothing is reserved. `Confirmed` is the customer having
+ * agreed, before money moves, and is where a four-hour reservation hold stops
+ * being provisional (`services/reservations.ts`).
+ */
 enum OrderStage {
+  Inquiry
   Quoted
+  Confirmed
   Paid
   Packed
   Shipped
@@ -117,17 +136,50 @@ model Customer {
   leadScore Int       @default(0)
   leadStage LeadStage @default(visitor)
 
+  /// How to reach this person outside the thread they arrived in. A webchat
+  /// visitor's `handle` is `web:<visitorId>` — an opaque token their browser
+  /// minted — so without these a qualified website lead is unreachable.
+  ///
+  /// Each carries its own provenance and the moment it landed, because the
+  /// two ways they arrive are not equally trustworthy: `volunteered` was
+  /// pattern-matched out of something the visitor typed in conversation,
+  /// `form` was typed into the widget's own field with a label on it. Null
+  /// means nobody has given it, which is what stops the twin asking twice.
+  ///
+  /// Not unique. An email already on another twin in this workspace is a
+  /// flag for the operator, never a merge — see `services/contacts.ts`.
+  email       String?
+  emailSource ContactSource?
+  emailAt     DateTime?
+  phone       String?
+  phoneSource ContactSource?
+  phoneAt     DateTime?
+
   orders            Order[]
   conversations     Conversation[]
   invoices          Invoice[]
   payments          Payment[]
   growthSuggestions GrowthSuggestion[]
+  modelCalls        ModelCall[]
 
   @@index([segment])
   @@index([workspaceId])
   @@index([workspaceId, leadStage])
   @@index([workspaceId, utmCampaign])
+  @@index([workspaceId, email])
   @@map("customers")
+}
+
+/**
+ * Where a contact detail came from. `volunteered` was recognised by pattern
+ * in a message the visitor wrote for some other reason ("mail me at x@y.com");
+ * `form` was typed into the widget's own labelled field. The operator reading
+ * a lead list needs to tell them apart: one is an address the person chose to
+ * give, the other is one we read out of their prose.
+ */
+enum ContactSource {
+  volunteered
+  form
 }
 
 /**
@@ -155,6 +207,8 @@ model Supplier {
   moq           Int
   responseHours Int
   products      Product[]
+
+  purchaseOrders PurchaseOrder[]
 
   @@index([workspaceId])
   @@map("suppliers")
@@ -185,6 +239,8 @@ model Product {
   variants Variant[]
   orders   Order[]
 
+  purchaseOrders PurchaseOrder[]
+
   @@index([supplierId])
   @@index([workspaceId])
   @@map("products")
@@ -211,6 +267,7 @@ model Variant {
 
   inventoryMappings InventoryMapping[]
   orders            Order[]
+  purchaseOrders    PurchaseOrder[]
 
   // One row per size/colour per product: the twin is variant-native.
   @@unique([productId, optionA, optionB])
@@ -234,6 +291,26 @@ model Order {
   createdAt DateTime
   blocked   String?
 
+  /// When the stock reserved for this order lapses.
+  ///
+  /// PRD §5, Product & Fitment Twin: "Locks reserved stock for 4 hours upon
+  /// checkout link generation." Before this column a reservation was
+  /// permanent until the order settled, so an abandoned quote held stock
+  /// against a customer who never came back and the twin reported the
+  /// business as having less to sell than it had.
+  ///
+  /// Null once the hold is no longer provisional: an order that reaches
+  /// `Confirmed` or beyond holds its stock until it settles.
+  reservedUntil DateTime?
+
+  /// The customer twin had money outstanding when this order was raised.
+  ///
+  /// PRD §5, Customer/Lead Twin: "flags credit risk if past-due invoices > 0".
+  /// A flag for a human, never an automatic refusal — a good customer with
+  /// one late invoice is still a good customer, and deciding otherwise is not
+  /// a sales agent's call to make unattended.
+  creditHold Boolean @default(false)
+
   customerId String
   customer   Customer @relation(fields: [customerId], references: [id])
   productId  String
@@ -249,6 +326,8 @@ model Order {
   @@index([customerId])
   @@index([workspaceId])
   @@index([variantId])
+  /// The sweep reads exactly this: holds that have lapsed.
+  @@index([reservedUntil])
   @@map("orders")
 }
 
@@ -320,11 +399,26 @@ model AgentRun {
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   id         String    @id
+  /// The acting agent's display name. Kept as a string, not narrowed to a
+  /// foreign key, because `ingest()`'s own four roles ("Sales", "Inventory",
+  /// "Procurement", "Support") are not rows and never were — a run raised by
+  /// the built-in commerce loop has a name and no `agentId`.
   agent      String
   action     String
   status     RunStatus
   durationMs Int
   ranAt      DateTime
+
+  /// The configured agent this run belongs to, when one does. Null for the
+  /// built-in loop above.
+  agentId String?
+  agentRef Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  /// The registry slug of the skill that produced this run, when a skill did.
+  /// Null for the built-in loop. This is what makes "which tool did the model
+  /// actually invoke, and with whose authority" answerable from the audit
+  /// trail rather than from prose in `action`.
+  skill String?
 
   conversationId String?
   conversation   Conversation? @relation(fields: [conversationId], references: [id])
@@ -334,6 +428,7 @@ model AgentRun {
   @@index([status])
   @@index([ranAt])
   @@index([workspaceId])
+  @@index([agentId, ranAt])
   @@map("agent_runs")
 }
 
@@ -499,6 +594,29 @@ model Workspace {
   onboardedAt     DateTime?
   createdAt       DateTime       @default(now())
 
+  /// Browser origins allowed to call `/v1` with this workspace's API key.
+  /// Empty by default: a key-authenticated cross-origin call is a different
+  /// trust question from the anonymous widget, which stays `*`. See
+  /// `server/lib/cors.ts`.
+  allowedOrigins  String[]       @default([])
+
+  /// What this workspace may spend on language models, and the unit each
+  /// ceiling is counted in. Both daily ceilings reset at UTC midnight and are
+  /// counted over `model_calls`, so they survive a restart and are shared by
+  /// every process — unlike `lib/rate-limit.ts`, which bounds requests per IP
+  /// in one process's memory and says nothing about spend.
+  ///
+  /// A call ceiling as well as a token one, because a failing call reports no
+  /// tokens: a wrong API key would otherwise burn an unbounded number of
+  /// billable attempts without ever moving the token total. Zero on either is
+  /// a kill switch — every model-backed path degrades to its deterministic
+  /// one, which is what an absent key already does.
+  dailyModelCalls  Int @default(2000)
+  dailyModelTokens Int @default(1000000)
+  /// And within the day, what one customer's thread may take of it, so a
+  /// single scripted visitor cannot spend the whole workspace's budget.
+  customerModelCalls Int @default(60)
+
   voice               TwinVoice?
   knowledge           KnowledgeEntry[]
   examples            VoiceExample[]
@@ -518,6 +636,16 @@ model Workspace {
   payments          Payment[]
   visitorSessions   VisitorSession[]
   growthSuggestions GrowthSuggestion[]
+  apiKeys           ApiKey[]
+
+  webhookSubscriptions WebhookSubscription[]
+  webhookDeliveries    WebhookDelivery[]
+  modelCalls           ModelCall[]
+  agents               Agent[]
+  paProfiles           PaProfile[]
+  negotiations         SchedulingNegotiation[]
+  sites                GeneratedSite[]
+  purchaseOrders       PurchaseOrder[]
 
   @@map("workspaces")
 }
@@ -823,6 +951,25 @@ model InventoryConnector {
   appliedCount Int       @default(0)
   failedCount  Int       @default(0)
 
+  /// The source's own identity for the store this connector speaks to, when
+  /// the source is one Lipi calls rather than one that calls Lipi. Shopify
+  /// puts `acme.myshopify.com` here; a pushed connector leaves it null.
+  /// Globally unique because an inbound webhook names only the shop, with no
+  /// workspace in the URL, so a shop has to resolve to exactly one connector.
+  externalId   String?
+  /// OAuth access token, encrypted at rest through `lib/crypto` exactly as a
+  /// channel credential is. Never returned by an endpoint, never logged.
+  /// Cleared on disconnect, which is what stops a token outliving the
+  /// operator's decision to unplug the store.
+  accessToken  String?
+  /// The scopes the provider actually granted, so a feature that needs one
+  /// can say which re-consent it needs rather than failing on a 403.
+  scopes       String[]  @default([])
+  /// Anti-CSRF nonce for an install in flight. Written when the operator is
+  /// sent to the provider's consent screen, required to match on the way
+  /// back, and cleared the moment it is spent.
+  installState String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -836,6 +983,7 @@ model InventoryConnector {
   // One connector per source per workspace: two feeds for the same system
   // would fight over the same variants.
   @@unique([workspaceId, source])
+  @@unique([externalId])
   @@index([workspaceId])
   @@map("inventory_connectors")
 }
@@ -848,6 +996,13 @@ model InventoryConnector {
 model InventoryMapping {
   id          String   @id @default(cuid())
   externalSku String
+  /// A second handle the same source uses for the same sellable thing.
+  /// Shopify splits a variant's identity in two: it is sold by `variant.id`
+  /// and stocked by `inventory_item_id`, and `inventory_levels/update`
+  /// carries only the latter. One row per variant with both handles keeps
+  /// the operator's mapping list one line per thing they sell, rather than
+  /// two rows that look like two products.
+  externalRef String?
   createdAt   DateTime @default(now())
 
   connectorId String
@@ -856,6 +1011,7 @@ model InventoryMapping {
   variant     Variant            @relation(fields: [variantId], references: [id], onDelete: Cascade)
 
   @@unique([connectorId, externalSku])
+  @@unique([connectorId, externalRef])
   @@index([variantId])
   @@map("inventory_mappings")
 }
@@ -912,4 +1068,619 @@ model InventoryException {
 
   @@index([connectorId, resolvedAt])
   @@map("inventory_exceptions")
+}
+
+enum ApiScope {
+  read
+  write
+}
+
+/**
+ * A server-to-server credential for `/v1`.
+ *
+ * The secret is minted once and stored only as a SHA-256 hash, the same shape
+ * `InventoryConnector.secretHash` already uses — the difference is that a key
+ * is looked up *by* its hash, so presenting one costs a single indexed read
+ * and a wrong one reveals nothing by timing. `prefix` is the first few
+ * characters of the secret: enough for an operator to tell two keys apart in
+ * the dashboard or in a log line, useless to anyone who finds it.
+ *
+ * A key belongs to exactly one workspace and cannot be pointed at another,
+ * which is what makes it safe to accept in place of a session.
+ */
+model ApiKey {
+  id     String     @id @default(cuid())
+  name   String
+  /// Displayable head of the secret, e.g. `lipi_sk_a1b2c3d4`. Never the secret.
+  prefix String
+  /// SHA-256 of the whole secret, hex. Unique so a presented key resolves in one read.
+  hash   String     @unique
+  scopes ApiScope[] @default([read])
+
+  createdAt DateTime @default(now())
+  /// Coalesced, written behind the response — never inside a request's own transaction.
+  lastUsedAt DateTime?
+  /// Optional. A key with no expiry lives until it is revoked.
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, revokedAt])
+  @@map("api_keys")
+}
+
+/**
+ * Where a workspace wants its twin events delivered.
+ *
+ * The event log is already the record of every mutation, so outbound
+ * integration is a *reader* of it rather than a second stream — nothing here
+ * writes a `TwinEvent`, and nothing here may update one (invariant 6). What a
+ * subscription owns is its own position in that log and its own delivery
+ * attempts, both of which live outside the event.
+ *
+ * `secret` is the signing secret, encrypted at rest through `lib/crypto` like
+ * a channel credential. It is shown once at creation; no endpoint returns it
+ * again, because a signature the subscriber can verify is only worth anything
+ * while both sides are the only two who know the key.
+ */
+model WebhookSubscription {
+  id     String  @id @default(cuid())
+  url    String
+  /// Exact `TwinEvent.type` values this endpoint wants. Empty means every
+  /// type, which is also the default: an integrator who has not said
+  /// otherwise is better served by too much than by silence.
+  eventTypes String[] @default([])
+  /// AES-256-GCM ciphertext of the HMAC signing secret. Never returned.
+  secret String
+  /// Paused rather than deleted. A subscription that is off stops receiving
+  /// but keeps its cursor, so resuming does not replay a month of events.
+  active Boolean @default(true)
+
+  /// Position in the append-only log: the `occurredAt` of the newest event
+  /// already queued, with `cursorId` as the tiebreak that makes the order
+  /// total. Set to the moment of creation, so a new endpoint starts with
+  /// what happens next rather than with the whole history.
+  cursorAt DateTime
+  cursorId String   @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  deliveries WebhookDelivery[]
+
+  @@index([workspaceId])
+  @@index([active])
+  @@map("webhook_subscriptions")
+}
+
+enum WebhookDeliveryStatus {
+  /// Queued, or waiting out a backoff. `nextAttemptAt` says when it is due.
+  pending
+  /// The endpoint answered 2xx. Terminal unless an operator redelivers.
+  delivered
+  /// Attempts exhausted. Terminal, and the thing an operator has to look at.
+  dead
+}
+
+/**
+ * One event owed to one subscription.
+ *
+ * Delivery is at-least-once: the row is queued before it is attempted, and an
+ * attempt that fails ambiguously (a timeout, a 500 after the handler ran) is
+ * retried. `eventId` is the `TwinEvent` id and travels in the body, so the
+ * subscriber de-duplicates on it exactly as `ProcessedMessage` lets us
+ * de-duplicate an inbound provider retry.
+ *
+ * `@@unique([subscriptionId, eventId])` is what makes the queue idempotent:
+ * a second enqueue pass over the same events cannot owe an endpoint the same
+ * event twice, whatever the cursor did.
+ */
+model WebhookDelivery {
+  id String @id @default(cuid())
+
+  /// The `TwinEvent` this carries. Not a foreign key: events are evidence and
+  /// a delivery must never be able to cascade one away.
+  eventId   String
+  eventType String
+
+  status        WebhookDeliveryStatus @default(pending)
+  attempts      Int                   @default(0)
+  /// When this becomes due. Backoff is expressed by pushing it forward.
+  nextAttemptAt DateTime
+  /// What the endpoint last answered — a status code, or null for a transport
+  /// failure, where `lastError` carries the reason instead.
+  lastStatus    Int?
+  lastError     String?
+  lastAttemptAt DateTime?
+  deliveredAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  subscriptionId String
+  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, eventId])
+  @@index([workspaceId, createdAt])
+  @@index([status, nextAttemptAt])
+  @@map("webhook_deliveries")
+}
+
+enum ModelPurpose {
+  /// Turning one customer message into structured intent (`services/extract.ts`).
+  extract
+  /// Voicing a reply whose facts `ingest()` already decided (`services/selling.ts`).
+  sell
+  /// The operator asking their own twin about the business (`services/twin-chat.ts`).
+  twin_chat
+}
+
+/**
+ * One call to OpenRouter, whatever became of it.
+ *
+ * Written by `lib/openrouter.ts` itself rather than by its callers, so a
+ * fourth model-backed path cannot be added without being metered: the row is
+ * appended on the way out of `chatCompletion()`, on the success path and on
+ * every failure path alike. A call that timed out or came back 402 still cost
+ * latency and may still have cost tokens, and a budget that only counted the
+ * calls that worked would be blind to exactly the workspace that is being
+ * ground through its ceiling.
+ *
+ * No money column. OpenRouter prices in fractional US dollars, and converting
+ * that to a rupee figure needs an FX rate nobody here has — so spend is
+ * metered in the units the response actually reports, calls and tokens, and
+ * invariant 4 is kept by storing no money at all rather than by rounding one.
+ */
+model ModelCall {
+  id String @id @default(cuid())
+
+  purpose ModelPurpose
+  /// The model as asked for, not as routed: OpenRouter may serve a request
+  /// from any provider behind the id, and the id is what the budget was set
+  /// against.
+  model   String
+
+  /// Tokens as reported by the response. Null when there was no response to
+  /// report them — a timeout, a transport failure, a non-2xx body.
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+
+  /// Wall clock for the whole call, including the time a timeout waited.
+  latencyMs Int
+  /// False means the caller fell back to its deterministic path.
+  ok        Boolean
+  /// Why it failed, truncated. Null when it succeeded.
+  error     String?
+
+  occurredAt DateTime @default(now())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  /// The customer twin whose thread spent this call, which is the unit the
+  /// per-conversation cap counts — a `Conversation` row here is one inbound
+  /// message, so it is the customer that persists across a back-and-forth.
+  /// Null for twin chat, which has no customer, and for the very first
+  /// message of a twin's life, where the row does not exist yet and no prior
+  /// call can have been charged to it either.
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, occurredAt])
+  @@index([customerId, occurredAt])
+  @@map("model_calls")
+}
+
+/**
+ * Which pre-built agent a workspace started from, if any.
+ *
+ * The four the PRD names (§2 Step 01). `custom` is what an agent assembled
+ * from skills by hand records, so "started from a template" and "was built
+ * from scratch" are distinguishable afterwards — a template can change, and
+ * an operator is entitled to know whether theirs was derived from one.
+ */
+enum AgentTemplate {
+  customer_support
+  sdr
+  calendar_pa
+  inbound_reception
+  custom
+}
+
+/**
+ * Where an agent is in its life. `draft` has never been published; `paused`
+ * was published and is currently answering nothing. Deleting is not a state:
+ * an agent that has run has runs, approvals and events pointing at it.
+ */
+enum AgentStatus {
+  draft
+  deployed
+  paused
+}
+
+/**
+ * A deployable agent: the unit the no-code builder creates and the SDK
+ * registers.
+ *
+ * Before this existed a workspace had exactly one implicit agent, and which
+ * "agent" had acted was a string literal chosen by a branch inside `ingest()`
+ * ("Sales", "Inventory", "Procurement", "Support"). That is fine for a fixed
+ * product and impossible for a builder, because there is nothing to configure,
+ * nothing to deploy, and nothing for a guardrail to be attached to.
+ *
+ * What an agent owns, and why each lives here rather than on the workspace:
+ *
+ *  - `skills`     what it may do. This is the allowed-tool list, and it is
+ *                 checked on every execution (`server/agents/execute.ts`).
+ *                 A model that asks for a skill this agent does not hold is
+ *                 refused before the arguments are even parsed.
+ *  - `guardrails` the ceilings it may not cross and the words that always
+ *                 fetch a human. Per agent, because an SDR negotiating
+ *                 discounts and a reception agent booking appointments do not
+ *                 want the same limits.
+ *  - `channels`   where it answers. A workspace can connect WhatsApp without
+ *                 every agent it owns being published there.
+ *
+ * `TwinVoice` and `KnowledgeEntry` stay on the workspace: how the business
+ * sounds and what it may claim are properties of the business, not of one
+ * agent, and duplicating them per agent is how two agents end up quoting
+ * different return policies at the same customer.
+ */
+model Agent {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id       String        @id @default(cuid())
+  name     String
+  template AgentTemplate @default(custom)
+  status   AgentStatus   @default(draft)
+
+  /// What it says about itself. Never a place for numbers or policy — those
+  /// are facts, and facts reach the model through the grounding block.
+  description String?
+
+  /// Where this agent is published. A subset of the workspace's connected
+  /// channels; publishing to one that is not connected is refused at deploy.
+  channels Channel[]
+
+  /// The ceilings, validated against `agentGuardrailsSchema`
+  /// (`server/agents/guardrails.ts`) on the way in, so a malformed object
+  /// cannot be stored and then silently fail open at execution time.
+  guardrails Json @default("{}")
+
+  /// Which knowledge entries ground this agent. Empty means every entry the
+  /// workspace has, which is the useful default and what the PRD's own
+  /// `knowledge_base_ids` omission implies.
+  knowledgeEntryIds String[] @default([])
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deployedAt DateTime?
+
+  skills AgentSkill[]
+  runs   AgentRun[]
+
+  /// One agent per name per tenant: the deploy endpoint is an upsert on this,
+  /// so re-deploying an agent updates it rather than growing a second one
+  /// with the same name and half the traffic.
+  @@unique([workspaceId, name])
+  @@index([workspaceId, status])
+  @@map("agents")
+}
+
+/**
+ * One skill, enabled on one agent, with its own configuration.
+ *
+ * `skill` is a slug from the registry in `server/agents/registry.ts`, not a
+ * foreign key: skills are code, they ship with a release, and a database row
+ * per skill would let a tenant name one that has no implementation. A slug
+ * that the registry does not know is refused at deploy.
+ *
+ * `enabled` rather than deletion, so turning a skill off for an afternoon
+ * does not lose the configuration it was turned off with.
+ */
+model AgentSkill {
+  id      String @id @default(cuid())
+  agentId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  skill   String
+  config  Json    @default("{}")
+  enabled Boolean @default(true)
+
+  @@unique([agentId, skill])
+  @@map("agent_skills")
+}
+
+/**
+ * Where a calendar entry came from.
+ *
+ * `negotiated` is distinct from `manual` because it is the one the PA twin
+ * created itself, and an operator reviewing what their assistant did to their
+ * week is entitled to see which entries it put there.
+ */
+enum CalendarSource {
+  google
+  manual
+  negotiated
+  /// A block the owner never wants meetings in. Not a meeting; a refusal.
+  focus
+}
+
+/**
+ * How a scheduling conversation is going.
+ *
+ * The PRD's Personal PA Twin stores "active scheduling negotiations" (§5),
+ * which is only meaningful if a negotiation is a thing that persists between
+ * turns — a proposal sent on Monday and answered on Tuesday is one
+ * negotiation, not two messages.
+ */
+enum NegotiationState {
+  proposed
+  countered
+  confirmed
+  abandoned
+}
+
+/**
+ * The Personal PA Twin (PRD §5).
+ *
+ * Owner focus blocks, max daily meeting hours, buffer rules and a fatigue
+ * index — the constraints a scheduling decision is made against. They live on
+ * a row rather than in a prompt for the same reason every other number in this
+ * codebase does: a model asked to "keep a reasonable buffer" will eventually
+ * keep none, and the owner finds out by walking into a meeting they were
+ * already late for.
+ *
+ * One profile per named owner per workspace, because a business has several
+ * people whose calendars mean different things, and merging them would make
+ * "is this slot free" unanswerable.
+ */
+model PaProfile {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id        String @id @default(cuid())
+  ownerName String
+  /// IANA zone. Every stored instant is UTC; this is what "avoid mornings"
+  /// is resolved against, and getting it from the row rather than the server
+  /// is the difference between a 9am meeting and a 3am one.
+  timezone  String @default("UTC")
+
+  /// The working window, in minutes from local midnight.
+  workdayStartMinute Int @default(540)
+  workdayEndMinute   Int @default(1080)
+
+  /// PRD §5: "buffer rules (15 min)". Held either side of every booking.
+  bufferMinutes Int @default(15)
+
+  /// PRD §5: "max daily meeting hours", stored in minutes so it composes with
+  /// everything else here without a unit conversion at the point of use.
+  maxDailyMeetingMinutes Int @default(300)
+
+  /// Recurring blocks the owner will not take meetings in, as
+  /// `[{ weekday, startMinute, endMinute, label }]` with weekday 0 = Sunday.
+  focusBlocks Json @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events       CalendarEvent[]
+  negotiations SchedulingNegotiation[]
+
+  @@unique([workspaceId, ownerName])
+  @@index([workspaceId])
+  @@map("pa_profiles")
+}
+
+/**
+ * One entry on a PA twin's calendar.
+ *
+ * Instants are stored UTC and compared UTC. `externalId` is the provider's
+ * own id where the entry came from one, so a re-sync updates rather than
+ * duplicates — the same idempotency rule the channel adapters keep on
+ * provider message ids.
+ */
+model CalendarEvent {
+  workspaceId String
+
+  id        String @id @default(cuid())
+  profileId String
+  profile   PaProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  externalId String?
+  title      String
+  startsAt   DateTime
+  endsAt     DateTime
+  source     CalendarSource @default(manual)
+  /// False for an entry that is on the calendar but does not block it — a
+  /// tentative hold, an all-day marker.
+  busy       Boolean        @default(true)
+
+  createdAt DateTime @default(now())
+
+  negotiation SchedulingNegotiation?
+
+  @@unique([profileId, externalId])
+  @@index([profileId, startsAt])
+  @@index([workspaceId])
+  @@map("calendar_events")
+}
+
+/**
+ * A multi-turn scheduling negotiation, as a row.
+ *
+ * "Find 45 minutes with Dr. Chen next week, avoid mornings, keep 15-minute
+ * buffers" is not one request and one answer — it is a proposal, possibly a
+ * counter, and a confirmation, spread over hours and arriving on whichever
+ * channel the counterpart prefers. The constraints are parsed once, at the
+ * start, and every later turn is decided against the stored ones rather than
+ * re-read out of prose that may not be repeated.
+ */
+model SchedulingNegotiation {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id        String @id @default(cuid())
+  profileId String
+  profile   PaProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  /// Who the meeting is with. A name, because the counterpart may have no
+  /// account and no twin — the PRD's own example is a doctor.
+  counterpartName   String
+  counterpartHandle String?
+
+  durationMinutes Int
+  purpose         String
+
+  /// The parsed constraints, validated by `schedulingConstraintsSchema`
+  /// (`server/agents/scheduling.ts`): windows to avoid, earliest and latest
+  /// acceptable dates, whether buffers are required.
+  constraints Json @default("{}")
+
+  state NegotiationState @default(proposed)
+
+  /// The slots offered, newest proposal last, as
+  /// `[{ startIso, endIso, offeredAt }]`. Kept so a counter-offer can be
+  /// checked against what was actually put on the table.
+  proposedSlots Json @default("[]")
+
+  agreedStart DateTime?
+  agreedEnd   DateTime?
+
+  /// The calendar entry this negotiation produced, once it confirmed.
+  eventId String?        @unique
+  event   CalendarEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId, state])
+  @@index([profileId, state])
+  @@map("scheduling_negotiations")
+}
+
+/**
+ * Where a generated site has got to.
+ *
+ * `generated` has a structure and no deployment; `deployed` has both. There is
+ * no `deploying` — a deployment either produced a URL or it did not, and a
+ * state that means "we are not sure" is a state somebody has to poll.
+ */
+enum SiteStatus {
+  generated
+  deployed
+  failed
+}
+
+/**
+ * A site generated from a business profile (PRD §3).
+ *
+ * The three phases of §3 map onto three columns rather than three tables:
+ * `structure` is Phase 1's output, the bindings inside it are Phase 2, and
+ * `deployment` is Phase 3's.
+ *
+ * **The structure holds no business data.** A catalogue block names the
+ * catalogue; it does not carry products. A quote block holds the formula's
+ * source; it does not carry prices. Everything is resolved against live rows
+ * when a page is rendered, so a generated site cannot show a price that was
+ * true at generation and is not true now — which is the whole of "dynamic
+ * twin binding … without manual SQL migrations or backend glue code".
+ */
+model GeneratedSite {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id   String @id @default(cuid())
+  /// The path this site is served at under `/s/`. Derived from the business
+  /// name, unique per deployment because it is a public URL.
+  slug String @unique
+  name String
+
+  /// The PRD's `business_profile`, `site_features` and `deployment_target`,
+  /// stored as sent so a regenerate is reproducible from the original ask.
+  profile    Json
+  features   Json
+  deployment Json
+
+  /// Phase 1's output, including the Phase 2 bindings. Validated against
+  /// `SiteStructure` on the way in.
+  structure Json
+
+  /// The quote expression's source, lifted out of `features` because the
+  /// renderer reads it on every quote and a column beats a JSON path.
+  quoteFormula String?
+
+  status SiteStatus @default(generated)
+  /// Where it went live, when it did. Null until a provider says otherwise.
+  liveUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId, createdAt])
+  @@map("generated_sites")
+}
+
+
+/**
+ * Where a purchase order has got to. Deliberately short: this system raises
+ * POs and hands them to a person, it does not run a procurement workflow.
+ */
+enum PurchaseOrderStatus {
+  draft
+  sent
+  received
+  cancelled
+}
+
+/**
+ * A restock, raised automatically (PRD §5, Order & Supply Twin).
+ *
+ * "Auto-dispatches POs when reserved inventory drops below threshold." Until
+ * now crossing the reorder point raised an `AgentRun` whose `action` read
+ * "Draft restock of …" — a sentence in a log, which nobody can act on, count
+ * or reconcile against what actually arrived.
+ *
+ * Quantity is the supplier's MOQ or the shortfall, whichever is larger,
+ * because ordering below a minimum is an order the supplier will refuse.
+ *
+ * `draft`, never `sent`: dispatching money to a supplier is a commitment, and
+ * there is no supplier integration here to dispatch it through. What is
+ * automatic is the *raising* — the PO exists, with its quantity and its
+ * expected date, for a human to send.
+ */
+model PurchaseOrder {
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  id  String @id @default(cuid())
+  qty Int
+
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variantId  String
+  variant    Variant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  status PurchaseOrderStatus @default(draft)
+  /// Why it was raised, in the operator's own terms.
+  reason String
+  /// `createdAt` plus the supplier's average lead time.
+  expectedOn DateTime
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId, status])
+  @@index([variantId, status])
+  @@map("purchase_orders")
 }

@@ -33,6 +33,15 @@ export const GET = route(async () => {
       ...(row ? publicView(row) : unconnectedView(entry.channel)),
       label: entry.label,
       connectKind: entry.connect.kind,
+      // What the connect form asks for, so the page never hard-codes one
+      // channel's field names. The patterns stay here: they are checked on
+      // the server, and a RegExp does not survive JSON.
+      connectFields: entry.connect.kind === "api_key"
+        ? [
+          { field: entry.connect.field, label: null, hint: entry.connect.hint, secret: true },
+          ...(entry.connect.extras ?? []).map((e) => ({ field: e.field, label: e.label, hint: e.hint, secret: false })),
+        ]
+        : [],
       inbound: entry.inbound,
       choice: entry.choice ?? null,
       available: entry.available,
@@ -51,6 +60,7 @@ export const GET = route(async () => {
     displayName: "Website chat widget",
     label: "Website chat",
     connectKind: "none",
+    connectFields: [],
     inbound: { kind: "webchat" },
     choice: null,
     available: true,

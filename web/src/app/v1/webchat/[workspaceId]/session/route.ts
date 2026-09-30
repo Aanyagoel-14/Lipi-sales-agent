@@ -7,9 +7,11 @@ import { sessionSchema } from "../../schemas";
 export const OPTIONS = corsPreflight;
 
 /**
- * Called once when the widget first loads on a page — this is the only
- * moment the ad platform's own query parameters are still in the address
- * bar, so `touch` is captured here and nowhere else (see attribution.ts).
+ * Called on every page load the widget is on — not when the visitor opens
+ * the chat panel, because a load is the only moment the ad platform's own
+ * query parameters are still in the address bar, and most ad traffic never
+ * clicks. So `touch` is captured here and nowhere else (see attribution.ts),
+ * written on the first load and left alone by every later one.
  * No session cookie: the workspace id is public (it is meant to be pasted
  * into a `<script>` tag on the operator's own site), and every write here
  * is scoped to a `visitorId` the caller itself provides.

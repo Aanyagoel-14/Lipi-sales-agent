@@ -1,8 +1,9 @@
 import { createHmac } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase } from "./helpers";
+import { afterSettled } from "./next/server";
 import { fakeComposio } from "./fakes/composio";
-import { channelSpecs } from "@/server/channels/registry";
+import { channelSpecs, specFor } from "@/server/channels/registry";
 import { INBOUND_LIMIT } from "@/server/channels/inbound";
 import { conversationVolume } from "@/server/services/analytics";
 import { env } from "@/server/env";
@@ -21,18 +22,20 @@ import { _resetRateLimitsForTests } from "@/server/lib/rate-limit";
 
 const APP_SECRET = env.META_APP_SECRET!;
 const VERIFY_TOKEN = env.META_VERIFY_TOKEN!;
+const X_API_SECRET = env.X_API_SECRET!;
 
 // One id per channel per tenant. `(channel, externalId)` is unique, so these
 // are what the router has to tell apart.
-const A = { phone: "phone_a", ig: "ig_a", page: "page_a" };
-const B = { phone: "phone_b", ig: "ig_b", page: "page_b" };
+const A = { phone: "phone_a", ig: "ig_a", page: "page_a", x: "4337869213" };
+const B = { phone: "phone_b", ig: "ig_b", page: "page_b", x: "4337869214" };
 
 let alpha: string;
 let beta: string;
 let telegramId: string;
 let whatsappId: string;
+let xId: string;
 
-type Connectable = "whatsapp" | "instagram" | "facebook" | "telegram";
+type Connectable = "whatsapp" | "instagram" | "facebook" | "telegram" | "x";
 
 /**
  * A connected row of `channel`, already answering as `externalId` — and
@@ -69,10 +72,12 @@ beforeEach(async () => {
   await connect(alpha, "instagram", A.ig);
   await connect(alpha, "facebook", A.page);
   telegramId = (await connect(alpha, "telegram", "bot_a", { webhookSecret: TELEGRAM_SECRET })).id;
+  xId = (await connect(alpha, "x", A.x)).id;
 
   await connect(beta, "whatsapp", B.phone);
   await connect(beta, "instagram", B.ig);
   await connect(beta, "facebook", B.page);
+  await connect(beta, "x", B.x);
 });
 
 // ------------------------------------------------------------- fixtures --
@@ -104,6 +109,26 @@ const telegramUpdate = (text: string, updateId = 1) => ({
   message: { message_id: 1, text, chat: { id: 555, first_name: "Deepa" }, from: { first_name: "Deepa" } },
 });
 
+/**
+ * One X Account Activity delivery. `forUserId` is the subscribed account it
+ * is for — which is all the router has to tell two tenants apart — and
+ * `senderId` defaults to the customer rather than the shop.
+ */
+const xActivity = (forUserId: string, text: string, id = "dm.1", senderId = "3001969357") => ({
+  for_user_id: forUserId,
+  direct_message_events: [{
+    type: "message_create",
+    id,
+    created_timestamp: "1516403560557",
+    message_create: {
+      target: { recipient_id: forUserId },
+      sender_id: senderId,
+      message_data: { text },
+    },
+  }],
+  users: { "3001969357": { id: "3001969357", name: "Deepa Rao", screen_name: "deepa_rao" } },
+});
+
 const sign = (body: unknown, key = APP_SECRET) =>
   "sha256=" + createHmac("sha256", key).update(Buffer.from(JSON.stringify(body))).digest("hex");
 
@@ -114,8 +139,22 @@ const deliver = (body: unknown, signature = sign(body)) =>
     .set("Content-Type", "application/json")
     .send(body);
 
-/** `after()` is not awaited in production and is not awaited here either. */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 400));
+/** X's digest of the same bytes is base64 rather than Meta's hex. */
+const xSign = (body: unknown, key = X_API_SECRET) =>
+  "sha256=" + createHmac("sha256", key).update(Buffer.from(JSON.stringify(body))).digest("base64");
+
+/** A signed X delivery, exactly as X would send it. */
+const deliverX = (body: unknown, signature = xSign(body)) =>
+  agent().post("/webhooks/x")
+    .set("x-twitter-webhooks-signature", signature)
+    .set("Content-Type", "application/json")
+    .send(body);
+
+/**
+ * `after()` is not awaited in production, so the route answers before its
+ * work is done and a test that asserts on that work waits for it here.
+ */
+const settle = () => afterSettled();
 
 const conversationsIn = (workspaceId: string) =>
   prisma.conversation.findMany({ where: { workspaceId }, include: { messages: true } });
@@ -377,6 +416,141 @@ describe("the Telegram route", () => {
   });
 });
 
+// -------------------------------------------------------------------- x --
+
+/**
+ * X has no Composio trigger — the toolkit's page reports zero — so inbound is
+ * Lipi's, and it is the Meta story rather than Telegram's: X registers one
+ * webhook per *app*, signs every delivery with that app's consumer secret,
+ * and names the subscribed account in `for_user_id`. So there is one URL for
+ * the whole deployment and the tenant comes out of the payload.
+ */
+describe("X's challenge-response check", () => {
+  it("answers a crc_token with the HMAC of it under the app's consumer secret", async () => {
+    const res = await agent().get("/webhooks/x").query({ crc_token: "challenge-123" }).expect(200);
+    expect(res.body).toEqual({
+      response_token: "sha256=" + createHmac("sha256", X_API_SECRET).update("challenge-123").digest("base64"),
+    });
+  });
+
+  it("refuses a challenge with no token in it", async () => {
+    await agent().get("/webhooks/x").expect(400);
+  });
+});
+
+describe("X's signature", () => {
+  it("refuses a body with no signature at all", async () => {
+    await agent().post("/webhooks/x")
+      .set("Content-Type", "application/json")
+      .send(xActivity(A.x, "hello")).expect(401);
+  });
+
+  it("refuses a signature made with the wrong key", async () => {
+    const body = xActivity(A.x, "hello");
+    await deliverX(body, xSign(body, "not-the-consumer-secret")).expect(401);
+  });
+
+  it("refuses a hex signature where X sends base64", async () => {
+    // The right key over the right bytes, in Meta's spelling of the digest.
+    const body = xActivity(A.x, "hello");
+    await deliverX(body, sign(body, X_API_SECRET)).expect(401);
+  });
+
+  it("accepts a genuine signature", async () => {
+    await deliverX(xActivity(A.x, "hello")).expect(200);
+  });
+
+  it("accepts and drops a well-signed body that names no account", async () => {
+    // A replay job status, an activity type nobody subscribed to, or a bare
+    // literal: signed by X, but nothing to route.
+    await deliverX(null).expect(200);
+    await deliverX({ replay_job_status: { job_state: "Complete" } }).expect(200);
+    expect(await prisma.conversation.count()).toBe(0);
+  });
+
+  it("refuses a well-signed body that is not JSON", async () => {
+    const raw = "{not json";
+    await agent().post("/webhooks/x")
+      .set("x-twitter-webhooks-signature",
+        "sha256=" + createHmac("sha256", X_API_SECRET).update(Buffer.from(raw)).digest("base64"))
+      .set("Content-Type", "application/json")
+      .send(raw).expect(400);
+  });
+});
+
+describe("the X route", () => {
+  it("delivers a DM to the workspace whose account it is for", async () => {
+    await deliverX(xActivity(A.x, "do you have 2 olive L polos")).expect(200);
+    await settle();
+
+    const mine = await conversationsIn(alpha);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.channel).toBe("x");
+    expect(await conversationsIn(beta)).toHaveLength(0);
+
+    const customer = await prisma.customer.findFirst({ where: { workspaceId: alpha, handle: "3001969357" } });
+    expect(customer?.name).toBe("@deepa_rao");
+  });
+
+  it("accepts and drops a delivery for an account no workspace has connected", async () => {
+    await deliverX(xActivity("9999999999", "hello")).expect(200);
+    await settle();
+
+    expect(await prisma.processedMessage.count()).toBe(0);
+    expect(await prisma.conversation.count()).toBe(0);
+  });
+
+  it("runs the loop once for a repeated event id", async () => {
+    const body = xActivity(A.x, "do you have 2 olive L polos");
+    for (let i = 0; i < 2; i++) await deliverX(body).expect(200);
+    await settle();
+
+    const mine = await conversationsIn(alpha);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.messages.filter((m) => m.from === "agent")).toHaveLength(1);
+    expect(await prisma.processedMessage.count({ where: { connectionId: xId } })).toBe(1);
+  });
+
+  it("ignores the copy of our own reply that X delivers back", async () => {
+    // Both directions of a conversation reach the webhook, so the reply just
+    // sent arrives as an event whose sender is the shop's own account.
+    await deliverX(xActivity(A.x, "Yes, we do.", "dm.echo", A.x)).expect(200);
+    await settle();
+
+    expect(await prisma.conversation.count()).toBe(0);
+    expect(await prisma.processedMessage.count()).toBe(0);
+  });
+
+  it("answers the customer through the X toolkit", async () => {
+    await deliverX(xActivity(A.x, "do you have 2 olive L polos")).expect(200);
+    await settle();
+
+    const [conversation] = await conversationsIn(alpha);
+    const reply = conversation!.messages.find((m) => m.from === "agent")!;
+    const sent = fakeComposio.calls.execute.filter((call) => call.slug === "TWITTER_SEND_A_NEW_MESSAGE_TO_A_USER");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.arguments).toEqual({ participant_id: "3001969357", text: reply.text });
+    expect(reply.deliveryStatus).toBe("sent");
+  });
+
+  it("spends the ceiling its own spec declares, not the shared one", async () => {
+    const limit = specFor("x")!.inboundLimit!;
+    expect(limit.max).toBeLessThan(INBOUND_LIMIT);
+
+    // Echo-only deliveries cost the budget and start no work, which is what
+    // makes them the right shape to spend it with.
+    for (let i = 0; i < limit.max; i++) {
+      await deliverX(xActivity(A.x, "ours", `dm.echo.${i}`, A.x)).expect(200);
+    }
+    await deliverX(xActivity(A.x, "one too many", "dm.over", A.x)).expect(429);
+
+    // The other tenant's X connection, and this tenant's other channels, are
+    // untouched: the budget is per connection.
+    await deliverX(xActivity(B.x, "theirs", "dm.b", B.x)).expect(200);
+    await deliver(whatsappBody(A.phone, "hello")).expect(200);
+  });
+});
+
 // ----------------------------------------------------- the loop, intact --
 
 describe("the loop an inbound message sets off", () => {
@@ -431,6 +605,151 @@ describe("the loop an inbound message sets off", () => {
     expect(row.status).toBe("needs_reconnect");
     expect(row.lastEventAt).not.toBeNull();
     expect(row.lastError).toBeNull();
+  });
+});
+
+// ------------------------------------- the salesperson, on every channel --
+
+/**
+ * P8: one AI sales layer across channels. The website already spoke through
+ * `sell()`; until now a WhatsApp customer got the composed draft, so the
+ * assertions here are about the *words* — which ones reach the provider, how
+ * many times, and what the model was told about where they are going.
+ */
+describe("the voice an inbound message is given", () => {
+  type Asked = { system: string; turns: { role: string; content: string }[] };
+  let asked: Asked[] = [];
+
+  /**
+   * Every voicing call the run makes, answering each with `reply`.
+   *
+   * A key on `env` turns on the model-backed *extractor* as well, which posts
+   * to the same endpoint, so only the sales prompt is recorded — otherwise
+   * "was the model called once?" counts two calls per message.
+   */
+  const answers = (reply: string) => {
+    asked = [];
+    vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
+      const payload = JSON.parse(init.body);
+      const system: string = payload.messages[0].content;
+      if (system.startsWith("You are a salesperson")) {
+        asked.push({ system, turns: payload.messages.slice(1) });
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: JSON.stringify({ reply }) } }] }),
+        { status: 200 },
+      );
+    });
+    return asked;
+  };
+
+  const whatsappSends = () =>
+    fakeComposio.calls.execute.filter((call) => call.slug === "WHATSAPP_SEND_MESSAGE");
+
+  beforeEach(() => { env.OPENROUTER_API_KEY = "test-key"; });
+  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); });
+
+  it("sends the model's words to a WhatsApp customer, once", async () => {
+    answers("Olive polos are in, in every size — which would you like?");
+
+    await deliver(whatsappBody(A.phone, "do you have olive polos")).expect(200);
+    await settle();
+
+    const [conversation] = await conversationsIn(alpha);
+    const replies = conversation!.messages.filter((m) => m.from === "agent");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.text).toBe("Olive polos are in, in every size — which would you like?");
+    expect(replies[0]!.deliveryStatus).toBe("sent");
+
+    const sent = whatsappSends();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.arguments).toMatchObject({ text: replies[0]!.text });
+  });
+
+  it("tells the model which channel it is writing for", async () => {
+    answers("Olive is in.");
+
+    await deliver(whatsappBody(A.phone, "do you have olive polos")).expect(200);
+    await settle();
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.system).toContain("WhatsApp");
+    // The webchat instruction is the one this replaces, not one it adds to.
+    expect(asked[0]!.system).not.toContain("renders as markdown");
+  });
+
+  it("gives an X DM the same salesperson, told it is writing for X", async () => {
+    answers("Olive is in, in every size.");
+
+    await deliverX(xActivity(A.x, "do you have olive polos")).expect(200);
+    await settle();
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.system).toContain("direct message on X");
+
+    const [conversation] = await conversationsIn(alpha);
+    const replies = conversation!.messages.filter((m) => m.from === "agent");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.text).toBe("Olive is in, in every size.");
+    const sent = fakeComposio.calls.execute.filter((c) => c.slug === "TWITTER_SEND_A_NEW_MESSAGE_TO_A_USER");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.arguments).toMatchObject({ text: replies[0]!.text });
+  });
+
+  it("remembers what the same customer said on an earlier message", async () => {
+    answers("Olive is in.");
+
+    await deliver(whatsappBody(A.phone, "do you have olive polos", "wamid.first")).expect(200);
+    await settle();
+    await deliver(whatsappBody(A.phone, "and in L?", "wamid.second")).expect(200);
+    await settle();
+
+    expect(asked).toHaveLength(2);
+    expect(asked[1]!.turns).toEqual([
+      { role: "user", content: "do you have olive polos" },
+      { role: "assistant", content: "Olive is in." },
+      { role: "user", content: "and in L?" },
+    ]);
+  });
+
+  it("neither voices nor replies twice when the provider retries a delivery", async () => {
+    answers("Olive is in.");
+
+    const body = whatsappBody(A.phone, "do you have olive polos");
+    for (let i = 0; i < 2; i++) await deliver(body).expect(200);
+    await settle();
+
+    expect(asked).toHaveLength(1);
+    expect(whatsappSends()).toHaveLength(1);
+    const [conversation] = await conversationsIn(alpha);
+    expect(conversation!.messages.filter((m) => m.from === "agent")).toHaveLength(1);
+  });
+
+  it("still replies from the template when the model is unreachable", async () => {
+    vi.stubGlobal("fetch", async () => new Response("no credits", { status: 402 }));
+
+    await deliver(whatsappBody(A.phone, "I want 2 olive L polos")).expect(200);
+    await settle();
+
+    const [conversation] = await conversationsIn(alpha);
+    const reply = conversation!.messages.find((m) => m.from === "agent")!;
+    expect(reply.text).toContain("2,392");
+    expect(reply.deliveryStatus).toBe("sent");
+    expect(whatsappSends()).toHaveLength(1);
+  });
+
+  it("holds the reply rather than sending it when the policy says so", async () => {
+    await prisma.workspace.update({ where: { id: alpha }, data: { approvalPolicy: "everything" } });
+    answers("Olive is in.");
+
+    await deliver(whatsappBody(A.phone, "do you have olive polos")).expect(200);
+    await settle();
+
+    const [conversation] = await conversationsIn(alpha);
+    const replies = conversation!.messages.filter((m) => m.from === "agent");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.deliveryStatus).toBe("held");
+    expect(whatsappSends()).toHaveLength(0);
   });
 });
 

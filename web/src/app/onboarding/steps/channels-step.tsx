@@ -18,10 +18,14 @@ type Identity = { id: string; display?: string; verifiedName?: string; name?: st
  */
 type Choice = { field: string; list: string; noun: string; prompt: string };
 
+/** One input on an API-key channel's form. The first is always the secret. */
+type ConnectField = { field: string; label: string | null; hint: string; secret: boolean };
+
 type ChannelRow = {
   channel: string;
   label: string;
   connectKind: "link" | "api_key" | "none";
+  connectFields: ConnectField[];
   inbound: { kind: string; reason?: string };
   choice?: Choice | null;
   available: boolean;
@@ -52,6 +56,11 @@ const CHIPS: Record<string, { label: string; tone: string; mark: string }> = {
 /** What this channel will actually do once it is connected. */
 function capability(row: ChannelRow): string {
   if (!row.available) return row.unavailableReason ?? "Not configured for this deployment";
+  // Said before the button is pressed: an operator sent to Facebook
+  // unannounced reads it as the page having gone wrong.
+  if (row.status !== "connected" && row.connectKind === "link" && PROVIDER_SCREEN[row.channel]) {
+    return PROVIDER_SCREEN[row.channel]!;
+  }
   switch (row.inbound.kind) {
     case "webchat":
       return "A chat bubble for your own website. Paste one script tag, nothing to authenticate.";
@@ -63,6 +72,12 @@ function capability(row: ChannelRow): string {
       return "Customer messages become conversations, and the twin answers in the same thread";
   }
 }
+
+/** Where a Connect Link takes the operator, for the channels whose consent screen is not their own brand. */
+const PROVIDER_SCREEN: Partial<Record<string, string>> = {
+  instagram: "Connect opens Facebook to approve access to your Instagram account, then brings you back here with the result.",
+  facebook: "Connect opens Facebook to approve access to your Page, then brings you back here with the result.",
+};
 
 /**
  * Connecting a channel.
@@ -78,7 +93,7 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
   const [rows, setRows] = useState<ChannelRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const [token, setToken] = useState("");
+  const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -125,10 +140,10 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
     await act(row.channel, async () => {
       const res = await apiFetch(`channels/${row.channel}/connect`, {
         method: "POST",
-        ...(row.connectKind === "api_key" ? { body: JSON.stringify({ token }) } : {}),
+        ...(row.connectKind === "api_key" ? { body: JSON.stringify(values) } : {}),
       });
       if (!res.ok) throw await failed(res, "Could not start the connection");
-      const data = (await res.json()) as { redirectUrl: string | null };
+      const data = (await res.json()) as { redirectUrl: string | null; channel?: { displayName?: string | null } };
 
       // The provider's consent screen is the next step, and it is a full page
       // navigation: the operator comes back through /v1/channels/callback.
@@ -136,8 +151,11 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
         window.location.href = data.redirectUrl;
         return;
       }
-      setToken("");
+      setValues({});
       setOpen(null);
+      // An API-key connection finished in that request, and was checked
+      // against the provider before it answered: say so, not just a chip.
+      setNote(`${row.label} connected${data.channel?.displayName ? ` as ${data.channel.displayName}` : ""}`);
       await load();
       onConnected?.();
     });
@@ -230,6 +248,7 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
                         onClick={() => {
                           if (row.connectKind === "api_key") {
                             setOpen(open === row.channel ? null : row.channel);
+                            setValues({});
                             setError(null);
                           } else {
                             void connect(row);
@@ -276,15 +295,30 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
 
               {open === row.channel && row.connectKind === "api_key" ? (
                 <div className="space-y-2.5 border-t border-line p-5">
-                  <input
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    placeholder="Bot token from @BotFather"
-                    autoComplete="off"
-                    spellCheck={false}
-                    className={field}
-                  />
-                  <Button size="sm" disabled={working || token.trim().length < 20}
+                  {row.connectFields.map((f) => (
+                    <div key={f.field} className="space-y-1">
+                      {f.label ? (
+                        <label htmlFor={`${row.channel}-${f.field}`} className="text-[0.75rem] text-ink-subtle">
+                          {f.label}
+                        </label>
+                      ) : null}
+                      <input
+                        id={`${row.channel}-${f.field}`}
+                        value={values[f.field] ?? ""}
+                        onChange={(e) => setValues((v) => ({ ...v, [f.field]: e.target.value }))}
+                        placeholder={f.hint}
+                        aria-label={f.label ?? f.hint}
+                        type={f.secret ? "password" : "text"}
+                        inputMode={f.secret ? undefined : "numeric"}
+                        autoComplete="off"
+                        spellCheck={false}
+                        className={field}
+                      />
+                    </div>
+                  ))}
+                  <Button size="sm"
+                    disabled={working || row.connectFields.some((f) =>
+                      (values[f.field] ?? "").trim().length < (f.secret ? 20 : 1))}
                     onClick={() => connect(row)}>
                     {working ? "Checking…" : "Check and connect"}
                   </Button>

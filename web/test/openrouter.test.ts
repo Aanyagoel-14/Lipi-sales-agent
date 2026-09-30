@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { stripReasoning, tidyMarkdownLists, unglueTrailingSentence } from "@/server/lib/openrouter";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { chatCompletion, stripReasoning, tidyMarkdownLists, unglueTrailingSentence } from "@/server/lib/openrouter";
+import { createUser, createWorkspace, resetDatabase } from "./helpers";
+import { env } from "@/server/env";
+import { prisma } from "@/server/lib/prisma";
 
 describe("tidying run-together lists", () => {
   // The bug: asked for JSON, the model writes its list with spaces instead of
@@ -58,5 +61,121 @@ describe("ungluing a trailing sentence", () => {
   it("leaves ordinary paragraphs alone", () => {
     const prose = "We have 9 in stock.  Would you like two?";
     expect(unglueTrailingSentence(prose)).toBe(prose);
+  });
+});
+
+/**
+ * The meter lives in the transport, not in the three services, so these are
+ * the cases that only the transport can be asked about: that a caller which
+ * knows nothing about budgets is metered anyway, and that the meter cannot
+ * take down the call it is measuring.
+ */
+describe("metering at the transport", () => {
+  let workspaceId: string;
+
+  beforeEach(async () => {
+    await resetDatabase();
+    const { user } = await createUser();
+    workspaceId = (await createWorkspace({ userId: user.id, withCatalogue: false })).id;
+    env.OPENROUTER_API_KEY = "test-key";
+  });
+  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); });
+
+  const ask = (meter: { workspaceId: string }) =>
+    chatCompletion({ meter: { ...meter, purpose: "twin_chat" }, messages: [{ role: "user", content: "hi" }] });
+
+  it("writes the row itself, so a caller cannot be unmetered by forgetting to", async () => {
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify({
+        choices: [{ message: { content: "hello" } }],
+        usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 },
+      }), { status: 200 }));
+
+    expect(await ask({ workspaceId })).toBe("hello");
+
+    const row = await prisma.modelCall.findFirstOrThrow({ where: { workspaceId } });
+    expect(row).toMatchObject({ purpose: "twin_chat", ok: true, promptTokens: 11, totalTokens: 14, error: null });
+  });
+
+  it("does not fail the call it is measuring when the row cannot be written", async () => {
+    vi.stubGlobal("fetch", async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "hello" } }] }), { status: 200 }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // No such workspace, so the insert violates its foreign key. The spend has
+    // already happened by then; refusing the reply would only lose it twice.
+    expect(await ask({ workspaceId: "wsp_gone" })).toBe("hello");
+    expect(warn.mock.calls.flat().join(" ")).toContain("[metering]");
+  });
+
+  it("still raises the provider's own failure after metering it", async () => {
+    vi.stubGlobal("fetch", async () => new Response("no credits", { status: 402 }));
+
+    await expect(ask({ workspaceId })).rejects.toThrow("OpenRouter 402");
+    expect(await prisma.modelCall.count({ where: { workspaceId, ok: false } })).toBe(1);
+  });
+});
+
+/**
+ * The default chat model is a free tier that reports "Service temporarily
+ * overloaded" at busy hours. Without a fallback every Storefront answer
+ * degraded to the composed reply until it recovered.
+ */
+describe("falling back when the model is unavailable", () => {
+  let workspaceId: string;
+  let asked: string[];
+
+  const overloaded = () =>
+    new Response(JSON.stringify({ error: { message: "Upstream error from Nvidia: Service temporarily overloaded" } }), { status: 200 });
+  const answered = () => new Response(JSON.stringify({ choices: [{ message: { content: "hello" } }] }), { status: 200 });
+
+  /** Answers with `first` for the chat model and `answered` for anything else. */
+  const stub = (first: () => Response) =>
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const model = (JSON.parse(String(init.body)) as { model: string }).model;
+      asked.push(model);
+      return model === env.OPENROUTER_CHAT_MODEL ? first() : answered();
+    });
+
+  beforeEach(async () => {
+    await resetDatabase();
+    const { user } = await createUser();
+    workspaceId = (await createWorkspace({ userId: user.id, withCatalogue: false })).id;
+    env.OPENROUTER_API_KEY = "test-key";
+    asked = [];
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  const ask = (model?: string) =>
+    chatCompletion({ meter: { workspaceId, purpose: "sell" }, model, messages: [{ role: "user", content: "hi" }] });
+
+  it("answers from the next model when the provider reports an upstream error", async () => {
+    stub(overloaded);
+
+    expect(await ask()).toBe("hello");
+    expect(asked).toEqual([env.OPENROUTER_CHAT_MODEL, env.OPENROUTER_MODEL]);
+
+    // Two calls were made, so two are metered.
+    const rows = await prisma.modelCall.findMany({ where: { workspaceId }, orderBy: { occurredAt: "asc" } });
+    expect(rows.map((r) => [r.model, r.ok])).toEqual([[env.OPENROUTER_CHAT_MODEL, false], [env.OPENROUTER_MODEL, true]]);
+  });
+
+  it("falls back on a rate limit or a 5xx too", async () => {
+    stub(() => new Response("busy", { status: 503 }));
+    expect(await ask()).toBe("hello");
+    expect(asked).toHaveLength(2);
+  });
+
+  it("never substitutes a model the caller pinned", async () => {
+    stub(overloaded);
+    await expect(ask(env.OPENROUTER_CHAT_MODEL)).rejects.toThrow("overloaded");
+    expect(asked).toEqual([env.OPENROUTER_CHAT_MODEL]);
+  });
+
+  it("does not retry a refusal the next model would refuse too", async () => {
+    stub(() => new Response("no credits", { status: 402 }));
+    await expect(ask()).rejects.toThrow("OpenRouter 402");
+    expect(asked).toHaveLength(1);
   });
 });

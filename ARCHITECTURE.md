@@ -69,6 +69,7 @@ reserved at that variant; and all effects appear in the event trail.
 | Channel adapters | Normalize provider payloads into a common inbound message and send approved replies. |
 | Analytics service | Derives KPIs, volume, intent mix and low-stock signals from live rows. |
 | Inventory connectors | Accept pushed stock batches, map external SKUs to variants, apply corrections idempotently and surface what could not be applied. |
+| Shopify connector | The one *pulled* source: OAuth install, product and order import, polled stock and webhooks. Corrections still go through the same `applySync()` as a pushed batch. |
 
 ## Data onboarding
 
@@ -103,6 +104,27 @@ A correction below a variant's reserved units is refused rather than clamped:
 those units are already promised to a customer, and accepting the lower figure
 would let the twin sell them twice.
 
+### Shopify
+
+Shopify does not push, so it is the one source Lipi calls. The operator
+consents on Shopify's own screen (`POST /v1/inventory/shopify/install` ->
+Shopify -> `GET /v1/inventory/shopify/callback`); the access token is
+encrypted at rest with `lib/crypto` like a channel credential, is returned by
+no endpoint, and is cleared on disconnect along with the store's webhook
+subscriptions.
+
+Everything after the install reuses the connector framework rather than
+paralleling it:
+
+| Concern | How |
+| --- | --- |
+| Stock | Every count — polled, or delivered by `inventory_levels/update` — goes through `applySync()`. Imported variants are created at zero and corrected from there, so there is exactly one path over the number the twin quotes. |
+| Mapping | A Shopify variant id is an `InventoryMapping.externalSku` like any other external SKU. Shopify splits a variant's identity — sold by `variant.id`, stocked by `inventory_item_id` — so the second handle lives on the same row as `externalRef`, and an inventory item nobody has imported raises the existing `unmapped_sku` exception. |
+| Cursor | An `updated_at` watermark, advanced only to the newest record a run actually saw, and handed back as `updated_at_min`. The batch key is derived from it, so a poll that finds the same tail twice replays instead of re-applying. |
+| Webhooks | One URL for the deployment, `POST /webhooks/shopify`, HMAC-verified against `SHOPIFY_API_SECRET` over the raw bytes; the tenant comes from `X-Shopify-Shop-Domain`, which is why a shop resolves to exactly one connector. Same shape as `/webhooks/meta`, for the same reason. |
+| Orders | Imported so revenue that happened in Shopify is visible to attribution: the buyer's `landing_site` supplies `utm_*` and the click id, stamped on first touch only. An imported order reserves and deducts nothing — Shopify already counted the sale, and the next sync carries that number. |
+| Cadence | Lipi has no scheduler. `POST /v1/inventory/shopify/sync` is the tick, driven by a cron or an API key. |
+
 ## Training and evaluation
 
 Training is configuration and verification, not model fine-tuning:
@@ -128,6 +150,284 @@ extracts intent, updates the customer Twin, matches a variant, applies allowed
 inventory/order effects, creates agent runs and approvals, composes a grounded
 reply, and appends events for each effect.
 
+Those facts reach the customer through `sell()`, on every channel.
+`channels/inbound.ts` is the one door for WhatsApp, Instagram, Messenger,
+Telegram and X, and the website widget calls the same function directly — so one
+salesperson answers all of them and no channel gets a form letter. `sell()`
+runs the ingest transaction, then writes the voiced reply onto the very row
+ingest composed into, which is the row the connector delivers: one inbound
+message, one stored reply, one send. The provider's own message id is claimed
+before any of that starts, so a retried webhook costs neither a second model
+call nor a second reply, and with no model reachable the row keeps ingest's
+composed draft and is delivered anyway. The earlier turns replayed to the model
+are read by customer handle, so the memory is the same code on the website and
+on a phone.
+
+What does differ per channel is length and formatting, and it is asked for in
+the prompt rather than trimmed afterwards: cutting a model's output to fit a
+bubble cuts verified prices in half, which invents a number nobody computed.
+The `Channel` selects one line of the system prompt — markdown and three
+sentences for the website panel, plain text and two for a phone.
+
+The website widget is the one inbound path with a step before any message: it
+records the visitor at **page load**, not when the chat panel opens, because
+that is the only moment the `utm_*` parameters and the referrer are reliably
+still on the URL — and because a visitor who arrives on a paid click, reads the
+page and leaves is the majority of ad traffic. One `VisitorSession` per visitor
+per workspace is upserted per page view: first touch is written at creation and
+never rewritten, `lastSeenAt` moves on every later view, and `engagedAt` is
+stamped only when they first say something. That is the line between a visit and
+a lead. The greeting the call answers with is held by the widget until the
+visitor opens the panel; nothing opens itself at anybody.
+
+### X direct messages
+
+X is the Meta arrangement rather than Telegram's, because X's own model is
+Meta's: a webhook is registered against an **app**, not an account. One URL —
+`POST /webhooks/x` — is validated by a challenge signed with the app's consumer
+secret, every delivery is signed with that same secret (base64, in
+`x-twitter-webhooks-signature`), and the tenant is the `for_user_id` in the
+payload, resolved through `(channel, externalId)` exactly as a phone number id
+or a Page id is. A URL per connection would prove nothing extra: the secret
+behind it would be the same for every tenant.
+
+Three properties of the channel are declared in its registry spec rather than
+handled at the door. X delivers **both directions** of a conversation, so the
+reply just sent arrives back as an event whose sender is the shop's own
+account, and the parser drops it the way an Instagram echo is dropped. X takes
+**15 DMs per 15 minutes** from one account, so the spec carries its own inbound
+ceiling — twice the send ceiling, because of those echoes — instead of
+`inbound.ts` knowing a channel's name. And a DM holds 10,000 characters, so a
+reply is never split, which matters because the API bills per DM.
+
+Composio has no X trigger (its twitter toolkit reports zero), so inbound is
+Lipi's; outbound and credentials are Composio's like every other channel. The
+per-tenant part of turning inbound on is the activity subscription, made at
+connect time against the deployment's registered webhook — and it cannot be
+withdrawn from here, because X authenticates the removal with the app's bearer
+token, which Composio does not hold. Disconnect clears the id inbound routes
+on instead, which is the same answer Telegram gives to the same problem.
+
+## Grounding the salesperson
+
+`sell()` decides what is said; `ingest()` has already decided what is true.
+What the salesperson is allowed to say comes from one retrieval path —
+`buildGrounding()` in `services/briefing.ts` — assembled per turn:
+
+- **The policies that answer this message, first.** `rankKnowledge()`
+  (`services/voice.ts`) scores every `KnowledgeEntry` the workspace has taught
+  its twin on word overlap with the message, with a bonus for the kind the
+  extracted intent implies, and returns the few that clear a relevance floor.
+  "Do you do bulk pricing for 200 units, and what is your returns window?"
+  arrives with both policies stated rather than one. The order is total —
+  score, then title, then id — so the same message and workspace build the
+  same block; a block that reshuffles between identical turns is one nobody
+  can debug.
+- **The catalogue slice that is relevant.** The product `ingest()` matched
+  leads, then the rest of its category, then whatever else the message named,
+  then the remainder A to Z. Every price and count is read here, from the
+  product and variant rows, and handed over as a fact — the model has no
+  arithmetic to do and no number to choose (invariant 2). Margins, suppliers,
+  reservations and other customers are never loaded, so they cannot leak.
+- **Bounded.** `GROUNDING_MAX_CHARS` caps the block. Sections are filled in
+  priority order and each item fits whole or is dropped, so a workspace with
+  500 taught entries loses the general policy least related to what was asked,
+  never half a price.
+
+`findKnowledge()` — the single entry the composed reply has room for — is the
+first row of that same ranking, so the template path and the model path cannot
+disagree about which policy applies. `SellResult.knowledgeUsed` reports what
+grounded the turn, and the storefront panel shows it.
+
+## Model cost and rate control
+
+Every language-model call goes through `lib/openrouter.ts`, and that is where
+it is metered: a `ModelCall` row is appended on the way out of `chatCompletion()`
+on the success path and on every failure path alike, carrying the workspace, the
+purpose (`extract`, `sell`, `twin_chat`), the model id asked for, the tokens the
+response reported, the latency, and the error if there was one. `meter` is a
+required argument, so a fourth model-backed path cannot be written without
+saying whose budget it spends. A call that timed out or came back `402` is
+recorded too — it cost latency, it may have cost tokens, and a budget blind to
+failures is blind to exactly the workspace being ground through its ceiling.
+
+Three ceilings live on `Workspace`, all counted over those rows since UTC
+midnight, so they survive a restart and are shared by every process — unlike
+`lib/rate-limit.ts`, which bounds requests per IP in one process's memory and
+knows nothing about spend:
+
+- `dailyModelCalls` and `dailyModelTokens` — the workspace's day. Both, not
+  one: a failing call reports no tokens, so a wrong API key would otherwise
+  burn an unbounded number of billable attempts without moving the token total.
+- `customerModelCalls` — what one customer's thread may take of that day. The
+  cap is keyed on the customer twin rather than on a `Conversation` row,
+  because a `Conversation` here is one inbound message; the customer is what
+  persists across a back-and-forth.
+
+Over a ceiling nothing throws. `extract()` falls back to its rule extractor
+(visible as `via=rules` on the `intent.extracted` event), `sell()` sends
+`ingest()`'s composed reply with the reason on `SellResult.degraded`, and the
+operator's twin chat answers from the briefing snapshot — the same degradation
+an absent `OPENROUTER_API_KEY` already produces. The customer still gets a
+correct answer; it is just less warm. A ceiling of zero is the kill switch.
+
+No money is stored. OpenRouter prices in fractional US dollars and converting
+that to rupees needs an FX rate nobody here has, so spend is metered in the
+units the response reports — calls and tokens — rather than in a rounded
+figure (invariant 4 by omission). `GET /v1/usage/models` returns today against
+the ceilings, broken down by purpose, and the dashboard's **Model spend** page
+renders it.
+
+## Recommending, and refusing to discount
+
+`services/recommend.ts` generates the candidates; the model only words them.
+`buildGrounding()` calls it, so there is still one retrieval path behind
+`sell()`, and the block carries a `WHAT TO PUT IN FRONT OF THEM` section with
+each candidate's own price and count:
+
+- **an alternative**, when the variant they asked for is sold out: the in-stock
+  variants of the same product — nearest to what they asked for first, then
+  deepest stock — and then the in-stock products in its category. When there is
+  nothing, the block says there is nothing and tells the model to say so
+  plainly, because a model left to fill that silence fills it with a product
+  that does not exist;
+- **a cross-sell**, from a plain co-occurrence count over this workspace's own
+  `Order` rows: who bought the matched product, then what else those customers
+  bought. Tenant-scoped at both hops (invariant 5) and bounded at both, so the
+  cost of a recommendation does not grow with every sale the business makes.
+  The count itself never reaches the block — the shopper gets the belt, not how
+  many other people bought one;
+- **an upsell**: the cheapest product in the same category that costs more than
+  the matched one and is in stock. A step, not a leap.
+
+Nothing with zero available stock is ever a candidate, and one product is
+offered once even when it qualifies twice.
+
+Objection handling is the other half, and it is a matter of words: the model
+may reframe, restate a policy from the block, or put a cheaper in-stock option
+in front of them. It may not invent money. `voiceViolations()` catches a
+first-person offer of a percentage off, a waived fee or a thrown-in extra — and
+catches the offer, not the mention, so restating "discounts beyond 10% need
+owner approval" is still allowed. A reply that offers one is thrown away for
+the composed reply, with a `degraded` line saying which. An *authorised*
+discount is a separate path with its own approval; when it exists, this gate
+consults what it approved rather than refusing outright.
+
+## Reaching the lead: progressive contact capture
+
+A webchat visitor's `handle` is `web:<visitorId>` — an opaque token their own
+browser minted — so a qualified website lead used to be a conversation the
+operator could read and a person they could not contact. `Customer` now carries
+`email` and `phone`, each with the provenance it arrived by (`volunteered` in
+conversation, or `form` typed into the widget's own field) and the moment it
+landed.
+
+Recognition is a pattern, never a judgement. `detectContact()` in
+`services/extract.ts` runs on both extraction paths — the model's and the
+rules' — so what is captured does not depend on whether the model answered this
+turn, and a model is never asked whether a string is an email. An address or a
+number written onto the twin is treated downstream as fact: the operator rings
+it, the invoice goes to it. A regex is either right or silent, and silence costs
+nothing, because the widget's own labelled field is the path that always works.
+
+When to ask is `nextContactAsk()` in `services/leads.ts`, keyed on `leadScore`
+against a named threshold — the score is already the answer to "how close is
+this conversation to an order", and a second number for that question is a
+second number that can disagree with the first. It returns one field or none,
+never two: a reply ending in two questions gets one answer at best. A past
+buyer is always worth reaching, whatever this particular message scored.
+
+`services/contacts.ts` decides what a detail does to the twin, once, for both
+paths: a name only while the twin is still called by its handle, an address
+replaced when a different one arrives (a correction is the version worth
+keeping) and nothing written at all when the same value arrives twice.
+`ingest()` folds the plan into the customer update and the event batch it was
+already making, so a message still mutates the twin exactly once inside the one
+transaction (invariant 1); `POST /v1/webchat/:id/contact` writes the same plan
+in a transaction of its own, because pressing Save on a box is not sending a
+message and must not cost a model call. Every capture appends a `TwinEvent`
+naming the field and its source and never the value (invariant 6) — the event
+trail is published by `/v1/events` and posted to outbound webhook endpoints, and
+an address written into a payload is an address we cannot take back out of it.
+
+An email already on another twin in the same workspace is **flagged, not
+merged**: both rows keep the address, a `customer_twin.contact_conflict` event
+names the other twin, and the result carries `duplicateEmail`. One shared
+address is not evidence of one person — a colleague, a family inbox or a typo
+would all be folded silently into somebody else's history. Cross-channel
+identity resolution is its own problem with its own evidence.
+
+The ask itself is words: `sell()` puts `ASK THEM FOR:` in the briefing and the
+model phrases it, under a rule that it may ask only for what the block names.
+The widget renders a compact inline field beside those words — not a modal, and
+never a gate, because a chat that demands an address before it will help is the
+thing this widget exists instead of. "Not now" puts it away for the rest of the
+visit. A value typed into that field still goes through the same patterns: the
+label says what the box is for, the visitor is free to type anything into it,
+and a wrong address stored as fact is worse than an empty column.
+
+## The public API
+
+`/v1` is one surface with two audiences. The dashboard reads it same-origin with
+a session cookie; an external integration reads the same routes with an API key.
+There is no second API for outsiders, because a second API is how one of them
+ends up missing a check the other has.
+
+What makes it a contract rather than whatever the dashboard happened to need:
+
+- **The shapes are declared, not implied.** `src/app/v1/contract.ts` holds a Zod
+  schema for every documented request and response. The projections in
+  `shapes.ts` are typed as `z.infer` of those schemas, so a field cannot leave
+  the API without being described.
+- **The document is generated from them.** `src/app/v1/openapi.ts` turns the same
+  schemas into OpenAPI 3.1; `docs/openapi.json` is the checked-in output and
+  `test/openapi.test.ts` regenerates it on every run, so a stale document fails
+  the suite. It is served at `GET /v1/openapi.json` without a credential.
+- **One pagination convention and one error envelope.** Every list takes `limit`
+  and `cursor` and answers `{ <noun>s, nextCursor }`; every error at every status
+  is `{ error, details? }`, produced in one place by `route()`.
+- **Two CORS stories, kept apart.** The anonymous widget answers `*` to anybody —
+  `server/lib/cors.ts`, unchanged. A key-authenticated browser call is readable
+  only from an origin the resolved workspace listed in `allowedOrigins` —
+  `server/lib/origins.ts`. Neither loosens the other.
+
+Integration notes live in `docs/api.md`, `docs/integrations/react.md` and
+`docs/integrations/wordpress.md`.
+
+### Outbound webhooks
+
+Integration is bidirectional, and the other direction needs no new stream. Every
+mutation already appends to `TwinEvent`, so delivering events to a customer's own
+system is a *reader* of that log rather than a second record of what happened.
+
+- **Nothing runs inside `ingest()`.** `server/services/webhooks.ts` is reached
+  only from `POST /v1/webhooks/dispatch`, which is the tick — the same
+  arrangement the Shopify poll has, for the same reason: Lipi has no scheduler,
+  and a customer's server being slow is not a reason to hold a transaction open.
+- **Two passes.** `enqueue()` walks each subscription's `(occurredAt, id)` cursor
+  forward over the log and owes it a `WebhookDelivery` per matching event;
+  `deliverDue()` posts the ones that are due. Splitting them is what makes the
+  second safe to fail — the debt is recorded before the first attempt is made, so
+  an endpoint that is down loses nothing.
+- **Delivery state lives beside the event, never on it.** A `TwinEvent` is
+  evidence and is never updated (invariant 6); attempts, backoff and the dead
+  letter are columns of `webhook_deliveries`. The cursor advances over events the
+  subscription filtered out as well as the ones it wanted, or a narrow filter
+  would rescan the log's whole tail on every tick.
+- **At-least-once, de-duplicated by event id.** `@@unique(subscriptionId,
+  eventId)` means a repeated enqueue pass is free rather than a double delivery,
+  and the subscriber de-duplicates on the same id — the contract
+  `ProcessedMessage` gives us on the inbound side.
+- **Signed the way inbound is verified.** `X-Lipi-Signature` is
+  `sha256=HMAC-SHA256(secret, "<timestamp>.<raw body>")`, which is Meta's
+  spelling with the timestamp folded into the signed message so a delivery
+  cannot be replayed at a new time. The secret is encrypted at rest through
+  `lib/crypto` and returned by exactly one response.
+- **Backoff, then a human.** 30s, 2m, 10m, 30m, 2h — six attempts — then `dead`.
+  Deliveries are independent, so one endpoint's backoff cannot hold up another's
+  queue. A `4xx` that is not `408` or `429` is dead at once: a wrong path does
+  not become right in three hours.
+
 ## Channel delivery status
 
 | Channel | Current capability | Production requirement |
@@ -137,13 +437,135 @@ reply, and appends events for each effect.
 | Email | Not implemented. | Mailbox adapter, inbound authentication and outbound delivery integration. |
 | Webchat | Not implemented. | Hosted widget, authenticated session model and message transport. |
 | Instagram | Not implemented. | Meta messaging adapter and review-compliant webhook setup. |
+| X (Twitter) | Connect through Composio, activity subscription at connect time, CRC-validated and signature-verified inbound, outbound DM. | Lipi's own X app on a tier with Account Activity access, `POST /2/webhooks` registered once against `PUBLIC_URL/webhooks/x`, and `X_API_SECRET` / `X_WEBHOOK_ID` set. Per-DM billing is the gate on volume. |
 
 Only a real connection with `connected` status may appear as connected in the
 dashboard.
 
+
+## Agents, skills and the execution boundary
+
+A workspace used to have exactly one implicit agent, and "which agent acted"
+was a string literal chosen by a branch inside `ingest()` — `"Sales"`,
+`"Inventory"`, `"Procurement"`, `"Support"`. That is a reasonable shape for a
+fixed product and an impossible one for a builder, because there is nothing to
+configure, nothing to deploy and nothing for a guardrail to attach to.
+
+An **agent** is now a row. It holds skills, guardrails and the channels it is
+published to. Voice and knowledge stay on the workspace: how a business sounds
+and what it may claim are properties of the business, and duplicating them per
+agent is how two agents quote different return policies at the same customer.
+
+A **skill** is a declarative spec plus a pure `run`, collected in one array in
+`server/agents/registry.ts` — the same shape `server/channels/registry.ts`
+has, and for the same reason. Adding one is a file and a line. `AgentSkill.skill`
+is a registry slug rather than a foreign key, because skills are code and a
+table of them would let a tenant name one with no implementation.
+
+**`server/agents/execute.ts` is the only place a skill runs**, and every check
+lives there rather than inside the skills. The caller is, in the general case,
+a language model that has chosen a function name and a bag of arguments, so a
+check inside a skill is a check the next skill's author has to remember to
+copy. In order, all before `run()` or all before the result is visible:
+
+1. the skill exists in the registry
+2. the agent is this workspace's (the same refusal as one that does not exist)
+3. the agent holds the skill — the allowed-tool list
+4. it is enabled
+5. the arguments satisfy the skill's own schema
+6. nothing in the request trips an escalation trigger
+7. the quoted value is inside `maxSingleQuoteValue`
+8. the customer has no past-due invoices, when the agent cares
+9. the workspace's approval policy allows it
+
+A refusal is a **value**, not an exception: a model gets a structured "no" it
+can act on, and the route renders it as 422. Checks 7–9 can only hold a result
+back; they never edit one, because quietly halving a number to fit a ceiling
+would be the fact/voice split broken from the other end.
+
+A skill never touches `prisma`. It gets a `TwinStore` built per execution and
+closed over one workspace, and no method on it takes a `workspaceId` — a skill
+that could pass one could pass somebody else's.
+
+### The SDK
+
+`web/sdk/` is `@lipi-ai/sdk-node`. A `CustomSkill` produces exactly the
+`SkillSpec` a built-in skill produces and runs through exactly the same
+executor, so a third-party skill gets the allowed-tool check, the schemas, the
+guardrails, the tenant scoping and the audit trail for free — and cannot skip
+any of them. The SDK is a translation layer and nothing more: JSON-schema-ish
+parameters into strict Zod, major units into integer minor units, and the PRD's
+snake_case draft fields into the store's camelCase.
+
+## The Personal PA twin
+
+`PaProfile` holds the owner's working hours, focus blocks, buffer rule and
+daily meeting ceiling; `CalendarEvent` holds what is on the calendar;
+`SchedulingNegotiation` holds a proposal that spans turns, because "find 45
+minutes with Dr. Chen" is a proposal, possibly a counter, and a confirmation
+spread over hours.
+
+`server/agents/scheduling.ts` decides which slots are acceptable, arithmetically
+and with no database and no model. A model may read "avoid mornings" out of a
+sentence; it may not decide whether 14:00 on Wednesday is free, because the
+owner's buffers and focus blocks are facts. Instants are stored and compared in
+UTC and converted to the owner's zone only for questions about their day, which
+is what keeps a meeting from moving an hour twice a year.
+
+Only a slot that was actually offered may be confirmed — otherwise confirmation
+steps around every rule the proposal step exists to enforce — and a
+counter-offer is checked against the owner's rules rather than accepted because
+the counterpart suggested it.
+
+## Generated sites
+
+`POST /v1/builder/sites/generate` turns a business profile into a structure:
+pages, blocks, schema.org JSON-LD and a sitemap, computed deterministically.
+Which pages exist is a *fact* about a business, and a model asked to invent one
+will eventually generate a booking page for a business that cannot take
+bookings. Each block carries an empty slot for model-written copy, which can be
+regenerated without moving a page.
+
+**The structure holds no business data.** A catalogue block *names* the
+catalogue; `resolveBlocks()` reads live rows on every request. A site generated
+in March shows September's prices in September, and adding a product changes
+every site that binds to the catalogue with no migration and no regeneration.
+
+`/s/{slug}` serves it, with SEO tags, the JSON-LD and the embedded assistant.
+Without that, "generated a website" is a row of JSON an operator has to take on
+trust.
+
+The quote formula (`server/sites/formula.ts`) is a tokeniser and a Pratt parser
+over a tiny grammar — numbers, variables, arithmetic, comparison, a ternary,
+grouping — and never `eval`. An operator writes it and a stranger's browser
+supplies the variables. It resolves only names somebody put in the scope
+(`Object.hasOwn`, not `in`, because every object literal inherits
+`constructor` and `__proto__`), bounds its own recursion depth, and refuses a
+missing variable rather than defaulting it to zero. The formula itself never
+reaches the browser.
+
+## Reservation holds
+
+Stock reserved by a quote is held for four hours and then given back
+(`server/services/reservations.ts`). Before that, `Variant.reserved` only ever
+went up until an order settled, so an abandoned quote held stock for ever and
+the twin reported the business as having less to sell than it had — the more
+quotes it produced, the wronger it got.
+
+`Order.reservedUntil` is null once the hold is no longer provisional, which is
+what reaching `Confirmed` means. The sweep is per workspace and bounded, and
+re-reads inside its transaction so two of them racing cannot decrement the same
+reservation twice.
+
 ## Security and reliability
 
 - Opaque server-side sessions and workspace membership checks protect tenancy.
+- Server-to-server callers present `Authorization: Bearer <key>` instead of a
+  session. Both credentials resolve through the same `resolveWorkspaceId()`, so a
+  key gains no route a session lacks and skips no check a session makes: it names
+  exactly one workspace, carries a read or read+write scope, is stored only as a
+  hash, and is throttled per key rather than per address. A request carrying both
+  a cookie and a key is refused rather than resolved by precedence.
 - Channel secrets are encrypted at rest and never returned to the browser.
 - Provider webhooks authenticate independently because they lack user sessions.
 - Approval policy gates replies/actions that affect money.
@@ -152,19 +574,37 @@ dashboard.
 - List endpoints are keyset-paginated. The cursor carries the sort key rather
   than a row id, so it can only narrow a query already scoped to the workspace
   and cannot be used to shift another tenant's window or hide a row.
+- Cross-origin reads of key-authenticated responses are denied by default. An
+  origin is allowed per workspace, never globally, and credentials are never
+  allowed with it, so no third-party page can ride an operator's cookie.
+- Events posted from outside are namespaced under `external.`, so nothing a
+  caller writes can pose as something the ingest path observed.
+- Model spend is bounded per workspace and per customer thread in Postgres, not
+  per address in one process's memory, so a scripted caller rotating IPs cannot
+  run a tenant through its budget. Past the ceiling the twin degrades to its
+  deterministic path rather than erroring.
+- A webhook subscription's URL must be `https` and must not be a private or
+  link-local host — loopback is allowed outside production only — so an operator
+  cannot aim a signed delivery at the deployment's own neighbours. Deliveries do
+  not follow redirects, which would re-post a signed body to a host nobody named.
 
 ## Near-term priorities
 
 1. Complete WhatsApp app-secret handling and production webhook deployment.
    Signature verification currently uses the operator verify token, so a real
    Meta webhook cannot authenticate.
-2. Add customer, order and invoice import connectors with provenance metadata.
-3. Add idempotent provider-message handling using external message IDs. The
-   channel adapters already parse them; the webhook route discards them, so a
-   provider retry runs the ingest loop twice.
-4. Add saved evaluation suites with expected outcomes and release gates.
-5. Release reserved stock on order completion, cancellation and rejection.
-   `reserved` currently only ever increments.
+2. Add customer and invoice import connectors with provenance metadata.
+   Shopify orders import; no other source's do.
+3. Add saved evaluation suites with expected outcomes and release gates.
+4. Gmail inbound. The parser and the outbound send are real, but
+   `upsertTrigger()` is never called, so a connected Gmail shows "Live" and
+   delivers nothing.
+5. Narrow `matchVariant()`. It loads every product and every variant for the
+   workspace on every inbound message, inside the ingest transaction.
+6. Move rate limits out of process memory, and give `recordEvent()` an
+   overload that takes the caller's transaction.
 
 Done: inventory connectors with idempotency, cursors, reconciliation and an
-operator-visible exception queue.
+operator-visible exception queue; a real Shopify connector on top of them;
+idempotent provider-message handling on the external message id; reserved stock
+released on delivery, return and hold expiry.

@@ -15,3 +15,10 @@ export const recordEvent = (workspaceId: string, type: string, twin: string, pay
   prisma.twinEvent.create({
     data: { id: eventId(), workspaceId, occurredAt: new Date(), type, twin, payload },
   });
+
+/**
+ * One event before it is written: what `ingest()` collects as it works and
+ * what `services/contacts.ts` hands back to whoever is doing the writing, so
+ * a batch built in one place can be appended in another (invariant 6).
+ */
+export type TwinEffect = { type: string; twin: string; payload: string };

@@ -10,13 +10,18 @@ import { agent } from "./dispatch";
 export async function resetDatabase() {
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
-      payments, invoices, approvals, agent_runs, messages, conversations,
+      payments, invoices, approvals, agent_runs, agent_skills, agents,
+      purchase_orders, generated_sites,
+      scheduling_negotiations, calendar_events, pa_profiles,
+      messages, conversations,
       inventory_exceptions, inventory_sync_runs, inventory_mappings,
       inventory_connectors,
       processed_messages,
+      webhook_deliveries, webhook_subscriptions,
+      model_calls,
       orders, variants, products, suppliers, customers, twin_events,
       knowledge_entries, voice_examples, twin_voice, channel_connections,
-      sessions, memberships, workspaces, users, waitlist_entries
+      api_keys, sessions, memberships, workspaces, users, waitlist_entries
     RESTART IDENTITY CASCADE
   `);
 }

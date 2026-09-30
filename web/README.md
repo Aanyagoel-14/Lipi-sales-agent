@@ -76,6 +76,34 @@ Verified for this batch: `npm run typecheck` clean, `npx eslint .` clean,
 full suite **240/240 passing** (no new tests added yet for the new files —
 see "Not yet implemented" below).
 
+## Added in the PRD-completion pass (2026-09-23)
+
+Seven subsystems, described in full in `../docs/impl/FINAL_REPORT.md`. In
+short:
+
+- **Agents and skills.** `Agent`/`AgentSkill` rows and a skill registry
+  (`server/agents/registry.ts`) shaped like the channel registry. One
+  execution boundary in `server/agents/execute.ts` performs nine checks
+  before a skill runs — the allowed-tool list, the argument schema, the
+  guardrails, the tenant, the approval policy — because the caller is, in the
+  general case, a model choosing a function name and a bag of arguments.
+- **Five skills:** `Inventory_Lookup`, `Discount_Calculator`,
+  `Stripe_Invoice`, `Lead_Scoring`, `Calendar_Negotiation`.
+- **The Personal PA twin** and pure scheduling arithmetic — working hours,
+  focus blocks, buffers, a daily ceiling, timezones, DST.
+- **`@lipi-ai/sdk-node`** (`web/sdk/`): define a skill with your own maths,
+  run it through the same executor a built-in one uses.
+- **The website generator:** `POST /v1/builder/sites/generate`, and
+  `/s/{slug}` actually serves the result against live twin data. Its quote
+  formula is a parser, never `eval`.
+- **Digital-twin rules:** a four-hour reservation hold that lapses, the full
+  `Inquiry → Quoted → Confirmed → Paid → Packed → Shipped → Delivered` chain,
+  credit-risk flagging, VIP routing, and real purchase orders at the reorder
+  point.
+- **Security:** the password endpoints are throttled, and
+  `test/route-tenancy.test.ts` asserts that every route accounts for its
+  tenant.
+
 ## Not yet implemented
 
 1. **Req 4 — AI-assisted conversion actions for ad-sourced visitors**: no
@@ -90,16 +118,24 @@ see "Not yet implemented" below).
    row got a bespoke treatment (install snippet). The rest of
    `ChannelsStep` and the inventory `ConnectorPanel` are unchanged from
    the credential-form pattern; a full visual redesign pass has not begun.
-5. **Tests for the new webchat/leads/attribution code**: none written yet.
-   The existing 240 tests all still pass (they exercise the paths this
-   session's changes run through, e.g. `ingest()`), but there is no direct
-   coverage of `scoreLead()`, `firstTouchData()`, `upsertSession()`,
-   `sendVisitorMessage()`, or the new routes/rate limiter in isolation.
-6. **Playwright E2E tests**: not started; all current coverage is
-   Vitest + Supertest against the API layer.
-7. **Rate limiting beyond the fixed-window in-memory limiter**: correct for
-   this app's single-Node-process deployment model, not for a future
-   multi-instance one — see `rate-limit.ts`'s own comment.
+5. ~~Tests for the new webchat/leads/attribution code~~ — **done since.**
+   The suite is 1,149 tests across 50 files.
+6. **Playwright E2E tests**: not started; all current coverage is Vitest
+   against the route handlers, plus a manual smoke test of the production
+   build recorded in `../docs/impl/PROGRESS.md`.
+7. **Voice, ASR, VAD, TTS and telephony**: none of it exists. This is the
+   largest gap against the product specification — see
+   `../docs/impl/BLOCKERS.md` B-007. No latency or word-error-rate figure is
+   claimed anywhere.
+8. **The Agent Studio canvas and the Web Customizer**: everything they would
+   edit is a row behind a tested API; the editors themselves are not built
+   (B-011).
+9. **Slack, phone/VoIP, LinkedIn, Zoom/Teams** (B-010), **Neo4j and
+   Pinecone**, and the **Product & Fitment graph** and **ABM twin**.
+10. **Rate limiting beyond the fixed-window in-memory limiter**: correct for
+    this app's single-Node-process deployment model, not for a future
+    multi-instance one — see `rate-limit.ts`'s own comment and
+    `../docs/impl/SECURITY_REVIEW.md` F-6.
 
 See `DEPLOYMENT.md` for how to run and deploy what exists today.
 
@@ -139,11 +175,27 @@ npx prisma migrate deploy
 npm run dev             # http://localhost:3000
 ```
 
-Run tests (needs a second Postgres database, e.g. `lipi_test`):
+The suite runs against its own database, `lipi_test`, never the development
+one. One command creates it and applies the migrations:
 
 ```bash
-TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/lipi_test" npm test
+npm run db:test:setup
+npm test
 ```
+
+`db:test:setup` is idempotent — run it again after a migration and it applies
+only what is pending. It takes the URL from `test/database-url.ts`, the same
+module the suite reads, which derives the role from the OS user. Where that is
+not how your Postgres is reached, set `TEST_DATABASE_URL` for both commands:
+
+```bash
+export TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/lipi_test"
+```
+
+CI runs the same three checks on every push and pull request — `npm run lint`,
+`npm run typecheck`, `npm test`, against a `postgres:15` service container and
+this same setup script. See `.github/workflows/ci.yml`; it needs no repository
+secret, because `test/setup.ts` stubs OpenRouter and Composio itself.
 
 ## Deployment
 

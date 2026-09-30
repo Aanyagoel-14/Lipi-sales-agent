@@ -26,11 +26,21 @@ export type SessionWorkspace = { id: string; name: string; vertical: string; onb
 export async function getSession(): Promise<{ user: SessionUser | null; workspaces: SessionWorkspace[] }> {
   try {
     const res = await fetch(`${apiBaseUrl}/v1/auth/me`, { headers: await apiHeaders(), cache: "no-store" });
-    if (!res.ok) return { user: null, workspaces: [] };
+    if (!res.ok) {
+      // Being signed out is a 200 with a null user, so a failing status is
+      // never that: it means the origin above is not this app. Saying so is
+      // the difference between a one-line fix and an afternoon — the symptom
+      // is a redirect to /login that looks exactly like a rejected password.
+      console.error(`getSession: GET ${apiBaseUrl}/v1/auth/me answered ${res.status}`);
+      return { user: null, workspaces: [] };
+    }
     const body = (await res.json()) as { user: SessionUser | null; workspaces?: SessionWorkspace[] };
     return { user: body.user, workspaces: body.workspaces ?? [] };
-  } catch {
-    // API unreachable is indistinguishable from signed out, for routing purposes.
+  } catch (error) {
+    // API unreachable is indistinguishable from signed out, for routing
+    // purposes, so routing still treats it as signed out — but it is logged,
+    // because the two have very different fixes.
+    console.error(`getSession: GET ${apiBaseUrl}/v1/auth/me failed`, error);
     return { user: null, workspaces: [] };
   }
 }

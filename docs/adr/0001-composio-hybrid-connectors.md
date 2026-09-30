@@ -61,7 +61,7 @@ thin inbound layer where Composio has nothing to offer.
   toolkit and pinned version, connect kind, inbound kind, a parser, a send builder and an
   identity tool. Nothing else in the app enumerates channels.
 
-The rebuild runs as five phases (C0–C4) tracked in `~/Desktop/Lipi-plan/COMPOSIO_PLAN.md`
+The rebuild runs as five phases (C0–C4) tracked in `~/Developer/Lipi-plan/COMPOSIO_PLAN.md`
 and GitHub issue #1 on the fork.
 
 ## Alternatives considered
