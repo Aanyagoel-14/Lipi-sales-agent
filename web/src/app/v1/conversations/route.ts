@@ -1,7 +1,7 @@
-import type { Channel, Prisma } from "@/generated/prisma/client";
+import { Prisma, type Channel } from "@/generated/prisma/client";
 import { body, HttpError, json, route, searchParams } from "@/server/lib/http";
 import { preflight } from "@/server/lib/origins";
-import { after, paged, pageOf } from "@/server/lib/page";
+import { after, paged, pageOf, type Page } from "@/server/lib/page";
 import { prisma } from "@/server/lib/prisma";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
 import { ingest } from "@/server/services/ingest";
@@ -41,6 +41,10 @@ export const GET = route(async (req) => {
     throw new HttpError(422, `Unknown channel: ${unknown.join(", ")}`, { channel: unknown });
   }
 
+  if (searchParams(req).get("by") === "customer") {
+    return json(await byCustomer(workspaceId, channels as Channel[], page));
+  }
+
   const found = await prisma.conversation.findMany({
     where: {
       workspaceId,
@@ -59,6 +63,61 @@ export const GET = route(async (req) => {
 
   return json({ nextCursor, conversations: rows.map(summaryOf) });
 });
+
+/**
+ * One row per person per channel, for the inbox.
+ *
+ * `ingest()` opens a conversation per inbound message, so the plain list
+ * shows somebody who has written five times as five rows. The inbox asks for
+ * this instead: each (customer, channel) pair is represented by its newest
+ * conversation, and its count is the whole pair's. The plain list is left as
+ * it was — integrators page it and address rows by id.
+ *
+ * The newest row per pair is chosen before the cursor applies. Applied the
+ * other way round, page two would pick an older conversation of somebody
+ * already shown on page one and list them again.
+ */
+async function byCustomer(workspaceId: string, channels: Channel[], page: Page) {
+  const anchor = page.anchor ? new Date(Number(page.anchor.key)) : null;
+  if (anchor && !Number.isFinite(anchor.getTime())) throw new HttpError(422, "That page cursor is not valid");
+
+  const latest = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM (
+      SELECT DISTINCT ON ("customerId", channel) id, "lastAt"
+      FROM conversations
+      WHERE "workspaceId" = ${workspaceId}
+        ${channels.length ? Prisma.sql`AND channel::text IN (${Prisma.join(channels)})` : Prisma.empty}
+      ORDER BY "customerId", channel, "lastAt" DESC, id DESC
+    ) newest
+    ${anchor ? Prisma.sql`WHERE "lastAt" < ${anchor} OR ("lastAt" = ${anchor} AND id < ${page.anchor!.id})` : Prisma.empty}
+    ORDER BY "lastAt" DESC, id DESC
+    LIMIT ${page.take}`;
+
+  const found = await prisma.conversation.findMany({
+    where: { workspaceId, id: { in: latest.map((r) => r.id) } },
+    orderBy: [{ lastAt: "desc" }, { id: "desc" }],
+    include: summaryInclude,
+  });
+  const { rows, nextCursor } = paged(found, page, (c) => c.lastAt);
+
+  const counts = rows.length
+    ? await prisma.$queryRaw<{ customerId: string; channel: string; n: bigint }[]>`
+        SELECT c."customerId", c.channel::text AS channel, count(m.id) AS n
+        FROM conversations c JOIN messages m ON m."conversationId" = c.id
+        WHERE c."workspaceId" = ${workspaceId}
+          AND c."customerId" IN (${Prisma.join(rows.map((r) => r.customerId))})
+        GROUP BY 1, 2`
+    : [];
+  const countOf = (c: SummaryRow) =>
+    Number(counts.find((n) => n.customerId === c.customerId && n.channel === c.channel)?.n ?? c._count.messages);
+
+  return {
+    nextCursor,
+    conversations: rows.map((c) =>
+      conversationSummaryOut({ ...c, messageCount: countOf(c), lastMessage: c.messages[0] }),
+    ),
+  };
+}
 
 /**
  * Starts a conversation from the integrator's own site.

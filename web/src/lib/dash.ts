@@ -60,13 +60,16 @@ export const getApprovals = () => get<{ approvals: Approval[] }>("approvals");
 export const getInvoices = () => get<{ ageing: Ageing; invoices: Invoice[]; payments: Payment[] }>("invoices");
 
 /* Cursor-paged. The first page is server-rendered and later pages are appended
- * from the browser, so a table that grows forever is never fetched whole. */
+ * from the browser, so a table that grows forever is never fetched whole.
+ *
+ * Grouped by customer and channel: `ingest()` writes a conversation per
+ * message, and the inbox is a list of people, not of messages. */
 export const getConversations = (page: Cursor & { channel?: string } = {}) =>
-  get<Paged<"conversations", ConversationSummary>>("conversations", page);
+  get<Paged<"conversations", ConversationSummary>>("conversations", { ...page, by: "customer" });
 export const getOrders = (page: Cursor = {}) => get<Paged<"orders", Order>>("orders", page);
 export const getEvents = (page: Cursor = {}) => get<Paged<"events", TwinEvent>>("events", page);
 export const getModelSpend = () => get<ModelSpend>("usage/models");
 
-/** One thread with its messages. The list endpoint deliberately omits them. */
+/** One thread with its messages — the customer's whole chat on that channel. The list endpoint deliberately omits them. */
 export const getConversation = (id: string) =>
-  get<{ conversation: Conversation }>(`conversations/${encodeURIComponent(id)}`);
+  get<{ conversation: Conversation }>(`conversations/${encodeURIComponent(id)}`, { by: "customer" });

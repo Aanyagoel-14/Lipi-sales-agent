@@ -80,8 +80,18 @@ export default async function InboxPage({ searchParams }: Props) {
   // The named thread when it is one of this workspace's, otherwise the newest
   // in the current feed. May be neither: a new workspace has had no
   // conversations yet.
-  const summary = data.conversations.find((c) => c.id === thread) ?? data.conversations[0];
-  const active = summary ? (await getConversation(summary.id)).conversation : null;
+  //
+  // A named thread can be missing from the list and still be real: the list
+  // shows each person's newest conversation, so a link made before their
+  // latest message names an older one. It opens that person's chat rather
+  // than silently switching to somebody else's.
+  const named = thread && !data.conversations.some((c) => c.id === thread)
+    ? await getConversation(thread).then((r) => r.conversation, () => null)
+    : null;
+  const summary = named
+    ? data.conversations.find((c) => c.customerId === named.customerId && c.channel === named.channel)
+    : data.conversations.find((c) => c.id === thread) ?? data.conversations[0];
+  const active = named ?? (summary ? (await getConversation(summary.id)).conversation : null);
 
   return (
     <>
@@ -116,7 +126,7 @@ export default async function InboxPage({ searchParams }: Props) {
           <ThreadList
             initial={data.conversations}
             nextCursor={data.nextCursor}
-            activeId={active.id}
+            activeId={summary?.id ?? active.id}
             channel={filter ?? null}
             channels={channels}
           />

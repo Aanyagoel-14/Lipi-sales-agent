@@ -47,7 +47,8 @@ export function ThreadList({ initial, nextCursor, activeId, channel, channels }:
     "conversations",
     initial,
     nextCursor,
-    channel ? { channel } : undefined,
+    // Must match the first page's grouping, or page two lists people again.
+    channel ? { channel, by: "customer" } : { by: "customer" },
   );
 
   return (
