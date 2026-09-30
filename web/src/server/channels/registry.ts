@@ -101,6 +101,22 @@ export type ParsedMessage = InboundMessage & { threadId?: string };
 
 export type SendRequest = { slug: string; arguments: Json };
 
+/**
+ * A non-secret value an API-key connection needs beside the key itself —
+ * WhatsApp's is the Business Account id the token is for. It travels to
+ * Composio in the same request and, unlike the key, is safe to show back.
+ */
+export type ConnectExtra = {
+  /** What the operator's form and the request body call it. */
+  field: string;
+  /** The name in Composio's auth schema. */
+  composioField: string;
+  label: string;
+  hint: string;
+  /** Checked before Composio is called, so a typo costs nothing. */
+  pattern: RegExp;
+};
+
 export type ChannelSpec = {
   channel: Channel;
   label: string;
@@ -124,7 +140,7 @@ export type ChannelSpec = {
      * (Telegram's is `generic_api_key`). Getting the second wrong fails the
      * connection with a validation error, so it is declared, not assumed.
      */
-    | { kind: "api_key"; field: string; composioField: string; hint: string };
+    | { kind: "api_key"; field: string; composioField: string; hint: string; extras?: ConnectExtra[] };
   inbound:
     | {
       kind: "meta";
@@ -296,7 +312,23 @@ const whatsapp: ChannelSpec = {
   toolkit: "whatsapp",
   toolkitVersion: PINS.whatsapp,
   authConfigEnv: "COMPOSIO_AUTH_CONFIG_WHATSAPP",
-  connect: { kind: "link" },
+  // A permanent system-user token and the WABA it is for, checked in the same
+  // request like Telegram's bot token. The Connect Link this replaced sent
+  // the operator through Facebook login and back, and an abandoned or failed
+  // consent screen left the card saying "pending" with no reason given.
+  connect: {
+    kind: "api_key",
+    field: "token",
+    composioField: "bearer_token",
+    hint: "Permanent access token from Meta Business Settings (starts with EAA)",
+    extras: [{
+      field: "wabaId",
+      composioField: "generic_id",
+      label: "WhatsApp Business Account ID",
+      hint: "WABA ID, 15–16 digits, from WhatsApp Manager",
+      pattern: /^\d{10,20}$/,
+    }],
+  },
   inbound: {
     kind: "meta",
     object: "whatsapp_business_account",
@@ -959,7 +991,9 @@ export type CatalogEntry = {
   channel: Channel;
   label: string;
   toolkit: string;
-  connect: ChannelSpec["connect"];
+  connect:
+    | Exclude<ChannelSpec["connect"], { kind: "api_key" }>
+    | (Omit<Extract<ChannelSpec["connect"], { kind: "api_key" }>, "extras"> & { extras?: Omit<ConnectExtra, "pattern">[] });
   inbound: { kind: ChannelSpec["inbound"]["kind"]; slug?: string; reason?: string };
   /** What the operator has to pick between, when a connection can own several identities. */
   choice?: ChannelSpec["choice"];
@@ -976,7 +1010,11 @@ export function catalog(): CatalogEntry[] {
       channel: spec.channel,
       label: spec.label,
       toolkit: spec.toolkit,
-      connect: spec.connect,
+      // Without the extras' patterns: a RegExp is behaviour, not data, and
+      // turns into `{}` on its way to the browser. The route checks them.
+      connect: spec.connect.kind === "api_key" && spec.connect.extras
+        ? { ...spec.connect, extras: spec.connect.extras.map(({ field, composioField, label, hint }) => ({ field, composioField, label, hint })) }
+        : spec.connect,
       inbound: {
         kind: spec.inbound.kind,
         ...(spec.inbound.kind === "composio_trigger" ? { slug: spec.inbound.slug } : {}),

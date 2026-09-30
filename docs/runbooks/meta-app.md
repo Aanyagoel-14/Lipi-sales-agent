@@ -55,10 +55,26 @@ Per-tenant subscription happens at connect time through Composio
 
 ## 4a. What the operator is asked for at connect time
 
-Composio's hosted Connect Link asks the operator for their **WhatsApp Business Account ID**
-(the auth schema's `generic_id`, a 15–16 digit number from Meta Business Suite → Settings →
-Accounts → WhatsApp accounts) before the OAuth redirect. Instagram asks for nothing extra.
-Tell tenants where to find the WABA ID, or the connect step stalls on a field they cannot fill.
+**WhatsApp** is connected from Lipi's own Channels page, with no Facebook login. The
+operator pastes two things and gets "connected" or the reason it failed in the same
+request:
+
+- a **permanent system-user access token** (starts with `EAA`): Business Settings →
+  Users → System users → Add (Admin) → Assign assets → the WhatsApp account, full
+  control → Generate new token for the Meta app, with `whatsapp_business_messaging` and
+  `whatsapp_business_management`, expiry **Never**;
+- the **WhatsApp Business Account ID** (15–16 digits): WhatsApp Manager → Account tools →
+  or Business Settings → Accounts → WhatsApp accounts.
+
+The token goes to Composio as `bearer_token` and is never stored by Lipi. On connect,
+Lipi subscribes the token's app to the WABA (`POST /{waba}/subscribed_apps`), so inbound
+arrives at that app's webhook — which means **`META_APP_SECRET` must be the secret of the
+app the token was generated for**, and that app's WhatsApp webhook must point at
+`PUBLIC_URL/webhooks/meta` (§3). A token from any other app connects and sends, but every
+inbound delivery fails its signature check.
+
+Instagram still goes through Composio's hosted Connect Link and Facebook login, and asks
+for nothing extra.
 
 Default scopes on a WhatsApp auth config are `whatsapp_business_management`,
 `whatsapp_business_messaging` and `business_management`; Instagram's are
@@ -95,4 +111,4 @@ phase handoff.
 - [ ] Review approved for the five permissions above
 - [ ] `META_APP_SECRET` and `META_VERIFY_TOKEN` set in production `web/.env`
 - [ ] Callback `PUBLIC_URL/webhooks/meta` verified for all three products
-- [ ] `COMPOSIO_AUTH_CONFIG_WHATSAPP` / `_INSTAGRAM` point at the **custom** configs
+- [ ] `COMPOSIO_AUTH_CONFIG_WHATSAPP` points at the API_KEY config; `_INSTAGRAM` at the **custom** OAuth one

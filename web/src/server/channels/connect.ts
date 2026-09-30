@@ -52,7 +52,15 @@ export async function finishConnection(
    * Lipi's behalf — and is passed by value into `afterConnect` and dropped.
    * Nothing here stores it, and no other path supplies it.
    */
-  opts: { apiKey?: string } = {},
+  opts: {
+    apiKey?: string;
+    /**
+     * The non-secret fields sent with the key. Composio echoes them on the
+     * account's state, but the operator typed them in this very request, so
+     * they are not left to depend on that echo.
+     */
+    params?: Record<string, string>;
+  } = {},
 ): Promise<ChannelConnection> {
   const spec = specFor(row.channel);
   const accountId = row.composioAccountId;
@@ -98,7 +106,7 @@ export async function finishConnection(
         config,
         identityData: identity.data,
         publicUrl: env.PUBLIC_URL,
-        accountParams: account.params ?? {},
+        accountParams: { ...opts.params, ...account.params },
         apiKey: opts.apiKey,
       });
       // `externalId: null` is a decision ("the operator still has to pick"),

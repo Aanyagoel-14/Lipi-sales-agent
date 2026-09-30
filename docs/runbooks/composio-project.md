@@ -57,7 +57,7 @@ go in `web/.env`.
 | Channel | Toolkit | Type | Env key |
 | --- | --- | --- | --- |
 | Telegram | `telegram` | API_KEY (bot token, field `generic_api_key`) | `COMPOSIO_AUTH_CONFIG_TELEGRAM` |
-| WhatsApp | `whatsapp` | OAuth2, **custom** on Lipi's Meta app for anything live | `COMPOSIO_AUTH_CONFIG_WHATSAPP` |
+| WhatsApp | `whatsapp` | API_KEY (system-user token as `bearer_token`, WABA id as `generic_id`) | `COMPOSIO_AUTH_CONFIG_WHATSAPP` |
 | Instagram | `instagram` | OAuth2, **custom** on Lipi's Meta app for anything live | `COMPOSIO_AUTH_CONFIG_INSTAGRAM` |
 | Email | `gmail` | OAuth2, Composio-managed is fine to start | `COMPOSIO_AUTH_CONFIG_GMAIL` |
 
@@ -72,8 +72,8 @@ It is safe to re-run: a toolkit that already has a config is left alone. To crea
 hand instead, use the dashboard (Auth Configs → Create) or:
 
 ```ts
-// custom OAuth on Lipi's own Meta app
-composio.authConfigs.create("whatsapp", {
+// custom OAuth on Lipi's own Meta app (Instagram; WhatsApp used this until 2026-10-01)
+composio.authConfigs.create("instagram", {
   type: "use_custom_auth",
   authScheme: "OAUTH2",
   credentials: {
@@ -82,8 +82,9 @@ composio.authConfigs.create("whatsapp", {
     oauth_redirect_uri: "https://backend.composio.dev/api/v1/auth-apps/add",
   },
 });
-// Telegram
+// Telegram, and WhatsApp (token + WABA id, typed into Lipi's own form)
 composio.authConfigs.create("telegram", { type: "use_custom_auth", authScheme: "API_KEY", credentials: {} });
+composio.authConfigs.create("whatsapp", { type: "use_custom_auth", authScheme: "API_KEY", credentials: {} });
 // note: over REST the field is camelCase `authScheme`, inside `auth_config`
 ```
 

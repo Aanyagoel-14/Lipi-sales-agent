@@ -142,31 +142,40 @@ async function versions() {
  * `GET /toolkits/{slug}` on 2026-09-19).
  *
  * Telegram is API_KEY: the bot token is supplied per connection, so the config
- * itself carries no credentials. The other four are OAuth2. Gmail on
- * Composio-managed auth is fine for production. **WhatsApp, Instagram and
- * Messenger on managed auth are development only** — Meta signs inbound
+ * itself carries no credentials, and so is WhatsApp's (system-user token plus
+ * WABA id). The other three are OAuth2. Gmail on
+ * Composio-managed auth is fine for production. **Instagram and Messenger on
+ * managed auth are development only** — Meta signs inbound
  * webhooks with the subscribing app's secret, so a managed config can never
- * produce inbound Lipi can verify. Replace all three with custom configs on
+ * produce inbound Lipi can verify. Replace both with custom configs on
  * Lipi's own Meta app before those channels go live (see
  * docs/runbooks/meta-app.md).
  */
 const AUTH_CONFIGS = [
   { toolkit: "telegram", env: "COMPOSIO_AUTH_CONFIG_TELEGRAM", body: { type: "use_custom_auth", authScheme: "API_KEY", credentials: {}, name: "lipi-telegram" } },
   { toolkit: "gmail", env: "COMPOSIO_AUTH_CONFIG_GMAIL", body: { type: "use_composio_managed_auth", name: "lipi-gmail" } },
-  { toolkit: "whatsapp", env: "COMPOSIO_AUTH_CONFIG_WHATSAPP", body: { type: "use_composio_managed_auth", name: "lipi-whatsapp-DEV-ONLY" } },
+  // A system-user token and the WABA id, typed into Lipi's own form. No Meta
+  // app or OAuth consent screen: the token's own app is the subscribing app.
+  { toolkit: "whatsapp", env: "COMPOSIO_AUTH_CONFIG_WHATSAPP", body: { type: "use_custom_auth", authScheme: "API_KEY", credentials: {}, name: "lipi-whatsapp-token" } },
   { toolkit: "instagram", env: "COMPOSIO_AUTH_CONFIG_INSTAGRAM", body: { type: "use_composio_managed_auth", name: "lipi-instagram-DEV-ONLY" } },
   { toolkit: "facebook", env: "COMPOSIO_AUTH_CONFIG_FACEBOOK", body: { type: "use_composio_managed_auth", name: "lipi-facebook-DEV-ONLY" } },
 ] as const;
 
 type AuthConfig = { id?: string; name?: string; toolkit?: { slug?: string }; auth_scheme?: string; is_composio_managed?: boolean };
 
-/** Every auth config in the project, keyed by toolkit slug. */
+/**
+ * Every auth config in the project, keyed by toolkit slug. A toolkit can hold
+ * more than one — WhatsApp's Facebook-login config outlived its replacement —
+ * so the one named in `AUTH_CONFIGS` wins over whichever the list returns first.
+ */
 async function existingAuthConfigs(): Promise<Map<string, AuthConfig>> {
   const res = await api<{ items?: AuthConfig[] }>("GET", "/auth_configs");
   const have = new Map<string, AuthConfig>();
   for (const item of res.json?.items ?? []) {
     const slug = item.toolkit?.slug?.toLowerCase();
-    if (slug && !have.has(slug)) have.set(slug, item);
+    if (!slug) continue;
+    const wanted = AUTH_CONFIGS.find((spec) => spec.toolkit === slug)?.body.name;
+    if (!have.has(slug) || (item.name === wanted && have.get(slug)?.name !== wanted)) have.set(slug, item);
   }
   return have;
 }
@@ -175,7 +184,10 @@ async function authConfigs() {
   let have = await existingAuthConfigs();
 
   for (const spec of AUTH_CONFIGS) {
-    if (have.has(spec.toolkit)) continue;
+    // Present under its own name, or present at all for a toolkit whose
+    // config has never been replaced.
+    const current = have.get(spec.toolkit);
+    if (current && (current.name === spec.body.name || spec.toolkit !== "whatsapp")) continue;
     const created = await api<unknown>("POST", "/auth_configs", {
       toolkit: { slug: spec.toolkit },
       auth_config: spec.body,
@@ -205,7 +217,7 @@ async function authConfigs() {
     console.log("Put these in web/.env:");
     for (const line of lines) console.log(`  ${line}`);
   }
-  const meta = AUTH_CONFIGS.filter((s) => s.toolkit === "whatsapp" || s.toolkit === "instagram")
+  const meta = AUTH_CONFIGS.filter((s) => s.toolkit === "instagram")
     .filter((s) => have.get(s.toolkit)?.is_composio_managed);
   if (meta.length) {
     console.log("");

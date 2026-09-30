@@ -43,7 +43,7 @@ export class FakeComposio implements ComposioClient {
   triggers = new Set<string>();
   calls = {
     link: [] as { userId: string; authConfigId: string; callbackUrl: string; alias?: string }[],
-    initiateApiKey: [] as { userId: string; authConfigId: string; apiKey: string; field: string }[],
+    initiateApiKey: [] as { userId: string; authConfigId: string; apiKey: string; field: string; extra?: Record<string, string> }[],
     getAccount: [] as string[],
     deleteAccount: [] as string[],
     execute: [] as ({ slug: string } & ExecuteArgs)[],
@@ -87,8 +87,10 @@ export class FakeComposio implements ComposioClient {
     return { redirectUrl: `https://connect.composio.test/link/${this.nextId("lk")}`, connectedAccountId };
   }
 
-  async initiateApiKey(userId: string, authConfigId: string, apiKey: string, field = "generic_api_key") {
-    this.calls.initiateApiKey.push({ userId, authConfigId, apiKey, field });
+  async initiateApiKey(
+    userId: string, authConfigId: string, apiKey: string, field = "generic_api_key", extra: Record<string, string> = {},
+  ) {
+    this.calls.initiateApiKey.push({ userId, authConfigId, apiKey, field, ...(Object.keys(extra).length ? { extra } : {}) });
     const connectedAccountId = this.nextId("ca");
     const status: AccountStatus = "ACTIVE";
     this.accounts.set(connectedAccountId, {
@@ -97,6 +99,8 @@ export class FakeComposio implements ComposioClient {
       statusReason: null,
       userId,
       toolkit: this.authConfigs.get(authConfigId) ?? "unknown",
+      // Composio keeps non-secret initiation fields on the account's state.
+      params: extra,
     });
     return { connectedAccountId, status };
   }

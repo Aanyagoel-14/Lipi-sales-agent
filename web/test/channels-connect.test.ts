@@ -85,7 +85,12 @@ const X_IDENTITY = {
  * any tool's response — `afterConnect` reads it off the connected account —
  * and `POST /{waba_id}/subscribed_apps` is addressed with it.
  */
-const WABA = "waba_102290129340398";
+const WABA = "102290129340398";
+const WA_TOKEN = "EAAtest-permanent-system-user-token-0123456789";
+
+/** WhatsApp connects with a token and its WABA id, in one request, like Telegram. */
+const connectWhatsApp_ = (app: Awaited<ReturnType<typeof signedIn>>, body: Record<string, string> = { token: WA_TOKEN, wabaId: WABA }) =>
+  app.post("/v1/channels/whatsapp/connect").send(body);
 
 const numbers = (...ids: string[]) => ({
   successful: true,
@@ -124,7 +129,9 @@ describe("starting a connection", () => {
 
     const [call] = fakeComposio.calls.link;
     expect(call).toMatchObject({ userId: workspaceId, authConfigId: AUTH.gmail, alias: "email" });
-    expect(call?.callbackUrl).toBe(`${env.PUBLIC_URL}/v1/channels/callback`);
+    // The operator's own origin, where their session cookie lives — not the
+    // public tunnel, which would bring them back signed out.
+    expect(call?.callbackUrl).toBe("http://localhost/v1/channels/callback");
 
     const row = await connection("email");
     expect(row).toMatchObject({ status: "pending", composioAuthConfigId: AUTH.gmail, connectedAt: null });
@@ -192,6 +199,26 @@ describe("an API-key channel", () => {
     // no longer a column it could survive in, so the whole row is the check.
     expect(JSON.stringify(row)).not.toContain(token);
     expect(res.text).not.toContain(token);
+  });
+
+  it("connects WhatsApp from a token and a WABA id, with no consent screen", async () => {
+    fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers("555"));
+    const app = await signedIn();
+    const res = await connectWhatsApp_(app).expect(201);
+
+    expect(res.body.redirectUrl).toBeNull();
+    expect(res.body.channel).toMatchObject({ status: "connected" });
+    expect(fakeComposio.calls.link).toEqual([]);
+    // Composio's own field names: the token as `bearer_token`, the WABA as `generic_id`.
+    expect(fakeComposio.calls.initiateApiKey).toEqual([{
+      userId: workspaceId, authConfigId: AUTH.whatsapp, apiKey: WA_TOKEN, field: "bearer_token",
+      extra: { generic_id: WABA },
+    }]);
+
+    const row = await connection("whatsapp");
+    expect(row).toMatchObject({ status: "connected", externalId: "555", config: { wabaId: WABA } });
+    expect(JSON.stringify(row)).not.toContain(WA_TOKEN);
+    expect(res.text).not.toContain(WA_TOKEN);
   });
 
   it("rejects a token that is obviously not one, without touching Composio", async () => {
@@ -274,13 +301,8 @@ describe("the callback", () => {
     whatsapp.afterConnect = async () => { throw new Error("WABA is not subscribed"); };
     try {
       fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers("111"));
-      const { app, accountId } = await start("whatsapp");
-      fakeComposio.accounts.set(accountId, {
-        id: accountId, status: "ACTIVE", statusReason: null, userId: workspaceId,
-        toolkit: "whatsapp", params: { generic_id: WABA },
-      });
-
-      await app.get(`/v1/channels/callback?connected_account_id=${accountId}`).expect(303);
+      const res = await connectWhatsApp_(await signedIn()).expect(400);
+      expect(res.body.error).toBe("WABA is not subscribed");
       expect(await connection("whatsapp")).toMatchObject({
         status: "error", lastError: "WABA is not subscribed", connectedAt: null,
       });
@@ -294,13 +316,7 @@ describe("choosing a WhatsApp number", () => {
   const connectWhatsApp = async (...ids: string[]) => {
     fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers(...ids));
     const app = await signedIn();
-    await app.post("/v1/channels/whatsapp/connect").expect(201);
-    const pending = await connection("whatsapp");
-    fakeComposio.accounts.set(pending!.composioAccountId!, {
-      id: pending!.composioAccountId!, status: "ACTIVE", statusReason: null,
-      userId: workspaceId, toolkit: "whatsapp", params: { generic_id: WABA },
-    });
-    await app.get(`/v1/channels/callback?connected_account_id=${pending!.composioAccountId}`).expect(303);
+    await connectWhatsApp_(app).expect(201);
     return app;
   };
 
@@ -373,7 +389,7 @@ describe("turning inbound on at connect time", () => {
 
   it("subscribes the WABA, not the number, when WhatsApp connects", async () => {
     fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers("111", "222"));
-    await link("whatsapp", "whatsapp", { generic_id: WABA });
+    await connectWhatsApp_(await signedIn()).expect(201);
 
     expect(subscriptions()).toEqual([{
       method: "POST", endpoint: `/${WABA}/subscribed_apps`, query: { subscribed_fields: "messages" },
@@ -382,14 +398,16 @@ describe("turning inbound on at connect time", () => {
     expect(await connection("whatsapp")).toMatchObject({ status: "connected", externalId: null });
   });
 
-  it("refuses to call WhatsApp connected when Composio cannot say which WABA it is", async () => {
-    fakeComposio.execute.respond("WHATSAPP_GET_PHONE_NUMBERS", numbers("111"));
-    await link("whatsapp", "whatsapp");
+  // The WABA is what gets subscribed, so a connection that cannot name one
+  // never reaches Composio at all.
+  it("refuses to connect WhatsApp without a WABA id that looks like one", async () => {
+    const app = await signedIn();
+    await connectWhatsApp_(app, { token: WA_TOKEN }).expect(422);
+    const res = await connectWhatsApp_(app, { token: WA_TOKEN, wabaId: "my-business" }).expect(422);
 
+    expect(res.body.error).toContain("WhatsApp Business Account ID");
+    expect(fakeComposio.calls.initiateApiKey).toEqual([]);
     expect(fakeComposio.calls.proxy).toEqual([]);
-    const row = await connection("whatsapp");
-    expect(row?.status).toBe("error");
-    expect(row?.lastError).toContain("WhatsApp Business Account");
   });
 
   it("leaves the row in error when Meta refuses the subscription", async () => {
@@ -397,8 +415,10 @@ describe("turning inbound on at connect time", () => {
     fakeComposio.proxy.respond(`/${WABA}/subscribed_apps`, {
       status: 403, data: { error: { message: "(#200) Requires whatsapp_business_management" } },
     });
-    await link("whatsapp", "whatsapp", { generic_id: WABA });
+    const res = await connectWhatsApp_(await signedIn()).expect(400);
 
+    // Said in the same response, rather than left for the card to discover.
+    expect(res.body.error).toContain("whatsapp_business_management");
     const row = await connection("whatsapp");
     expect(row?.status).toBe("error");
     expect(row?.lastError).toContain("whatsapp_business_management");

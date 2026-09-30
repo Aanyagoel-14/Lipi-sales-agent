@@ -49,11 +49,15 @@ describe("the registry", () => {
   });
 
   it("names the Composio auth field for every api_key channel", () => {
-    // Telegram's schema requires `generic_api_key`, not `api_key`; sending the
-    // wrong name fails the connection with a validation error.
-    for (const spec of channelSpecs) {
-      if (spec.connect.kind === "api_key") expect(spec.connect.composioField).toBe("generic_api_key");
-    }
+    // Each toolkit's own schema name, read from `GET /toolkits/{slug}`:
+    // Telegram's is `generic_api_key`, not `api_key`, and WhatsApp's token is
+    // `bearer_token` beside the WABA as `generic_id`. Sending the wrong name
+    // fails the connection with a validation error.
+    const fields = Object.fromEntries(channelSpecs.flatMap((spec) =>
+      spec.connect.kind === "api_key"
+        ? [[spec.channel, [spec.connect.composioField, ...(spec.connect.extras ?? []).map((e) => e.composioField)]]]
+        : []));
+    expect(fields).toEqual({ telegram: ["generic_api_key"], whatsapp: ["bearer_token", "generic_id"] });
   });
 
   it("hands the SDK one version per toolkit", () => {
