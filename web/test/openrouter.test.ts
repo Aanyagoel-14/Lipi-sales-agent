@@ -115,3 +115,67 @@ describe("metering at the transport", () => {
     expect(await prisma.modelCall.count({ where: { workspaceId, ok: false } })).toBe(1);
   });
 });
+
+/**
+ * The default chat model is a free tier that reports "Service temporarily
+ * overloaded" at busy hours. Without a fallback every Storefront answer
+ * degraded to the composed reply until it recovered.
+ */
+describe("falling back when the model is unavailable", () => {
+  let workspaceId: string;
+  let asked: string[];
+
+  const overloaded = () =>
+    new Response(JSON.stringify({ error: { message: "Upstream error from Nvidia: Service temporarily overloaded" } }), { status: 200 });
+  const answered = () => new Response(JSON.stringify({ choices: [{ message: { content: "hello" } }] }), { status: 200 });
+
+  /** Answers with `first` for the chat model and `answered` for anything else. */
+  const stub = (first: () => Response) =>
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const model = (JSON.parse(String(init.body)) as { model: string }).model;
+      asked.push(model);
+      return model === env.OPENROUTER_CHAT_MODEL ? first() : answered();
+    });
+
+  beforeEach(async () => {
+    await resetDatabase();
+    const { user } = await createUser();
+    workspaceId = (await createWorkspace({ userId: user.id, withCatalogue: false })).id;
+    env.OPENROUTER_API_KEY = "test-key";
+    asked = [];
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  const ask = (model?: string) =>
+    chatCompletion({ meter: { workspaceId, purpose: "sell" }, model, messages: [{ role: "user", content: "hi" }] });
+
+  it("answers from the next model when the provider reports an upstream error", async () => {
+    stub(overloaded);
+
+    expect(await ask()).toBe("hello");
+    expect(asked).toEqual([env.OPENROUTER_CHAT_MODEL, env.OPENROUTER_MODEL]);
+
+    // Two calls were made, so two are metered.
+    const rows = await prisma.modelCall.findMany({ where: { workspaceId }, orderBy: { occurredAt: "asc" } });
+    expect(rows.map((r) => [r.model, r.ok])).toEqual([[env.OPENROUTER_CHAT_MODEL, false], [env.OPENROUTER_MODEL, true]]);
+  });
+
+  it("falls back on a rate limit or a 5xx too", async () => {
+    stub(() => new Response("busy", { status: 503 }));
+    expect(await ask()).toBe("hello");
+    expect(asked).toHaveLength(2);
+  });
+
+  it("never substitutes a model the caller pinned", async () => {
+    stub(overloaded);
+    await expect(ask(env.OPENROUTER_CHAT_MODEL)).rejects.toThrow("overloaded");
+    expect(asked).toEqual([env.OPENROUTER_CHAT_MODEL]);
+  });
+
+  it("does not retry a refusal the next model would refuse too", async () => {
+    stub(() => new Response("no credits", { status: 402 }));
+    await expect(ask()).rejects.toThrow("OpenRouter 402");
+    expect(asked).toHaveLength(1);
+  });
+});

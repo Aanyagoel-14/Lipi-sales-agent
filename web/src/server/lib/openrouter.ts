@@ -141,7 +141,8 @@ export async function chatForReply(
  * them instead of recording a free failure.
  */
 class ModelCallFailed extends Error {
-  constructor(message: string, readonly usage: ModelUsage | null) {
+  /** True when the provider reported its own error rather than a bad reply. */
+  constructor(message: string, readonly usage: ModelUsage | null, readonly upstream = false) {
     super(message);
     this.name = "ModelCallFailed";
   }
@@ -158,27 +159,71 @@ const usageFrom = (usage: OpenRouterUsage | undefined): ModelUsage | null =>
       }
     : null;
 
-export async function chatCompletion(options: CompletionOptions & { meter: ModelMeter }): Promise<string> {
-  const model = options.model ?? env.OPENROUTER_CHAT_MODEL;
-  const started = Date.now();
+/**
+ * The models to try, in order.
+ *
+ * A caller that names a model gets that model and nothing else: extraction
+ * pins `OPENROUTER_MODEL` because it needs a strict schema filler, and quietly
+ * swapping in a different one would change what gets reserved. A caller that
+ * does not is asking for "a reply", and the default chat model is a free tier
+ * that answers "Service temporarily overloaded" at busy hours — so it falls
+ * back to `OPENROUTER_MODEL`, which is paid and routinely available, rather
+ * than degrading every conversation to the composed reply.
+ */
+function modelChain(pinned: string | undefined): string[] {
+  if (pinned) return [pinned];
+  return [...new Set([env.OPENROUTER_CHAT_MODEL, env.OPENROUTER_MODEL])];
+}
 
-  try {
-    const { content, usage } = await request(model, options);
-    await recordModelCall({ ...options.meter, model, latencyMs: Date.now() - started, ok: true, usage });
-    return content;
-  } catch (error) {
-    // Every way out of `request()` comes through here, including the abort a
-    // timeout raises, so a workspace whose calls all time out still burns its
-    // call budget rather than retrying for free for ever.
-    await recordModelCall({
-      ...options.meter,
-      model,
-      latencyMs: Date.now() - started,
-      ok: false,
-      usage: error instanceof ModelCallFailed ? error.usage : null,
-      error: (error as Error).message,
-    });
-    throw error;
+export async function chatCompletion(options: CompletionOptions & { meter: ModelMeter }): Promise<string> {
+  const models = modelChain(options.model);
+
+  for (const [index, model] of models.entries()) {
+    const started = Date.now();
+    try {
+      const { content, usage } = await request(model, options);
+      await recordModelCall({ ...options.meter, model, latencyMs: Date.now() - started, ok: true, usage });
+      return content;
+    } catch (error) {
+      // Every way out of `request()` comes through here, including the abort a
+      // timeout raises, so a workspace whose calls all time out still burns its
+      // call budget rather than retrying for free for ever. Each attempt is its
+      // own row: a fallback is a second call, and it is billed as one.
+      await recordModelCall({
+        ...options.meter,
+        model,
+        latencyMs: Date.now() - started,
+        ok: false,
+        usage: error instanceof ModelCallFailed ? error.usage : null,
+        error: (error as Error).message,
+      });
+      if (index === models.length - 1 || !isTransient(error)) throw error;
+      console.warn(`[openrouter] ${model} unavailable, trying ${models[index + 1]}: ${(error as Error).message}`);
+    }
+  }
+
+  // Unreachable: the chain is never empty and its last entry always throws.
+  throw new Error("No model to try");
+}
+
+/**
+ * Whether another model could plausibly succeed where this one failed.
+ *
+ * Overload, rate limits and upstream 5xx are the provider's state, not the
+ * request's, so a different model is worth one more call. A timeout is not
+ * retried — the caller has already waited the full budget once — and neither
+ * is a 402 or a 4xx, which the next model would refuse just the same.
+ */
+function isTransient(error: unknown): boolean {
+  if (error instanceof ModelCallFailed) return error.upstream;
+  if (error instanceof ProviderRefused) return error.status === 408 || error.status === 429 || error.status >= 500;
+  return false;
+}
+
+class ProviderRefused extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`OpenRouter ${status}: ${body.slice(0, 200)}`);
+    this.name = "ProviderRefused";
   }
 }
 
@@ -201,13 +246,18 @@ async function request(
       max_tokens: options.maxTokens,
       // Ignored by models that do not reason; harmless on those that do not.
       reasoning: { exclude: true },
+      // OpenRouter's default routing weighs price, and for a strict JSON
+      // schema that picked providers taking over a hundred seconds for a
+      // one-line reply — past the timeout, so a customer got the composed
+      // reply every time. Sorted by latency the same call answered in two.
+      provider: { sort: "latency" },
       messages: options.messages,
       ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
     }),
     signal: AbortSignal.timeout(options.timeoutMs ?? 45_000),
   });
 
-  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new ProviderRefused(res.status, await res.text());
 
   const body = (await res.json()) as {
     choices?: { message?: { content?: string }; finish_reason?: string }[];
@@ -218,7 +268,9 @@ async function request(
   const usage = usageFrom(body.usage);
   const choice = body.choices?.[0];
   const content = stripReasoning(choice?.message?.content ?? "");
-  if (!content) throw new ModelCallFailed(body.error?.message ?? "OpenRouter returned no content", usage);
+  // OpenRouter reports an upstream failure ("Service temporarily overloaded")
+  // as a 200 whose body carries `error` instead of a choice.
+  if (!content) throw new ModelCallFailed(body.error?.message ?? "OpenRouter returned no content", usage, Boolean(body.error));
 
   // A reply cut off at the token limit is not a shorter reply, it is a
   // fragment -- and for a reasoning model the fragment is usually its own
