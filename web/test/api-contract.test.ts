@@ -243,9 +243,15 @@ describe("one pagination convention", () => {
       cursor = res.body.nextCursor;
     } while (cursor);
 
-    const total = await prisma.product.count({ where: { workspaceId: workspace.id } });
-    expect(names).toHaveLength(total);
-    expect([...names]).toEqual([...names].sort());
+    // "Alphabetical" is the database's collation, not JavaScript's code-point
+    // `sort()`: macOS sorts en_US.UTF-8 byte-wise (capitals first) while
+    // glibc in CI folds case ("aaa" before "Leather Belt"). The cursor
+    // compares in that same collation, so the walk must match the database's
+    // own order exactly — whichever order that is.
+    const expected = await prisma.product.findMany({
+      where: { workspaceId: workspace.id }, orderBy: [{ name: "asc" }, { id: "asc" }], select: { name: true },
+    });
+    expect(names).toEqual(expected.map((p) => p.name));
     expect(names.filter((n) => n === "aaa")).toHaveLength(2);
   });
 });
