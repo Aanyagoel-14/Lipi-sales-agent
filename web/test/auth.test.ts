@@ -52,6 +52,15 @@ describe("login", () => {
     expect(unknown.status).toBe(wrong.status);
     expect(unknown.body.error).toBe(wrong.body.error);
   });
+
+  // Left behind, the previous account's workspace id is forwarded as
+  // `x-workspace-id`, fails the membership check, and every dashboard read 403s.
+  it("clears the previous account's workspace choice", async () => {
+    const res = await agent().post("/v1/auth/login").send({ email: "owner@test.local", password: "testing12345" }).expect(200);
+    const cookies = res.headers["set-cookie"].join("\n");
+    expect(cookies).toMatch(/lipi_workspace_id=;/);
+    expect(cookies).toMatch(/lipi_workspace=;/);
+  });
 });
 
 describe("session", () => {
