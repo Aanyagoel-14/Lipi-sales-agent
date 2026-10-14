@@ -217,6 +217,8 @@ describe("an API-key channel", () => {
 
     const row = await connection("whatsapp");
     expect(row).toMatchObject({ status: "connected", externalId: "555", config: { wabaId: WABA } });
+    // The WABA the operator typed, not Composio's masked echo of it.
+    expect(fakeComposio.calls.proxy.map((c) => c.endpoint)).toEqual([`/${WABA}/subscribed_apps`]);
     expect(JSON.stringify(row)).not.toContain(WA_TOKEN);
     expect(res.text).not.toContain(WA_TOKEN);
   });

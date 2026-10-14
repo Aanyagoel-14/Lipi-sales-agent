@@ -99,8 +99,11 @@ export class FakeComposio implements ComposioClient {
       statusReason: null,
       userId,
       toolkit: this.authConfigs.get(authConfigId) ?? "unknown",
-      // Composio keeps non-secret initiation fields on the account's state.
-      params: extra,
+      // Composio keeps non-secret initiation fields on the account's state,
+      // but masked for display: a WABA id comes back as "1022...". Mirrored
+      // here because trusting that echo is exactly how the connect step once
+      // subscribed an object that does not exist.
+      params: Object.fromEntries(Object.entries(extra).map(([k, v]) => [k, v.length > 8 ? `${v.slice(0, 4)}...` : v])),
     });
     return { connectedAccountId, status };
   }
