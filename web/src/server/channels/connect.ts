@@ -106,7 +106,12 @@ export async function finishConnection(
         config,
         identityData: identity.data,
         publicUrl: env.PUBLIC_URL,
-        accountParams: { ...opts.params, ...account.params },
+        // What the operator typed wins. Composio echoes initiation fields on
+        // the account's state, but masked — the WABA id comes back as
+        // "2556..." — and subscribing that sent Meta a request for an object
+        // that does not exist. The echo is only the fallback, for the OAuth
+        // path where nothing was typed here, and a masked echo is no value.
+        accountParams: { ...unmasked(account.params ?? {}), ...opts.params },
         apiKey: opts.apiKey,
       });
       // `externalId: null` is a decision ("the operator still has to pick"),
@@ -143,6 +148,10 @@ export async function finishConnection(
     return fail(row, "error", short(error));
   }
 }
+
+/** Drops the values Composio has truncated for display ("2556..."), which are not the value. */
+const unmasked = (params: Record<string, string>) =>
+  Object.fromEntries(Object.entries(params).filter(([, value]) => !/(\.\.\.|…)$/.test(value)));
 
 /** Runs the spec's identity tool and keeps its raw payload for `afterConnect`. */
 export async function runIdentity(spec: ChannelSpec, workspaceId: string, connectedAccountId: string) {
