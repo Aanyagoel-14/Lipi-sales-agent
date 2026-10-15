@@ -122,6 +122,7 @@ export async function receive(
           handle: message.handle,
           text: message.text,
           name: message.name,
+          threadId: message.threadId,
         });
 
         // Only send when the workspace's policy actually cleared it. The

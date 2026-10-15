@@ -67,7 +67,9 @@ function capability(row: ChannelRow): string {
     case "none":
       return row.inbound.reason ?? "Replies only";
     case "composio_trigger":
-      return "New mail becomes a conversation, checked every few minutes";
+      // Composio polls the mailbox: about a minute on our own Google app, up
+      // to fifteen on its shared one. Either way it is not chat speed.
+      return "New mail becomes a conversation and is answered in the same thread. Gmail is checked every few minutes, up to 15, so replies are not instant.";
     default:
       return "Customer messages become conversations, and the twin answers in the same thread";
   }

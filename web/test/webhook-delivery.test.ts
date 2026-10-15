@@ -342,8 +342,11 @@ describe("outbound webhooks", () => {
 
       await enqueue(workspaceId);
 
+      // The cursor is (time, id), and the event can share the subscription's
+      // millisecond — so "moved" is "now points at that event", not a later time.
+      const event = await prisma.twinEvent.findFirstOrThrow({ where: { workspaceId, payload: "ord_1" } });
       const moved = await prisma.webhookSubscription.findUniqueOrThrow({ where: { id: subscription.id } });
-      expect(moved.cursorAt.getTime()).toBeGreaterThan(subscription.cursorAt.getTime());
+      expect(moved).toMatchObject({ cursorAt: event.occurredAt, cursorId: event.id });
       expect(await prisma.webhookDelivery.count()).toBe(0);
     });
 

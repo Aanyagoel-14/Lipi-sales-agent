@@ -1,4 +1,6 @@
-import { composio, ComposioWebhookError } from "@/server/lib/composio";
+import { receive } from "@/server/channels/inbound";
+import { connectionView, specFor } from "@/server/channels/registry";
+import { composio, ComposioWebhookError, type ComposioEvent } from "@/server/lib/composio";
 import { recordEvent } from "@/server/lib/events";
 import { prisma } from "@/server/lib/prisma";
 
@@ -8,7 +10,8 @@ import { prisma } from "@/server/lib/prisma";
  * deliveries are signed at the project level and routed by the connected
  * account or trigger instance they name.
  *
- * Only a bad signature answers non-2xx. Everything else — an account no
+ * Only a bad signature answers non-2xx, apart from a throttled trigger
+ * delivery (see `triggerMessage`). Everything else — an account no
  * workspace owns, an event type this phase does not handle — is acknowledged,
  * because Composio retries a non-2xx and retrying will not make an unknown
  * account known.
@@ -68,18 +71,47 @@ export async function POST(req: Request) {
     }
 
     case "composio.trigger.message":
-      // Routed to `receive()` by the trigger-channels phase. Logged rather
-      // than dropped silently so the first live Gmail delivery is visible.
-      console.log(
-        `composio trigger message: ${str(event.metadata.trigger_slug) ?? "?"}` +
-        ` for ${str(event.metadata.connected_account_id) ?? "?"}`,
-      );
-      return ok();
+      return triggerMessage(event);
 
     default:
       console.log(`composio webhook: nothing handles ${event.type}`);
       return ok();
   }
+}
+
+/**
+ * A trigger's delivery, handed to the same `receive()` every other channel
+ * uses.
+ *
+ * Routed by the connected account it names, which is unique to one
+ * connection, so a delivery can only ever land in the workspace that owns
+ * that account. The trigger slug must also be the one that connection's spec
+ * listens on: an account carries one trigger today, but one it does not
+ * expect is a delivery to drop, not to parse as something else.
+ *
+ * A redelivery carries the same Gmail message id, and `receive()` claims
+ * that id before anything runs, so the retry writes nothing. `receive()`'s
+ * own 429 is passed back: Composio retries it, which is what a throttled
+ * tenant wants.
+ */
+async function triggerMessage(event: ComposioEvent): Promise<Response> {
+  const accountId = str(event.metadata.connected_account_id);
+  const slug = str(event.metadata.trigger_slug);
+  const connection = accountId
+    ? await prisma.channelConnection.findFirst({ where: { composioAccountId: accountId } })
+    : null;
+  if (!connection) {
+    console.log(`composio webhook: no connection for ${accountId ?? "?"}`);
+    return ok();
+  }
+
+  const spec = specFor(connection.channel);
+  if (spec?.inbound.kind !== "composio_trigger" || spec.inbound.slug !== slug) {
+    console.log(`composio webhook: ${connection.channel} does not listen on ${slug ?? "?"}`);
+    return ok();
+  }
+
+  return receive(connection, spec.parse(event.data, connectionView(connection)));
 }
 
 /**

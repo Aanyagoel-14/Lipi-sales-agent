@@ -304,6 +304,7 @@ export async function sell(input: {
   handle: string;
   name?: string;
   text: string;
+  threadId?: string;
   /**
    * The turns to replay, when the caller already has them — the storefront
    * panel holds its own transcript. Omitted means "read them", which is what
@@ -325,6 +326,7 @@ export async function sell(input: {
     handle: input.handle,
     name: input.name,
     text: input.text,
+    threadId: input.threadId,
   });
 
   /* ------------------------------------------------------------- invoicing */

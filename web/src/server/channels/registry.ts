@@ -32,6 +32,8 @@ export type InboundMessage = {
   name?: string;
   /** Provider's own id, so a retried webhook does not create a second conversation. */
   externalId: string;
+  /** The provider's thread, for a channel that threads (email); the reply goes back into it. */
+  threadId?: string;
 };
 
 export type Json = Record<string, unknown>;
@@ -92,12 +94,8 @@ export type ConnectContext = {
   apiKey?: string;
 };
 
-/**
- * A parsed message. `threadId` is only meaningful for channels that thread
- * (email); it rides alongside `InboundMessage` here until the ingest path
- * learns to store it, at which point it moves into the canonical type.
- */
-export type ParsedMessage = InboundMessage & { threadId?: string };
+/** What a spec's parser produces. Named for the parsers; the shape is `InboundMessage`'s. */
+export type ParsedMessage = InboundMessage;
 
 export type SendRequest = { slug: string; arguments: Json };
 
@@ -899,6 +897,69 @@ export function parseAddress(raw: string): { address: string; name?: string } | 
   return null;
 }
 
+/**
+ * The mailbox's new customer mail, as a Gmail search.
+ *
+ * A query takes precedence over the trigger's label filter, so the inbox is
+ * named here rather than there. `-from:me` keeps our own replies out — they
+ * land in the same thread and would otherwise come back as the customer
+ * talking. The category exclusions are Gmail's own sorting of newsletters,
+ * notifications and social mail, none of which a salesperson answers.
+ */
+export const GMAIL_QUERY = "in:inbox -from:me -category:promotions -category:social -category:updates -category:forums";
+
+/** Senders that are machines. Answering one starts a loop or a bounce. */
+const AUTOMATED_SENDER = /^(no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounces?|notifications?)([+.@-]|$)/i;
+
+/**
+ * Headers that mark bulk or automatic mail (RFC 2369, RFC 3834). The
+ * trigger's `payload` is the raw Gmail message, whose headers are a list of
+ * `{ name, value }`; a header a payload does not carry simply is not found.
+ */
+const isBulk = (headers: { name?: unknown; value?: unknown }[]): boolean =>
+  headers.some(({ name, value }) => {
+    const key = typeof name === "string" ? name.toLowerCase() : "";
+    const val = typeof value === "string" ? value.toLowerCase() : "";
+    if (key === "list-id" || key === "list-unsubscribe") return true;
+    if (key === "precedence") return /bulk|list|junk/.test(val);
+    if (key === "auto-submitted") return val !== "no";
+    return false;
+  });
+
+/**
+ * What the customer wrote this time, without the thread underneath it.
+ *
+ * Mail clients quote the whole history below a reply, and fed to the model
+ * that history reads as the customer saying it all again. Everything from the
+ * first attribution line ("On Tue, … wrote:", Outlook's "-----Original
+ * Message-----" or its "From:" block) is dropped, then any line still quoted
+ * with `>`. Line breaks the customer typed are kept; runs of blank lines and
+ * trailing spaces are not.
+ */
+export function stripQuoted(text: string): string {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const cut = lines.findIndex((line) =>
+    /^\s*On\b.{0,200}\bwrote:\s*$/i.test(line) ||
+    /^\s*-{2,}\s*(Original|Forwarded) Message\s*-{2,}/i.test(line) ||
+    /^\s*From:\s.+/i.test(line),
+  );
+  return (cut === -1 ? lines : lines.slice(0, cut))
+    .filter((line) => !/^\s*>/.test(line))
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+const GMAIL_TRIGGER = "GMAIL_NEW_GMAIL_MESSAGE";
+
+/**
+ * Confirmed against `GET /triggers_types/GMAIL_NEW_GMAIL_MESSAGE` on
+ * 2026-10-15: `labelIds`, `query`, `userId` and `interval`. The interval is
+ * left to Composio, which fixes it on a managed auth config anyway.
+ */
+const gmailTriggerConfig = (): Json => ({ query: GMAIL_QUERY, userId: "me" });
+
 const email: ChannelSpec = {
   channel: "email",
   label: "Email",
@@ -908,23 +969,40 @@ const email: ChannelSpec = {
   connect: { kind: "link" },
   inbound: {
     kind: "composio_trigger",
-    slug: "GMAIL_NEW_GMAIL_MESSAGE",
-    // Field names as documented for the trigger; the trigger-channels phase
-    // confirms them against `GET /triggers_types/GMAIL_NEW_GMAIL_MESSAGE`.
-    config: () => ({ labelIds: "INBOX", userId: "me" }),
+    slug: GMAIL_TRIGGER,
+    config: gmailTriggerConfig,
   },
 
-  parse(body) {
-    // The trigger's `data`: message_id, thread_id, sender, subject and the
-    // plain-text body. Quoted history and list mail are dealt with in the
-    // trigger-channels phase; this is the shape.
+  /**
+   * The trigger's `data`, whose keys were confirmed against the trigger's
+   * payload schema: `id`, `message_id`, `thread_id`, `sender`, `to`,
+   * `subject`, `message_text`, `label_ids` and the raw Gmail `payload`.
+   *
+   * The query already keeps most machine mail out; this is the second check,
+   * on what actually arrived, because a query is advice to a poller and a
+   * reply sent to a bounce is a loop.
+   */
+  parse(body, connection) {
     const data = record(body);
     if (!data) return [];
     const id = str(data.message_id) ?? str(data.id);
     const sender = str(data.sender) ?? str(data.from);
-    const text = (str(data.message_text) ?? str(data.snippet) ?? "").trim();
     const from = sender ? parseAddress(sender) : null;
-    if (!id || !from || !text) return [];
+    if (!id || !from) return [];
+
+    // The mailbox's own mail, by address or by label: the sent copy of a
+    // reply is in the thread, and in the inbox too when it is addressed to us.
+    const labels = Array.isArray(data.label_ids) ? data.label_ids : [];
+    if (labels.includes("SENT") || labels.includes("DRAFT")) return [];
+    if (connection.externalId && from.address === connection.externalId.toLowerCase()) return [];
+    if (AUTOMATED_SENDER.test(from.address)) return [];
+
+    const raw = record(data.payload);
+    const headers = Array.isArray(raw?.headers) ? (raw.headers as { name?: unknown; value?: unknown }[]) : [];
+    if (isBulk(headers)) return [];
+
+    const text = stripQuoted(str(data.message_text) ?? str(data.snippet) ?? "");
+    if (!text) return [];
 
     return [{
       channel: "email",
@@ -944,7 +1022,29 @@ const email: ChannelSpec = {
     if (threadId) {
       return { slug: "GMAIL_REPLY_TO_THREAD", arguments: { thread_id: threadId, message_body: text, recipient_email: to } };
     }
-    return { slug: "GMAIL_SEND_EMAIL", arguments: { recipient_email: to, subject: subject ?? "Your enquiry", body: text } };
+    // A conversation with no thread is one Lipi started, or one from before
+    // threads were stored; it still reads as a reply to what they asked.
+    const topic = subject?.trim();
+    return {
+      slug: "GMAIL_SEND_EMAIL",
+      arguments: { recipient_email: to, subject: !topic ? "Your enquiry" : /^re:/i.test(topic) ? topic : `Re: ${topic}`, body: text },
+    };
+  },
+
+  /**
+   * Starts the trigger that is this channel's only inbound path. Upsert
+   * re-enables an instance a previous connect left disabled rather than
+   * adding a second, so reconnecting does not double every delivery.
+   * Disconnect deletes whatever is in `composioTriggerIds`, so there is no
+   * `beforeDisconnect` to match.
+   */
+  async afterConnect(ctx) {
+    const triggerId = await ctx.client.upsertTrigger(GMAIL_TRIGGER, {
+      userId: ctx.workspaceId,
+      connectedAccountId: ctx.connectedAccountId,
+      config: gmailTriggerConfig(),
+    });
+    return { triggerIds: [triggerId] };
   },
 
   identity: {

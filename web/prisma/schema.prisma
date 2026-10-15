@@ -342,6 +342,10 @@ model Conversation {
   lastAt  DateTime
   intent  String
   signals Json
+  /// The provider's own thread handle, where the channel threads (Gmail's
+  /// thread id), so a reply lands in the customer's thread rather than
+  /// starting a new one. Null for every chat channel.
+  externalThreadId String?
 
   customerId String
   customer   Customer @relation(fields: [customerId], references: [id])

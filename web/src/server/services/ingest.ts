@@ -38,6 +38,8 @@ export type IngestInput = {
   handle: string;
   text: string;
   name?: string;
+  /** The provider's thread, for a channel that threads (email); kept on the conversation. */
+  threadId?: string;
 };
 
 export type IngestResult = {
@@ -223,7 +225,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         id: id("cnv"), workspaceId: workspace.id, channel: input.channel, subject: input.text.slice(0, 80),
         unread: true, lastAt: now, intent: extracted.intent,
         signals: signalsFor(extracted, vocab.axes),
-        customerId: customer.id,
+        customerId: customer.id, externalThreadId: input.threadId ?? null,
         messages: { create: { from: "customer", text: input.text, sentAt: now } },
       },
     });

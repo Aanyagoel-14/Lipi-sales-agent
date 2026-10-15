@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase } from "./helpers";
+import { afterSettled } from "./next/server";
 import { fakeComposio } from "./fakes/composio";
 import { prisma } from "@/server/lib/prisma";
 
@@ -128,16 +129,17 @@ describe("a trigger being disabled", () => {
 });
 
 describe("a trigger message", () => {
-  it("is acknowledged and, until the trigger-channels phase, changes nothing", async () => {
+  // The routing itself is `email-channel.test.ts`'s; this is the door.
+  it("becomes a conversation in the account's workspace, and leaves the row's status alone", async () => {
     await post(fakeComposio.sign({
       type: "composio.trigger.message",
       metadata: { trigger_slug: "GMAIL_NEW_GMAIL_MESSAGE", connected_account_id: ACCOUNT },
       data: { message_id: "m1", thread_id: "t1", sender: "Deepa <deepa@example.com>", message_text: "hello" },
     })).expect(200);
+    await afterSettled();
 
     expect(await emailRow()).toMatchObject({ status: "connected" });
-    expect(await prisma.conversation.count()).toBe(0);
-    expect(await prisma.message.count()).toBe(0);
+    expect(await prisma.conversation.findMany({ where: { workspaceId } })).toMatchObject([{ externalThreadId: "t1" }]);
   });
 });
 
