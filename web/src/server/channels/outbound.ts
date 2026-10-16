@@ -331,6 +331,7 @@ export async function sendReply(args: {
         text: part,
         config: (connection.config ?? {}) as Json,
         subject: conversation.subject,
+        threadId: conversation.externalThreadId ?? undefined,
       }),
     );
   } catch (error) {
