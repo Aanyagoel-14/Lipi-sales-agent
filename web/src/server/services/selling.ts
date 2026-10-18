@@ -330,13 +330,10 @@ export async function sell(input: {
   });
 
   /* ------------------------------------------------------------- invoicing */
-  // An order gets its invoice once it is cleared to go: at once when the
-  // reply was sent, or when its approval is granted when the reply is held
-  // (`grantOrder`) — an invoice issued before then is a bill the business
-  // never agreed to send. Asking for "the invoice" with no new order falls
-  // back to their most recent one, which is what a customer means.
-  let invoiceOrderId = result.replySent ? result.order?.id ?? null : null;
-  if (!result.order && WANTS_INVOICE.test(input.text)) {
+  // An order always gets its invoice. Asking for "the invoice" with no new
+  // order falls back to their most recent one, which is what a customer means.
+  let invoiceOrderId = result.order?.id ?? null;
+  if (!invoiceOrderId && WANTS_INVOICE.test(input.text)) {
     const last = await prisma.order.findFirst({
       where: { workspaceId: input.workspaceId, customerId: result.customer.id },
       orderBy: { createdAt: "desc" },

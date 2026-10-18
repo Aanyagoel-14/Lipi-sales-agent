@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { prisma, type Tx } from "../lib/prisma";
 import { recordEvent } from "../lib/events";
 import type { TwinEffect } from "../lib/events";
@@ -112,65 +111,6 @@ export async function releaseExpiredReservations(workspaceId: string, now = new 
  */
 export async function firmUpReservation(tx: Tx, orderId: string) {
   await tx.order.update({ where: { id: orderId }, data: { reservedUntil: null } });
-}
-
-const holdEvent = (tx: Tx, workspaceId: string, now: Date, type: string, payload: string) =>
-  tx.twinEvent.create({
-    data: { id: `evt_${randomUUID().slice(0, 8)}`, workspaceId, occurredAt: now, type, twin: "inventory", payload },
-  });
-
-export type HoldGrant = { ok: true } | { ok: false; reason: string };
-
-/**
- * An approved quote keeps its stock for a full hold from the moment of
- * approval, not from the moment it was drafted.
- *
- * An approval can come hours after the message, and the customer is only
- * told "reserved" now — so the four hours they are promised start now. A
- * hold the sweep already let go is taken again if the stock is still there;
- * if it is not, the approval cannot honestly be granted, and nothing changes.
- *
- * Only a provisional order has a hold to renew. One already confirmed by
- * other means holds its stock until it settles, and is left as it is.
- */
-export async function grantHold(tx: Tx, workspaceId: string, orderId: string, now = new Date()): Promise<HoldGrant> {
-  const order = await tx.order.findFirst({ where: { id: orderId, workspaceId } });
-  if (!order || !(PROVISIONAL as readonly string[]).includes(order.stage)) return { ok: true };
-
-  const until = holdUntil(now);
-  if (order.reservedUntil) {
-    await tx.order.update({ where: { id: order.id }, data: { reservedUntil: until } });
-    await holdEvent(tx, workspaceId, now, "inventory_twin.hold_renewed", `order=${order.id} until=${until.toISOString()}`);
-    return { ok: true };
-  }
-
-  const variant = await tx.variant.findUnique({ where: { id: order.variantId }, select: { stock: true, reserved: true } });
-  const available = variant ? variant.stock - variant.reserved : 0;
-  if (available < order.qty) {
-    return { ok: false, reason: `The hold on this order lapsed and only ${Math.max(available, 0)} are left now` };
-  }
-
-  await tx.variant.update({ where: { id: order.variantId }, data: { reserved: { increment: order.qty } } });
-  await tx.order.update({ where: { id: order.id }, data: { reservedUntil: until, blocked: null } });
-  await holdEvent(tx, workspaceId, now, "inventory_twin.hold_placed", `order=${order.id} qty=${order.qty} until=${until.toISOString()} hours=${HOLD_HOURS}`);
-  return { ok: true };
-}
-
-/**
- * A rejected quote gives its stock back at once rather than four hours later.
- * Guarded exactly as the sweep is, and a no-op on a hold already released.
- */
-export async function releaseHold(tx: Tx, workspaceId: string, orderId: string, reason: string, now = new Date()) {
-  const order = await tx.order.findFirst({
-    where: { id: orderId, workspaceId, reservedUntil: { not: null }, stage: { in: [...PROVISIONAL] } },
-  });
-  if (!order) return;
-
-  const variant = await tx.variant.findUnique({ where: { id: order.variantId }, select: { reserved: true } });
-  const give = Math.min(order.qty, variant?.reserved ?? 0);
-  if (give > 0) await tx.variant.update({ where: { id: order.variantId }, data: { reserved: { decrement: give } } });
-  await tx.order.update({ where: { id: order.id }, data: { reservedUntil: null, blocked: reason.slice(0, 200) } });
-  await holdEvent(tx, workspaceId, now, "inventory_twin.hold_released", `order=${order.id} variant=${order.variantId} released=${give}`);
 }
 
 /** The effects a caller should append when it reserves with a hold. */
