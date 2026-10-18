@@ -155,13 +155,27 @@ describe("the approval policy", () => {
     expect(result.agentRuns.every((r) => r.status === "needs_approval")).toBe(true);
   });
 
-  it("holds only money under 'money_only'", async () => {
+  // The order and its hold are written, so the stock cannot sell out under
+  // the decision; the reply that says "reserved" waits for the decision.
+  it("holds a reply that quotes an order under 'money_only'", async () => {
     await setup("money_only");
     const result = await say("I want 2 olive L polos");
 
-    expect(result.replySent).toBe(true);
+    expect(result.order).not.toBeNull();
+    expect(result.replySent).toBe(false);
     expect(result.agentRuns.find((r) => r.agent === "Sales")?.status).toBe("needs_approval");
     expect(result.agentRuns.find((r) => r.agent === "Inventory")?.status).toBe("done");
+
+    const approval = await prisma.approval.findFirstOrThrow({ where: { agent: "Sales" } });
+    expect(approval.orderId).toBe(result.order!.id);
+  });
+
+  it("still answers a question with no money in it under 'money_only'", async () => {
+    await setup("money_only");
+    const result = await say("do you have olive polos in L");
+
+    expect(result.order).toBeNull();
+    expect(result.replySent).toBe(true);
   });
 
   it("lets everything through under 'nothing'", async () => {

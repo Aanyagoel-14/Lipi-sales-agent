@@ -256,7 +256,11 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     // is a commercial commitment on the customer's own terms (net-30, a PO
     // number), not a self-serve retail buy, so it always needs a human's eyes
     // even under a policy of "nothing".
-    const runs: { agent: string; action: string; touchesMoney: boolean; ms: number; mandatory?: boolean }[] = [];
+    const runs: {
+      agent: string; action: string; touchesMoney: boolean; ms: number; mandatory?: boolean;
+      /** This run is the quote itself, so its approval decides the order. */
+      quotes?: boolean;
+    }[] = [];
     let order: { id: string; valueInr: number } | null = null;
     let reservedUntil: Date | null = null;
     let parts: ReplyParts;
@@ -291,7 +295,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         record("order_twin.created", "order", `${created.id} status=quoted value=${toRupees(created.value)}`);
         record(...effectArgs(holdEffect(created.id, wants, reservedUntil)));
 
-        runs.push({ agent: "Sales", action: `Quoted ${wants} × ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}, reserved stock`, touchesMoney: true, ms: 1200 });
+        runs.push({ agent: "Sales", action: `Quoted ${wants} × ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}, reserved stock`, touchesMoney: true, ms: 1200, quotes: true });
         runs.push({ agent: "Inventory", action: `Reserved ${wants} units, ${remaining} left unreserved`, touchesMoney: false, ms: 380 });
 
         if (remaining <= REORDER_POINT) {
@@ -479,7 +483,11 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     const contactAsk = nextContactAsk(leadScore, leadStage, contactHeld(customer));
 
     /* -------------------------------------------------- agents and reply */
-    const held = needsApproval(workspace.approvalPolicy, false);
+    // A reply that quotes an order touches money: under `money_only` it waits
+    // with the order's approval, and is sent only when that is granted. The
+    // stock stays held meanwhile, provisionally, so it cannot sell out from
+    // under the decision; no invoice is issued until then (`sell()`).
+    const held = needsApproval(workspace.approvalPolicy, order !== null);
 
     for (const r of runs) {
       const status = r.mandatory || needsApproval(workspace.approvalPolicy, r.touchesMoney) ? "needs_approval" : "done";
@@ -499,6 +507,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
             detail: `Raised from ${conversation.id}`,
             impact: order ? `Order ${order.id}, ₹${order.valueInr.toLocaleString("en-IN")}` : "No order value yet",
             raisedAt: now, severity: "attention", runId: run.id,
+            orderId: r.quotes && order ? order.id : null,
           },
         });
       }
@@ -517,7 +526,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         ...(held ? { deliveryStatus: "held" as const } : {}),
       },
     });
-    if (held) record("reply.held", "conversation", "policy=everything awaiting approval");
+    if (held) record("reply.held", "conversation", `policy=${workspace.approvalPolicy} awaiting approval`);
 
     /* --------------------------------------------------- the event trail */
     await tx.twinEvent.createMany({

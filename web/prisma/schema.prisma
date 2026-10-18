@@ -451,6 +451,11 @@ model Approval {
   runId String   @unique
   run   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
+  /// The quoted order this approval decides, when it decides one. Approving
+  /// renews the order's stock hold and issues its invoice; rejecting releases
+  /// the hold. Null for an approval about anything else.
+  orderId String?
+
   @@index([workspaceId])
   @@map("approvals")
 }

@@ -521,6 +521,91 @@ describe("through the routes", () => {
     expect(fakeComposio.calls.execute).toEqual([]);
   });
 
+  /**
+   * Under `money_only` a quote waits for a person: its stock is held, its
+   * invoice is not issued and the reply saying "reserved" is not sent. The
+   * decision is what settles all three.
+   */
+  describe("deciding a held quote", () => {
+    const quote = async () => {
+      await setup("money_only");
+      await connect("telegram");
+      const { conversationId, replySent } = await conversationWith("telegram", "555", "I want 2 olive L polos");
+      expect(replySent).toBe(false);
+      const approval = await prisma.approval.findFirstOrThrow({ where: { workspaceId, agent: "Sales" } });
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: approval.orderId! } });
+      const held = await prisma.message.findFirstOrThrow({ where: { conversationId, from: "agent" } });
+      return { approval, order, held, app: await signedIn() };
+    };
+    const reservedOn = async (variantId: string) =>
+      (await prisma.variant.findUniqueOrThrow({ where: { id: variantId } })).reserved;
+
+    it("holds the stock but issues no invoice and sends nothing until decided", async () => {
+      const { order, held } = await quote();
+
+      expect(order.reservedUntil).toBeInstanceOf(Date);
+      expect(await reservedOn(order.variantId)).toBeGreaterThanOrEqual(2);
+      expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(0);
+      expect(held.deliveryStatus).toBe("held");
+      expect(fakeComposio.calls.execute).toEqual([]);
+    });
+
+    it("renews the hold from now, invoices, then sends, when approved", async () => {
+      const { approval, order, held, app } = await quote();
+      const drafted = order.reservedUntil!.getTime();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const res = await app.post(`/v1/approvals/${approval.id}/approve`).expect(200);
+
+      expect(res.body.delivered).toBe(true);
+      const renewed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(renewed.reservedUntil!.getTime()).toBeGreaterThan(drafted);
+      expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(1);
+      expect((await messageRow(held.id)).deliveryStatus).toBe("sent");
+    });
+
+    it("gives the stock back at once and sends nothing, when rejected", async () => {
+      const { approval, order, held, app } = await quote();
+      const before = await reservedOn(order.variantId);
+
+      await app.post(`/v1/approvals/${approval.id}/reject`).expect(200);
+
+      expect(await reservedOn(order.variantId)).toBe(before - order.qty);
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } }))
+        .toMatchObject({ reservedUntil: null, blocked: "Quote rejected by owner@test.local" });
+      expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(0);
+      expect((await messageRow(held.id)).deliveryStatus).toBe("held");
+      expect(fakeComposio.calls.execute).toEqual([]);
+      expect(await events("inventory_twin.hold_released")).toHaveLength(1);
+    });
+
+    it("takes the stock again when the hold lapsed but the stock is still there", async () => {
+      const { approval, order, app } = await quote();
+      await prisma.variant.update({ where: { id: order.variantId }, data: { reserved: { decrement: order.qty } } });
+      await prisma.order.update({ where: { id: order.id }, data: { reservedUntil: null, blocked: "Reservation lapsed after 4 hours" } });
+      const before = await reservedOn(order.variantId);
+
+      await app.post(`/v1/approvals/${approval.id}/approve`).expect(200);
+
+      expect(await reservedOn(order.variantId)).toBe(before + order.qty);
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({ blocked: null });
+    });
+
+    it("refuses, and changes nothing, when the hold lapsed and the stock has gone", async () => {
+      const { approval, order, held, app } = await quote();
+      await prisma.order.update({ where: { id: order.id }, data: { reservedUntil: null } });
+      const variant = await prisma.variant.findUniqueOrThrow({ where: { id: order.variantId } });
+      await prisma.variant.update({ where: { id: variant.id }, data: { reserved: variant.stock } });
+
+      const res = await app.post(`/v1/approvals/${approval.id}/approve`).expect(409);
+
+      expect(res.body.error).toMatch(/lapsed/);
+      expect(await prisma.approval.count({ where: { id: approval.id } })).toBe(1);
+      expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(0);
+      expect((await messageRow(held.id)).deliveryStatus).toBe("held");
+    });
+  });
+
   it("answers a customer end to end, from the webhook to the provider", async () => {
     await setup();
     const row = await connect("telegram");
