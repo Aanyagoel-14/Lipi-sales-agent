@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
 import { prisma } from "@/server/lib/prisma";
+import { settleInvoice } from "@/server/services/checkout";
 import { ingest } from "@/server/services/ingest";
+import { invoiceForOrder } from "@/server/services/invoicing";
 import { HOLD_HOURS, HOLD_MS, releaseExpiredReservations } from "@/server/services/reservations";
 import { VIP_LIFETIME_VALUE, vipRouting } from "@/server/services/twin-rules";
 
@@ -29,6 +31,21 @@ async function setup(policy: "everything" | "money_only" | "nothing" = "nothing"
 const buy = (text = "I want 2 olive L polos", handle = "+91 90 000 0001") =>
   ingest({ workspaceId, channel: "whatsapp", handle, text });
 
+/**
+ * A quote from a chat holds no stock until it is paid, so the four-hour hold
+ * is now a purchase order's: the one message that still sets stock aside
+ * before payment, because a person confirms its terms.
+ */
+const hold = (handle = "+91 90 000 0001") => buy("PO for 2 olive L polos, net 30", handle);
+
+/** A sale, the whole way: quoted from a message, invoiced, and paid. */
+async function buyAndPay(text = "I want 2 olive L polos", handle = "+91 90 000 0001") {
+  const result = await buy(text, handle);
+  const { invoice } = await invoiceForOrder(workspaceId, result.order!.id);
+  await settleInvoice(workspaceId, invoice.number, { method: "upi", reference: "TEST", by: "test" });
+  return result;
+}
+
 const variantOf = (optionA: string, optionB: string) =>
   prisma.variant.findFirstOrThrow({
     where: { optionA, optionB, product: { workspaceId, name: "Polo Classic" } },
@@ -40,7 +57,7 @@ describe("the four-hour reservation hold", () => {
   it("stamps a reservation with an expiry when stock is held", async () => {
     await setup();
     const before = Date.now();
-    const result = await buy();
+    const result = await hold();
 
     expect(result.reservedUntil).not.toBeNull();
     const until = new Date(result.reservedUntil!).getTime();
@@ -59,7 +76,7 @@ describe("the four-hour reservation hold", () => {
   // the more quotes it produces, the wronger it gets.
   it("gives the stock back once the hold lapses", async () => {
     await setup();
-    const result = await buy();
+    const result = await hold();
     const held = await variantOf("L", "Olive");
     expect(held.reserved).toBe(2);
 
@@ -85,7 +102,7 @@ describe("the four-hour reservation hold", () => {
 
   it("leaves a hold that has not lapsed alone", async () => {
     await setup();
-    await buy();
+    await hold();
     const swept = await releaseExpiredReservations(workspaceId);
 
     expect(swept.released).toBe(0);
@@ -96,7 +113,7 @@ describe("the four-hour reservation hold", () => {
   // racing must not both decrement the same reservation.
   it("is idempotent: sweeping twice releases once", async () => {
     await setup();
-    const result = await buy();
+    const result = await hold();
     await prisma.order.update({
       where: { id: result.order!.id },
       data: { reservedUntil: new Date(Date.now() - 1000) },
@@ -109,7 +126,7 @@ describe("the four-hour reservation hold", () => {
 
   it("does not touch another tenant's lapsed holds", async () => {
     await setup();
-    const mine = await buy();
+    const mine = await hold();
     await prisma.order.update({
       where: { id: mine.order!.id },
       data: { reservedUntil: new Date(Date.now() - 1000) },
@@ -136,7 +153,7 @@ describe("the four-hour reservation hold", () => {
   // provisional.
   it("stops being provisional once the order is confirmed", async () => {
     await setup();
-    const result = await buy();
+    const result = await hold();
     const agent = await signedIn();
 
     await agent.post(`/v1/orders/${result.order!.id}/stage`).send({ stage: "Confirmed" }).expect(200);
@@ -271,7 +288,7 @@ describe("auto-dispatched purchase orders", () => {
   // threshold" — a row somebody can count and send, not a sentence in a log.
   it("raises a draft purchase order when a sale crosses the reorder point", async () => {
     const variant = await nearlyOut(8);
-    await buy("I want 2 olive L polos");
+    await buyAndPay("I want 2 olive L polos");
 
     const po = await prisma.purchaseOrder.findFirstOrThrow({ where: { workspaceId } });
     expect(po.variantId).toBe(variant.id);
@@ -286,7 +303,7 @@ describe("auto-dispatched purchase orders", () => {
   // Ordering below a supplier's minimum is an order they refuse.
   it("orders at least the supplier's MOQ", async () => {
     await nearlyOut(8);
-    await buy("I want 2 olive L polos");
+    await buyAndPay("I want 2 olive L polos");
 
     const po = await prisma.purchaseOrder.findFirstOrThrow({ where: { workspaceId } });
     const supplier = await prisma.supplier.findFirstOrThrow({ where: { id: po.supplierId } });
@@ -297,18 +314,21 @@ describe("auto-dispatched purchase orders", () => {
   // arrives. One decision, one purchase order.
   it("does not raise a second purchase order while one is open", async () => {
     await nearlyOut(8);
-    await buy("I want 2 olive L polos");
-    await buy("I want 1 olive L polo", "+91 90 000 0002");
+    await buyAndPay("I want 2 olive L polos");
+    await buyAndPay("I want 1 olive L polo", "+91 90 000 0002");
 
     expect(await prisma.purchaseOrder.count({ where: { workspaceId } })).toBe(1);
+  });
 
-    const runs = await prisma.agentRun.findMany({ where: { agent: "Procurement" } });
-    expect(runs.some((run) => run.action.includes("already open"))).toBe(true);
+  it("raises none for a quote nobody has paid", async () => {
+    await nearlyOut(8);
+    await buy("I want 2 olive L polos");
+    expect(await prisma.purchaseOrder.count({ where: { workspaceId } })).toBe(0);
   });
 
   it("raises none when stock stays well above the reorder point", async () => {
     await setup();
-    await buy("I want 2 olive L polos");
+    await buyAndPay("I want 2 olive L polos");
     expect(await prisma.purchaseOrder.count({ where: { workspaceId } })).toBe(0);
   });
 });

@@ -173,7 +173,7 @@ describe("the per-workspace daily budget", () => {
     expect(result.degraded).toContain("Daily model call budget spent (6/6)");
     // Degraded, not broken: the order was still placed and priced.
     expect(result.order).not.toBeNull();
-    expect(result.reply).toContain("Reserved");
+    expect(result.reply).toContain("It's yours once paid.");
     // And nothing was spent finding that out: still the six already on the clock.
     expect(await calls()).toHaveLength(6);
   });

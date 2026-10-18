@@ -548,7 +548,8 @@ describe("what a webchat message still does to the twins", () => {
     expect(viaWebchat).toContain("invoice.issued");
   });
 
-  it("still reserves the stock and creates the order", async () => {
+  // As on every channel, a quote takes no stock until it is paid.
+  it("still creates the order, and takes no stock before payment", async () => {
     const before = await prisma.variant.findFirstOrThrow({
       where: { optionA: "XL", optionB: "Cobalt", product: { workspaceId, name: "Polo Classic" } },
     });
@@ -556,7 +557,7 @@ describe("what a webchat message still does to the twins", () => {
     const result = await sendVisitorMessage({ workspaceId, visitorId: VISITOR, text: "I need 2 blue XL polos" });
 
     const after = await prisma.variant.findUniqueOrThrow({ where: { id: before.id } });
-    expect(after.reserved).toBe(before.reserved + 2);
+    expect(after.reserved).toBe(before.reserved);
     expect(result.order!.valueInr).toBeGreaterThan(0);
     expect(await prisma.order.count({ where: { workspaceId } })).toBe(1);
   });

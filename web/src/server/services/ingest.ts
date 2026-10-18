@@ -25,7 +25,7 @@ import type { Channel } from "@/generated/prisma/client";
  */
 
 /** Units at or below which the inventory twin asks procurement to restock. */
-const REORDER_POINT = 6;
+export const REORDER_POINT = 6;
 
 const id = (prefix: string) => `${prefix}_${randomUUID().slice(0, 8)}`;
 
@@ -268,13 +268,12 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       const available = match.variant.stock - match.variant.reserved;
 
       if (available >= wants) {
-        await tx.variant.update({ where: { id: match.variant.id }, data: { reserved: { increment: wants } } });
-        const remaining = available - wants;
-        record("inventory_twin.reserved", "inventory", `sku=${match.sku} qty=${wants} remaining=${remaining}`);
-
-        // The hold is provisional and says so: four hours, then the sweep
-        // gives the stock back (PRD §5, `services/reservations.ts`).
-        reservedUntil = holdUntil(now);
+        // Quoted, not reserved. The customer is sent their invoice and a way
+        // to pay, and stock is committed when the payment lands
+        // (`services/checkout.ts`) — not on a message most senders never
+        // follow up. The quote is the list price for what is in stock, which
+        // is why it needs nobody's approval: the customer paying is the
+        // commitment, and nothing is promised before it.
 
         const created = await tx.order.create({
           data: {
@@ -283,28 +282,20 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
             channel: input.channel, createdAt: now, customerId: customer.id,
             productId: match.product.id, variantId: match.variant.id,
             blocked: extracted.deadline ? `Deliver by ${extracted.deadline}` : null,
-            reservedUntil,
             creditHold: credit.hold,
           },
         });
         order = { id: created.id, valueInr: toRupees(created.value) };
-        record("order_twin.created", "order", `${created.id} status=quoted value=${toRupees(created.value)}`);
-        record(...effectArgs(holdEffect(created.id, wants, reservedUntil)));
+        record("order_twin.created", "order", `${created.id} status=quoted value=${toRupees(created.value)} awaiting=payment`);
 
-        runs.push({ agent: "Sales", action: `Quoted ${wants} × ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}, reserved stock`, touchesMoney: true, ms: 1200 });
-        runs.push({ agent: "Inventory", action: `Reserved ${wants} units, ${remaining} left unreserved`, touchesMoney: false, ms: 380 });
-
-        if (remaining <= REORDER_POINT) {
-          record("inventory_twin.threshold_breached", "inventory", `sku=${match.sku} reorder_point=${REORDER_POINT}`);
-          await dispatchRestock(tx, {
-            workspaceId: workspace.id, match, available: remaining, now, record, runs,
-          });
-        }
+        runs.push({ agent: "Sales", action: `Quoted ${wants} × ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}, invoice sent for payment`, touchesMoney: false, ms: 1200 });
+        runs.push({ agent: "Inventory", action: `Checked ${wants} units, ${available} available until paid`, touchesMoney: false, ms: 380 });
+        // Restocking is decided when the stock is actually taken, at payment
+        // (`checkout.ts`): a quote nobody pays for has not used anything up.
 
         parts = {
-          core: `Reserved ${wants} × ${match.product.name}, ${match.variant.optionA} / ${match.variant.optionB}.`,
-          detail: `₹${toRupees(match.product.price).toLocaleString("en-IN")} each, ₹${order.valueInr.toLocaleString("en-IN")} total.`,
-          question: "Want the invoice?",
+          core: `${wants} × ${match.product.name}, ${match.variant.optionA} / ${match.variant.optionB} is in stock.`,
+          detail: `₹${toRupees(match.product.price).toLocaleString("en-IN")} each, ₹${order.valueInr.toLocaleString("en-IN")} total. It's yours once paid.`,
         };
       } else {
         record("inventory_twin.shortfall", "inventory", `sku=${match.sku} requested=${wants} available=${available}`);
@@ -346,6 +337,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         });
         order = { id: created.id, valueInr: toRupees(created.value) };
         record("order_twin.created", "order", `${created.id} status=quoted value=${toRupees(created.value)} source=purchase_order`);
+        record(...effectArgs(holdEffect(created.id, wants, reservedUntil)));
 
         runs.push({
           agent: "Sales",
@@ -416,7 +408,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       } else {
         runs.push({ agent: "Inventory", action: `Checked ${match.sku}, ${available} available`, touchesMoney: false, ms: 320 });
         parts = available > 0
-          ? { core: `${available} left in ${match.variant.optionA} / ${match.variant.optionB}.`, detail: knowledge?.body, question: "Want me to hold one for 24 hours?" }
+          ? { core: `${available} left in ${match.variant.optionA} / ${match.variant.optionB}.`, detail: knowledge?.body, question: "Shall I send you the invoice and a payment link?" }
           : { core: `None left in ${match.variant.optionA} / ${match.variant.optionB}.`, detail: `I can restock in ${match.product.leadTimeDays} days.`, question: "Shall I put you down for it?" };
       }
     } else if (extracted.intent === "buy" && match) {

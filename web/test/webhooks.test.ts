@@ -569,7 +569,7 @@ describe("the X route", () => {
 // ----------------------------------------------------- the loop, intact --
 
 describe("the loop an inbound message sets off", () => {
-  it("builds the twins, reserves the stock, quotes the order and sends the reply", async () => {
+  it("builds the twins, quotes the order and sends the reply with its invoice link", async () => {
     const before = await prisma.variant.findFirstOrThrow({
       where: { optionA: "L", optionB: "Olive", product: { workspaceId: alpha, name: "Polo Classic" } },
     });
@@ -590,7 +590,7 @@ describe("the loop an inbound message sets off", () => {
     expect(order.value).toBe(1196 * 2 * 100);
 
     const after = await prisma.variant.findUniqueOrThrow({ where: { id: before.id } });
-    expect(after.reserved).toBe(before.reserved + 2);
+    expect(after.reserved).toBe(before.reserved);
 
     expect(await prisma.agentRun.count({ where: { workspaceId: alpha } })).toBeGreaterThan(0);
     expect(await prisma.twinEvent.count({ where: { workspaceId: alpha } })).toBeGreaterThan(0);

@@ -60,6 +60,12 @@ const EXEMPT: Record<string, string> = {
   "/v1/webchat/[workspaceId]/updates": "public widget; likewise",
   "/v1/webchat/[workspaceId]/contact": "public widget; likewise",
 
+  // The customer's invoice link. The customer has no account; the token is an
+  // HMAC over the invoice number (`invoiceToken`), and the tenant is the one
+  // that owns the invoice it names. A token that does not verify is a 404.
+  "/i/[token]/pay": "the customer's signed invoice link; the invoice it names decides the tenant",
+  "/i/[token]/pdf": "the customer's signed invoice link; likewise",
+
   // A generated site is served to strangers, and the calculator on it has to
   // work for them. The slug names the site; nothing is written.
   "/v1/builder/sites/[slug]/quote": "public site calculator; the slug names the site and nothing is written",

@@ -5,6 +5,7 @@ import { prisma } from "@/server/lib/prisma";
 import { executeSkill } from "@/server/agents/execute";
 import { parseGuardrails } from "@/server/agents/guardrails";
 import { setPaymentProvider, type PaymentProvider } from "@/server/lib/payments";
+import { settleInvoice } from "@/server/services/checkout";
 import { dispatch, subscribe } from "@/server/services/webhooks";
 
 /**
@@ -166,9 +167,11 @@ describe("PRD §6 Use Case 1 — autonomous conversational commerce", () => {
       args: { product: "Polo Classic", optionA: "XL", optionB: "Cobalt" },
     });
     if (lookup.status === "refused") throw new Error(lookup.reason);
-    // 600 in stock, 400 now reserved against this very order.
+    // 600 in stock, none of it taken yet: a quote holds nothing until it is
+    // paid. (The PRD locks stock on checkout-link generation; the operator
+    // chose lock-on-payment instead, 2026-10-18 — see services/checkout.ts.)
     expect(lookup.data.variants).toEqual([
-      expect.objectContaining({ stock: STOCK, reserved: WANTED, available: STOCK - WANTED }),
+      expect.objectContaining({ stock: STOCK, reserved: 0, available: STOCK }),
     ]);
 
     /* --------------------- twin validation: $8.50 clears the $8.40 floor */
@@ -191,13 +194,9 @@ describe("PRD §6 Use Case 1 — autonomous conversational commerce", () => {
     expect(ingested.body.held).toBe(false);
     expect(order.creditHold).toBe(false);
 
-    /* ------------------------------- execution: 400 units actually locked */
-    const variant = await prisma.variant.findFirstOrThrow({ where: { id: variantId } });
-    expect(variant.reserved).toBe(WANTED);
-    expect(variant.stock - variant.reserved).toBe(STOCK - WANTED);
-
-    // And the lock is the PRD's four-hour one, not a permanent one.
-    expect(order.reservedUntil).not.toBeNull();
+    /* ------------------------------ execution: nothing locked before payment */
+    expect((await prisma.variant.findFirstOrThrow({ where: { id: variantId } })).reserved).toBe(0);
+    expect(order.reservedUntil).toBeNull();
 
     /* ----------------------------------- execution: the checkout generated */
     const provider: PaymentProvider = {
@@ -224,6 +223,18 @@ describe("PRD §6 Use Case 1 — autonomous conversational commerce", () => {
     if (checkout.status === "refused") throw new Error(checkout.reason);
     expect(checkout.data.checkoutUrl).toBe(`https://pay.example/${checkout.data.invoiceNumber}`);
     expect(checkout.data.amountMinorUnits).toBe(order.value);
+
+    /* ------------------------ execution: paid, and 400 units actually locked */
+    const settled = await settleInvoice(workspaceId, String(checkout.data.invoiceNumber), {
+      method: "card", reference: "cs_uc1", by: "stripe",
+    });
+    expect(settled.ok).toBe(true);
+    const variant = await prisma.variant.findFirstOrThrow({ where: { id: variantId } });
+    expect(variant.reserved).toBe(WANTED);
+    expect(variant.stock - variant.reserved).toBe(STOCK - WANTED);
+    // Paid holds its stock until it ships: no four-hour expiry on it.
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } }))
+      .toMatchObject({ stage: "Paid", reservedUntil: null });
 
     /* ---------------------------------- execution: the reply, on WhatsApp */
     const reply = conversation.messages.find((message) => message.from === "agent");
@@ -253,14 +264,14 @@ describe("PRD §6 Use Case 1 — autonomous conversational commerce", () => {
         "message.received",
         "intent.extracted",
         "product_twin.matched",
-        "inventory_twin.reserved",
-        "inventory_twin.hold_placed",
         "order_twin.created",
         "lead.scored",
         "agent.dispatched",
         "pricing.evaluated",
         "invoice.issued",
         "checkout.link_created",
+        "payment.received",
+        "inventory_twin.reserved",
       ]),
     );
   });

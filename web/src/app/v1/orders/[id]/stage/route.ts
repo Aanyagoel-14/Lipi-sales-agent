@@ -3,7 +3,7 @@ import { body, HttpError, json, route } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
 import { requireUser } from "@/server/lib/session";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
-import { firmUpReservation } from "@/server/services/reservations";
+import { firmUpReservation, holdsStock } from "@/server/services/reservations";
 import { recordEvent } from "../../../events";
 
 /**
@@ -55,6 +55,7 @@ export const POST = route<{ id: string }>(async (req, { id: orderId }) => {
   // for the first time (order.stage captured before the update, inside the
   // same transaction as the mutation).
   const wasDelivered = order.stage === "Delivered";
+  const held = holdsStock(order);
 
   await prisma.$transaction(async (tx) => {
     await tx.order.update({ where: { id: orderId }, data: { stage: data.stage, blocked: null } });
@@ -68,6 +69,17 @@ export const POST = route<{ id: string }>(async (req, { id: orderId }) => {
       await firmUpReservation(tx, orderId);
       await recordEvent(workspaceId, "inventory_twin.hold_confirmed", "inventory",
         `order=${orderId} qty=${order.qty} held_until=${order.reservedUntil.toISOString()}`);
+    } else if (data.stage === "Confirmed" && !held) {
+      // A quote that held nothing — the customer agreed some other way than
+      // the payment link, by bank transfer or in person. The stock is taken
+      // now, and only if it is still there: confirming an order the shelf
+      // cannot fill is a promise the twin would then have to break.
+      const variant = await tx.variant.findUniqueOrThrow({ where: { id: order.variantId } });
+      const available = variant.stock - variant.reserved;
+      if (available < order.qty) throw new HttpError(409, `Only ${Math.max(available, 0)} left — not enough to confirm ${order.qty}`);
+      await tx.variant.update({ where: { id: order.variantId }, data: { reserved: { increment: order.qty } } });
+      await recordEvent(workspaceId, "inventory_twin.reserved", "inventory",
+        `order=${orderId} qty=${order.qty} remaining=${available - order.qty} via=confirmed`);
     }
 
     // Returned before anything shipped releases the hold too: the customer has
@@ -83,7 +95,7 @@ export const POST = route<{ id: string }>(async (req, { id: orderId }) => {
       });
       await recordEvent(workspaceId, "inventory_twin.settled", "inventory",
         `order=${orderId} sku_variant=${order.variantId} qty=${order.qty} stock-=${order.qty} reserved-=${order.qty} (delivered)`);
-    } else if (data.stage === "Returned") {
+    } else if (data.stage === "Returned" && held) {
       await tx.variant.update({
         where: { id: order.variantId },
         data: {

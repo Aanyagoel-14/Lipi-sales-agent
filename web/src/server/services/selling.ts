@@ -1,6 +1,7 @@
 import { env } from "../env";
 import { chatForReply } from "../lib/openrouter";
 import { checkModelBudget, type ModelMeter } from "../lib/metering";
+import { publicInvoiceUrl } from "../lib/payments";
 import { prisma } from "../lib/prisma";
 import { toRupees } from "../lib/money";
 import { buildGrounding } from "./briefing";
@@ -63,7 +64,11 @@ export type SellResult = {
    *  on another twin here — the operator's flag, never a merge. */
   contact: IngestResult["contact"];
   order: (IngestResult["order"] & { stage: string }) | null;
-  invoice: { number: string; amountInr: number; dueIso: string; url: string } | null;
+  /**
+   * `url` is the dashboard's PDF; `link` is the customer's own invoice page,
+   * signed, with the way to pay on it. `link` is what the reply carries.
+   */
+  invoice: { number: string; amountInr: number; dueIso: string; url: string; link: string } | null;
   intent: string;
   held: boolean;
   degraded?: string;
@@ -184,14 +189,16 @@ function outcome(result: IngestResult, invoice: SellResult["invoice"]) {
   if (result.order) {
     lines.push(
       `AN ORDER WAS CREATED: ${result.order.id}, total INR ${result.order.valueInr.toLocaleString("en-IN")}. ` +
-        `Stock is reserved for them. Confirm this warmly and say what happens next.`,
+        "It is NOT reserved yet: it is set aside for them the moment they pay. Confirm the order warmly and tell " +
+        "them to pay through the link below to secure it. The link is added after your message automatically — " +
+        "never write a URL yourself.",
     );
   }
 
   if (invoice) {
     lines.push(
       `Invoice ${invoice.number} has been raised for INR ${invoice.amountInr.toLocaleString("en-IN")}, ` +
-        `due ${invoice.dueIso}. Tell them it is ready to download.`,
+        `due ${invoice.dueIso}. Their invoice and its payment link are added below your message automatically.`,
     );
   }
 
@@ -238,7 +245,7 @@ How to reply:
 - Sell. Recommend something specific, say why, and end with a question that moves them forward — which size, how many, shall I reserve it.
 - WHAT YOU MAY RECOMMEND IS ALREADY CHOSEN. If there is a "WHAT TO PUT IN FRONT OF THEM" list above, the alternative, the companion or the step up comes from it, with its price and its count as written. Do not substitute a product of your own choosing, and if that list says nothing replaces what they wanted, say exactly that rather than reaching for something else.
 - HANDLING AN OBJECTION IS A MATTER OF WORDS, NOT OF PRICE. If they say it is too expensive, hesitate, or compare you to someone cheaper: you may say what makes it worth it, restate a policy written above, or put a cheaper in-stock option from the lists above in front of them. You may NEVER offer a discount, a percentage off, free delivery, a waived fee or a thrown-in extra — none of that is yours to give, and a reply that does it is thrown away. If they ask for a discount outright, tell them what the policy above says about pricing, if it says anything, and that anything beyond it needs a person.
-- BUT if an order was already created above, the sale is closed: do not ask "shall I reserve/proceed/go ahead". Confirm it, tell them the invoice is ready, and ask only whether they need anything else.
+- BUT if an order was already created above, do not ask "shall I reserve/proceed/go ahead". Confirm it, tell them to pay through the link below to secure it, and ask only whether they need anything else. Never say it is reserved or held for them: it is not, until they pay.
 - ASKING WHO THEY ARE IS NOT YOURS TO DECIDE EITHER. Ask for a contact detail only when the block above says "ASK THEM FOR", and only for that one thing. Never ask for two, never ask for something the block says they have already given, and never make answering a condition of helping them.
 - Put the closing question on its own line, after any list. Never let it run onto the end of a list item.
 - When you are showing more than one option, lay them out as a list with a real newline before each "- ", one product per line with its price. Never bury choices in a paragraph.
@@ -290,15 +297,40 @@ export function repairSettledSale(reply: string, signOff: string | null, invoice
   if (repaired.length < 20) return null;
 
   repaired += invoiceNumber
-    ? ` Invoice ${invoiceNumber} is ready to download.`
-    : " It is reserved for you.";
+    ? ` Invoice ${invoiceNumber} is below — pay through the link to secure it.`
+    : " Pay through the link below to secure it.";
 
   return signOff ? `${repaired}\n${signOff}` : repaired;
 }
 
 const WANTS_INVOICE = /\b(invoice|bill|receipt|proforma)\b/i;
 
-export async function sell(input: {
+/**
+ * The customer's invoice link, on every reply that has an invoice.
+ *
+ * Added here rather than asked of the model: the model may paraphrase or drop
+ * a URL, and a sale whose payment link went missing is a sale that does not
+ * happen. Every path out of `sellOnce()` — the model's words, the template, a
+ * degraded fallback — passes through this, and the stored message is
+ * rewritten to match, because it is the row the channel delivers.
+ */
+export async function sell(input: Parameters<typeof sellOnce>[0]): Promise<SellResult> {
+  const result = await sellOnce(input);
+  if (!result.invoice || result.reply.includes(result.invoice.link)) return result;
+
+  // Above the sign-off, so the message still ends the way the business signs.
+  const signOff = (await prisma.twinVoice.findUnique({
+    where: { workspaceId: input.workspaceId }, select: { signOff: true },
+  }))?.signOff;
+  const line = `Your invoice and payment link: ${result.invoice.link}`;
+  const reply = signOff && result.reply.endsWith(signOff)
+    ? `${result.reply.slice(0, -signOff.length).trimEnd()}\n\n${line}\n${signOff}`
+    : `${result.reply}\n\n${line}`;
+  await prisma.message.update({ where: { id: result.replyMessageId }, data: { text: reply } });
+  return { ...result, reply };
+}
+
+async function sellOnce(input: {
   workspaceId: string;
   channel: Channel;
   handle: string;
@@ -350,6 +382,7 @@ export async function sell(input: {
       amountInr: toRupees(row.amount),
       dueIso: row.dueOn.toISOString().slice(0, 10),
       url: `/v1/invoices/${encodeURIComponent(row.number)}/pdf`,
+      link: publicInvoiceUrl(row.number),
     };
   }
 

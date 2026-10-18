@@ -20,7 +20,8 @@ const buy = (text: string, handle = "+91 90 000 5555") =>
 beforeEach(async () => { await resetDatabase(); });
 
 describe("selling", () => {
-  it("reserves real stock and creates a real order", async () => {
+  // Stock is taken when they pay (`checkout.ts`); a message only quotes it.
+  it("creates a real order without taking stock until it is paid", async () => {
     await setup();
     const before = await prisma.variant.findFirstOrThrow({
       where: { optionA: "XL", optionB: "Cobalt", product: { workspaceId, name: "Polo Classic" } },
@@ -29,7 +30,7 @@ describe("selling", () => {
     const result = await buy("I need 2 blue XL polos");
 
     const after = await prisma.variant.findUniqueOrThrow({ where: { id: before.id } });
-    expect(after.reserved).toBe(before.reserved + 2);
+    expect(after.reserved).toBe(before.reserved);
     expect(result.order).not.toBeNull();
     expect(await prisma.order.count({ where: { workspaceId } })).toBe(1);
   });
@@ -130,6 +131,19 @@ describe("invoicing", () => {
     const events = await prisma.twinEvent.findMany({ where: { workspaceId, type: "invoice.issued" } });
     expect(events).toHaveLength(1);
   });
+
+  // Whatever wrote the words, the customer gets a way to pay, and the stored
+  // message — the one a channel delivers — says the same.
+  it("puts the invoice link in the reply, above the sign-off", async () => {
+    await setup();
+    await prisma.twinVoice.update({ where: { workspaceId }, data: { signOff: "— Test Co" } });
+    const result = await buy("I need 2 blue XL polos");
+
+    expect(result.invoice?.link).toMatch(/\/i\/[\w-]+\.[\w-]+$/);
+    expect(result.reply).toContain(`Your invoice and payment link: ${result.invoice!.link}\n— Test Co`);
+    const stored = await prisma.message.findUniqueOrThrow({ where: { id: result.replyMessageId } });
+    expect(stored.text).toBe(result.reply);
+  });
 });
 
 describe("voicing the reply", () => {
@@ -147,14 +161,15 @@ describe("voicing the reply", () => {
     const result = await buy("I need 2 blue XL polos");
 
     expect(result.voicedBy).toBe("openrouter");
-    expect(result.reply).toBe("Lovely, those are reserved for you.");
+    expect(result.reply).toBe(`Lovely, those are reserved for you.\n\nYour invoice and payment link: ${result.invoice!.link}`);
     expect(system).toContain("AN ORDER WAS CREATED");
+    expect(system).toContain("NOT reserved yet");
     expect(system).toContain(result.order!.id);
     // The conversation must show what the customer was actually sent.
     const message = await prisma.message.findFirstOrThrow({
       where: { conversationId: result.conversationId, from: "agent" },
     });
-    expect(message.text).toBe("Lovely, those are reserved for you.");
+    expect(message.text).toBe(result.reply);
   });
 
   it("grounds the prompt in the policies the message asks about, and says which", async () => {
@@ -192,7 +207,8 @@ describe("voicing the reply", () => {
     expect(result.voicedBy).toBe("template");
     expect(result.degraded).toContain("402");
     expect(result.order).not.toBeNull();
-    expect(result.reply).toContain("Reserved");
+    expect(result.reply).toContain("It's yours once paid.");
+    expect(result.reply).toContain(result.invoice!.link);
   });
 
   /**
@@ -390,7 +406,7 @@ describe("a sale that is already made", () => {
   it("cuts the question and confirms the invoice instead", () => {
     const asked = "Hi! XL / Olive Polo Classic is in stock with 9 available. At ₹1,196 each, 2 would be ₹2,392. Shall I reserve them for you? — Test Co";
     expect(repairSettledSale(asked, "— Test Co", "INV-2026-0001-abcd")).toBe(
-      "Hi! XL / Olive Polo Classic is in stock with 9 available. At ₹1,196 each, 2 would be ₹2,392. Invoice INV-2026-0001-abcd is ready to download.\n— Test Co",
+      "Hi! XL / Olive Polo Classic is in stock with 9 available. At ₹1,196 each, 2 would be ₹2,392. Invoice INV-2026-0001-abcd is below — pay through the link to secure it.\n— Test Co",
     );
   });
 
@@ -402,7 +418,7 @@ describe("a sale that is already made", () => {
   ])("catches %j", (question) => {
     const reply = `Two Polo Classic in XL / Olive at ₹1,196 each, ₹2,392 total. ${question}`;
     expect(repairSettledSale(reply, null, null)).toBe(
-      "Two Polo Classic in XL / Olive at ₹1,196 each, ₹2,392 total. It is reserved for you.",
+      "Two Polo Classic in XL / Olive at ₹1,196 each, ₹2,392 total. Pay through the link below to secure it.",
     );
   });
 

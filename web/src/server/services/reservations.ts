@@ -113,6 +113,18 @@ export async function firmUpReservation(tx: Tx, orderId: string) {
   await tx.order.update({ where: { id: orderId }, data: { reservedUntil: null } });
 }
 
+/**
+ * Whether this order has stock set aside for it right now.
+ *
+ * Past `Quoted` it always does — it was paid for or confirmed. At `Inquiry`
+ * or `Quoted` it does only while a provisional hold is live: a quote from a
+ * chat holds nothing until it is paid (`services/checkout.ts`), and a hold
+ * the sweep let go has already handed its units back. Releasing stock for an
+ * order that holds none would hand out someone else's reservation.
+ */
+export const holdsStock = (order: { stage: string; reservedUntil: Date | null }) =>
+  !(PROVISIONAL as readonly string[]).includes(order.stage) || order.reservedUntil !== null;
+
 /** The effects a caller should append when it reserves with a hold. */
 export const holdEffect = (orderId: string, qty: number, until: Date): TwinEffect => ({
   type: "inventory_twin.hold_placed",
