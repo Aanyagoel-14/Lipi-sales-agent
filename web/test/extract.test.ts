@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectContact, extractWithRules, vocabularyFor } from "@/server/services/extract";
+import { detectContact, extractWithRules, guardBuy, vocabularyFor } from "@/server/services/extract";
 
 const apparel = vocabularyFor("apparel");
 const parts = vocabularyFor("auto_parts");
@@ -145,6 +145,43 @@ describe("ways of saying buy", () => {
  * something that is not one. So these cases run against `detectContact`
  * directly — it is the same function on both extraction paths.
  */
+/**
+ * `buy` is the intent that reserves stock and writes an invoice. A model read
+ * "Do u have polo in L?" as `buy`, live on Instagram, and the customer was
+ * told a polo had been put aside for them. Whatever the model says, a stock
+ * question with no word of wanting the thing is answered, not acted on.
+ */
+describe("a stock question is never a purchase", () => {
+  const asBuy = (text: string) => ({ ...extractWithRules(text, apparel, AUG), intent: "buy" as const });
+
+  it.each([
+    "Do u have polo in L?",
+    "do you have the chino in 32",
+    "is the olive polo available?",
+    "have you got any polos in XL",
+  ])("overrules a model that read %j as buy", (text) => {
+    expect(guardBuy(asBuy(text), text).intent).toBe("inventory_request");
+  });
+
+  it.each([
+    "Do you have polo in L? I'll take two",
+    "do u have the olive one, I want 3",
+    "is it available? can I get one in L",
+    "need 2 olive L polos",
+  ])("leaves %j a purchase", (text) => {
+    expect(guardBuy(asBuy(text), text).intent).toBe("buy");
+  });
+
+  it("leaves every other intent alone", () => {
+    const quote = { ...extractWithRules("how much is the polo", apparel, AUG), intent: "quote_request" as const };
+    expect(guardBuy(quote, "how much is the polo")).toBe(quote);
+  });
+
+  it("reads it the same way without a model", () => {
+    expect(extractWithRules("Do u have polo in L?", apparel, AUG).intent).toBe("inventory_request");
+  });
+});
+
 describe("contact details a visitor types in passing", () => {
   it.each([
     ["mail me at priya@shop.test", "priya@shop.test"],

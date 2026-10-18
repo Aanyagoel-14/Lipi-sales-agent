@@ -261,6 +261,35 @@ function matchOption(text: string, options: string[], aliases: Record<string, st
   return null;
 }
 
+/**
+ * Asking whether something is there. "do u have", "got any", "is it
+ * available" — a question about stock, which a shop answers and does not
+ * act on.
+ */
+const ASKS_STOCK = /\b(in stock|back in stock|available|availability|do (?:you|u|ya) have|have (?:you|u) got|got any)\b/;
+
+/**
+ * Saying "I want it". A stock question that also says one of these — "do
+ * you have the polo in L? I'll take two" — is a purchase.
+ */
+const COMMITS = /\b(need|want|order|buy|send me|take|purchase|give me|get me|grab|reserve|book|add|i'?ll have|(?:can|could|may) i (?:get|have))\b/;
+
+/**
+ * Whatever read the message, a stock question with no word of wanting it is
+ * not a purchase.
+ *
+ * `buy` is the one intent that writes: it reserves stock, opens an order and
+ * issues an invoice. A model that reads "Do u have polo in L?" as `buy` —
+ * which one did, live — commits stock the customer never asked for and tells
+ * them so. That decision is a fact, and facts are decided in code; the model
+ * only proposes it.
+ */
+export function guardBuy(result: ExtractionResult, text: string): ExtractionResult {
+  if (result.intent !== "buy") return result;
+  const t = text.toLowerCase();
+  return ASKS_STOCK.test(t) && !COMMITS.test(t) ? { ...result, intent: "inventory_request" } : result;
+}
+
 export function extractWithRules(text: string, vocab: Vocabulary, now = new Date()): ExtractionResult {
   const t = text.toLowerCase();
 
@@ -269,11 +298,11 @@ export function extractWithRules(text: string, vocab: Vocabulary, now = new Date
     : /\b(po|purchase order|net \d+)\b/.test(t) ? "purchase_order"
     : /\b(price|pricing|rate|cost|discount|quote|quotation|how much)\b/.test(t) ? "quote_request"
     : /\b(broken|damaged|faulty|complain|terrible|awful)\b/.test(t) ? "complaint"
-    : /\b(in stock|back in stock|available|availability|do you have|got any)\b/.test(t) ? "inventory_request"
+    : ASKS_STOCK.test(t) ? "inventory_request"
     // "give me two polos" is as much a purchase as "I need two polos". A
     // buy phrase the rules do not know reads as `other`, and the twin answers
     // "let me look into that" to someone who was ready to pay.
-    : /\b(need|want|order|buy|send me|take|purchase|give me|get me|grab|reserve|book|add)\b/.test(t) ? "buy"
+    : COMMITS.test(t) ? "buy"
     : /\b(where|help|how|when|status|fit|fits)\b/.test(t) ? "support"
     : "other";
 
@@ -316,6 +345,10 @@ Valid ${vocab.axes[1]} values: ${vocab.optionsB.join(", ")}.
 Valid categories: ${[...new Set(Object.values(vocab.categories))].join(", ")}.
 
 Intent definitions — read carefully, these two are the ones most often confused:
+- "inventory_request": asking whether something is in stock or available, without
+  asking to have it. "Do you have polo in L?", "do u have the chino in 32",
+  "is the olive one available", "any shirts in XL?" are ALL "inventory_request".
+  Never "buy": nothing has been asked for yet.
 - "buy": an ordinary retail purchase request, however it is phrased. "I need 3 olive
   L polos", "send me two", "can I get one in XL" are ALL "buy", even though the
   customer is technically issuing a verbal purchase order for goods. The mere
@@ -404,7 +437,7 @@ export async function extract(
   }
 
   try {
-    return await extractWithOpenRouter(text, vocab, now, meter);
+    return guardBuy(await extractWithOpenRouter(text, vocab, now, meter), text);
   } catch (error) {
     console.warn(`[extract] OpenRouter failed, using rules: ${(error as Error).message}`);
     return extractWithRules(text, vocab, now);

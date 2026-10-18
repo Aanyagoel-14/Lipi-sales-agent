@@ -48,6 +48,10 @@ const schema = z.object({
   // there is no per-tenant equivalent and never was.
   META_APP_SECRET: z.string().optional(),
   META_VERIFY_TOKEN: z.string().optional(),
+  // Instagram API with Instagram Login — the API Composio's Instagram toolkit
+  // speaks — gives the same Meta app a second id and secret of its own, and
+  // Meta signs Instagram webhooks with that one rather than the App Secret.
+  INSTAGRAM_APP_SECRET: z.string().optional(),
 
   // ------------------------------------------------------------------- X --
   // Lipi's own X app, the same shape as the Meta one. X signs every Account

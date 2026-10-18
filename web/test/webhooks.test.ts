@@ -213,6 +213,21 @@ describe("routing one URL to many tenants", () => {
     expect(await conversationsIn(beta)).toHaveLength(0);
   });
 
+  // Instagram Login signs with the app's Instagram secret, not the App Secret.
+  it("accepts an Instagram DM signed with the Instagram app secret", async () => {
+    const body = messagingBody("instagram", B.ig, "is the linen shirt in stock");
+    const original = env.INSTAGRAM_APP_SECRET;
+    env.INSTAGRAM_APP_SECRET = "test-instagram-app-secret";
+    try {
+      await deliver(body, sign(body, "test-instagram-app-secret")).expect(200);
+      await deliver(body, sign(body, "some-other-secret")).expect(401);
+    } finally {
+      env.INSTAGRAM_APP_SECRET = original;
+    }
+    await settle();
+    expect(await conversationsIn(beta)).toHaveLength(1);
+  });
+
   it("delivers an Instagram DM by professional account id", async () => {
     await deliver(messagingBody("instagram", B.ig, "is the linen shirt in stock")).expect(200);
     await settle();
