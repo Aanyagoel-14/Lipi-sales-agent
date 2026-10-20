@@ -191,7 +191,7 @@ describe("an order confirmed by hand", () => {
     expect(await prisma.order.findUniqueOrThrow({ where: { id: result.order!.id } })).toMatchObject({ stage: "Quoted" });
   });
 
-  // An unpaid quote held nothing, so returning it must not hand back
+  // An unpaid quote held nothing, so cancelling it must not hand back
   // somebody else's reservation.
   it("releases nothing for a quote that was never paid", async () => {
     const { result } = await quote();
@@ -199,7 +199,7 @@ describe("an order confirmed by hand", () => {
     await prisma.variant.update({ where: { id: v.id }, data: { reserved: 5 } });
     const app = await signedIn();
 
-    await app.post(`/v1/orders/${result.order!.id}/stage`).send({ stage: "Returned" }).expect(200);
+    await app.post(`/v1/orders/${result.order!.id}/stage`).send({ stage: "Cancelled" }).expect(200);
 
     expect((await variant()).reserved).toBe(5);
   });

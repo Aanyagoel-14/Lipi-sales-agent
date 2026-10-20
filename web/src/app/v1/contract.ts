@@ -35,12 +35,16 @@ export const channel = z.enum(["whatsapp", "instagram", "facebook", "telegram", 
  * `Inquiry` and `Confirmed` were added when the state machine was completed to
  * the PRD's chain. Both are additive — no existing member changed spelling and
  * none was removed — so a consumer that only ever reads the old six keeps
- * working. What *did* change is the transition rule: `POST /v1/orders/{id}/stage`
- * moves one step forward, so `Quoted -> Paid` is now `Quoted -> Confirmed ->
- * Paid`. See `docs/impl/DECISIONS.md` D-018.
+ * working. `Cancelled` was added the same way: an order withdrawn before any
+ * money changed hands, where `Returned` is one that came back after.
+ *
+ * `POST /v1/orders/{id}/stage` moves an order the way a shop does rather than
+ * one rung at a time: a quote may be paid directly, a confirmed order on
+ * credit terms may be packed before it is paid, and nothing goes backwards.
+ * The route states what each stage may move to.
  */
 export const orderStage = z.enum([
-  "Inquiry", "Quoted", "Confirmed", "Paid", "Packed", "Shipped", "Delivered", "Returned",
+  "Inquiry", "Quoted", "Confirmed", "Paid", "Packed", "Shipped", "Delivered", "Returned", "Cancelled",
 ]);
 
 const isoString = z.iso.datetime();

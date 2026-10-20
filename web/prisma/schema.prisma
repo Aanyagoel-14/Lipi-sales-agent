@@ -63,6 +63,8 @@ enum OrderStage {
   Shipped
   Delivered
   Returned
+  /// Withdrawn before any money changed hands. A paid order that comes back is Returned.
+  Cancelled
 }
 
 enum RunStatus {

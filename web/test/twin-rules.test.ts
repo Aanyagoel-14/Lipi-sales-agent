@@ -352,10 +352,77 @@ describe("the completed order state machine", () => {
     expect(order.stage).toBe("Delivered");
   });
 
-  it("refuses to skip Confirmed", async () => {
+  // A quote paid by bank transfer is simply paid. Marking it so records the
+  // payment and takes the stock exactly as the payment link does, so the
+  // stock table does not go on offering a unit somebody has bought.
+  it("pays a quote directly, recording the payment and reserving the stock", async () => {
     const { id, agent } = await anOrder();
+    const before = (await variantOf("L", "Olive")).reserved;
+
+    await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Paid", method: "bank_transfer", reference: "NEFT 4412" }).expect(200);
+
+    const order = await prisma.order.findFirstOrThrow({ where: { id } });
+    expect(order.stage).toBe("Paid");
+    expect((await variantOf("L", "Olive")).reserved).toBe(before + 2);
+    const payment = await prisma.payment.findFirstOrThrow({ where: { invoice: { orderId: id } } });
+    expect(payment).toMatchObject({ method: "bank_transfer", reference: "NEFT 4412", loggedBy: "owner@test.local" });
+  });
+
+  it("refuses to mark paid what the shelf cannot fill", async () => {
+    const { id, agent } = await anOrder();
+    const variant = await variantOf("L", "Olive");
+    await prisma.variant.update({ where: { id: variant.id }, data: { reserved: variant.stock } });
+
     const res = await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Paid" }).expect(409);
-    expect(res.body.error).toContain("Quoted moves to Confirmed next");
+    expect(res.body.error).toMatch(/sold out/);
+    expect((await prisma.order.findFirstOrThrow({ where: { id } })).stage).toBe("Quoted");
+  });
+
+  // An order nobody paid for is cancelled, not returned; it held nothing, so
+  // nothing is given back. A confirmed one did hold its stock, which is.
+  it("cancels an unpaid quote without touching stock", async () => {
+    const { id, agent } = await anOrder();
+    const before = (await variantOf("L", "Olive")).reserved;
+
+    await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Cancelled" }).expect(200);
+
+    expect(await prisma.order.findFirstOrThrow({ where: { id } })).toMatchObject({ stage: "Cancelled", blocked: "Cancelled by owner@test.local" });
+    expect((await variantOf("L", "Olive")).reserved).toBe(before);
+  });
+
+  it("cancels a confirmed order and gives its stock back", async () => {
+    const { id, agent } = await anOrder();
+    await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Confirmed" }).expect(200);
+    const held = (await variantOf("L", "Olive")).reserved;
+
+    await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Cancelled" }).expect(200);
+
+    expect((await variantOf("L", "Olive")).reserved).toBe(held - 2);
+  });
+
+  it("does not cancel what has been paid for", async () => {
+    const { id, agent } = await anOrder();
+    await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Paid" }).expect(200);
+    const res = await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Cancelled" }).expect(409);
+    expect(res.body.error).toContain("Paid can move to Packed, Returned");
+  });
+
+  // Credit terms: a confirmed purchase order ships before the money arrives.
+  it("packs a confirmed order before it is paid", async () => {
+    const { id, agent } = await anOrder();
+    await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Confirmed" }).expect(200);
+    await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Packed" }).expect(200);
+    expect((await prisma.order.findFirstOrThrow({ where: { id } })).stage).toBe("Packed");
+  });
+
+  it("tells the customer when it ships", async () => {
+    const { id, agent } = await anOrder();
+    for (const stage of ["Paid", "Packed", "Shipped"]) {
+      await agent.post(`/v1/orders/${id}/stage`).send({ stage }).expect(200);
+    }
+
+    const note = await prisma.message.findFirst({ where: { text: { startsWith: `Your order ${id}` } } });
+    expect(note?.text).toContain("has shipped");
   });
 
   it("still refuses to go backwards", async () => {
@@ -366,6 +433,9 @@ describe("the completed order state machine", () => {
 
   it("releases the hold when an order is returned before it ever shipped", async () => {
     const { id, agent } = await anOrder();
+    // Paid reserves the two units; returning before dispatch hands them back.
+    await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Paid" }).expect(200);
+    expect((await variantOf("L", "Olive")).reserved).toBe(2);
     await agent.post(`/v1/orders/${id}/stage`).send({ stage: "Returned" }).expect(200);
 
     const order = await prisma.order.findFirstOrThrow({ where: { id } });

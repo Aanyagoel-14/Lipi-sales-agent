@@ -49,21 +49,84 @@ export function ApprovalDecision({ id }: { id: string }) {
   );
 }
 
-const STAGES = ["Quoted", "Paid", "Packed", "Shipped", "Delivered"] as const;
+const PAYMENT_METHODS = [
+  ["upi", "UPI"], ["bank_transfer", "Bank transfer"], ["cash", "Cash"], ["card", "Card"],
+] as const;
+type PaymentMethod = (typeof PAYMENT_METHODS)[number][0];
 
-export function StageAction({ id, stage }: { id: string; stage: string }) {
+/** The one stage each may step to next; the route holds the full table. */
+const NEXT: Record<string, string> = {
+  Confirmed: "Packed", Paid: "Packed", Packed: "Shipped", Shipped: "Delivered", Delivered: "Returned",
+};
+const OPEN = ["Inquiry", "Quoted", "Confirmed"];
+
+type OrderLike = { id: string; stage: string; payment: string; payLink?: string };
+
+/**
+ * What the operator may do with an order, by where it is. An unpaid order
+ * can be paid (the payment is recorded and the stock taken, exactly as the
+ * link does it) or cancelled; a paid or confirmed one moves on through
+ * fulfilment. The pay link is there to hand to a customer who lost it.
+ */
+export function OrderActions({ order }: { order: OrderLike }) {
   const { run, busy, error } = useAction();
-  const index = STAGES.indexOf(stage as (typeof STAGES)[number]);
-  const next = index >= 0 && index < STAGES.length - 1 ? STAGES[index + 1] : null;
+  const [method, setMethod] = useState<PaymentMethod>("upi");
+  const [copied, setCopied] = useState(false);
 
-  if (!next) return <span className="text-[0.6875rem] text-ink-subtle">no next stage</span>;
+  const move = (stage: string, extra: Record<string, unknown> = {}) =>
+    run(`orders/${order.id}/stage`, { method: "POST", body: JSON.stringify({ stage, ...extra }) });
+
+  const next = NEXT[order.stage];
+  const open = OPEN.includes(order.stage);
+  const canPay = open && order.payment !== "paid";
+  if (!next && !open) return <span className="text-[0.6875rem] text-ink-subtle">closed</span>;
+
+  const copy = async () => {
+    if (!order.payLink) return;
+    try {
+      await navigator.clipboard.writeText(order.payLink);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard access refused; the link is still on the invoice page.
+    }
+  };
 
   return (
-    <div className="flex flex-col gap-1">
-      <Button size="sm" variant="secondary" chevron={false} disabled={busy}
-        onClick={() => run(`orders/${id}/stage`, { method: "POST", body: JSON.stringify({ stage: next }) })}>
-        {busy ? "…" : `Mark ${next}`}
-      </Button>
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
+        {canPay ? (
+          <>
+            <select
+              value={method}
+              onChange={(e) => setMethod(e.target.value as PaymentMethod)}
+              disabled={busy}
+              aria-label="Payment method"
+              className="rounded-md border border-line bg-surface px-1.5 py-1 text-[0.6875rem] text-ink"
+            >
+              {PAYMENT_METHODS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <Button size="sm" chevron={false} disabled={busy} onClick={() => move("Paid", { method })}>
+              {busy ? "…" : "Record payment"}
+            </Button>
+          </>
+        ) : null}
+        {next ? (
+          <Button size="sm" variant="secondary" chevron={false} disabled={busy} onClick={() => move(next)}>
+            {busy ? "…" : `Mark ${next}`}
+          </Button>
+        ) : null}
+        {order.payLink ? (
+          <Button size="sm" variant="secondary" chevron={false} disabled={busy} onClick={copy}>
+            {copied ? "Copied" : "Copy pay link"}
+          </Button>
+        ) : null}
+        {open ? (
+          <Button size="sm" variant="secondary" chevron={false} disabled={busy} onClick={() => move("Cancelled")}>
+            Cancel
+          </Button>
+        ) : null}
+      </div>
       {error ? <span className="text-[0.6875rem] text-magenta">{error}</span> : null}
     </div>
   );

@@ -34,7 +34,7 @@ const PAYABLE = ["Inquiry", "Quoted", "Confirmed"] as const;
 export async function settleInvoice(
   workspaceId: string,
   number: string,
-  payment: { method: PaymentMethod; reference: string; by: string },
+  payment: { method: PaymentMethod; reference: string | null; by: string },
   now = new Date(),
 ): Promise<Settlement> {
   const outcome = await prisma.$transaction(async (tx): Promise<Settlement> => {
