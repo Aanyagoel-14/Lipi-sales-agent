@@ -60,10 +60,20 @@ export type Supplier = {
   defectRatePct: number; moq: number; responseHours: number;
 };
 
+export type OrderStage =
+  | "Inquiry" | "Quoted" | "Confirmed" | "Paid" | "Packed" | "Shipped" | "Delivered" | "Returned" | "Cancelled";
+
 export type Order = {
   id: string; customerId: string; productId: string; variant: string; qty: number;
-  valueInr: number; stage: "Quoted" | "Paid" | "Packed" | "Shipped" | "Delivered" | "Returned";
+  valueInr: number; stage: OrderStage;
   channel: ChannelId; createdIso: string; blocked?: string; customerName: string; productName: string;
+  /** Read off the invoice: what has been paid, and whether the balance is due on terms. */
+  payment: "unpaid" | "partly_paid" | "paid" | "on_terms"; paidInr: number;
+  invoiceNumber?: string; dueIso?: string;
+  /** The customer's invoice page, while there is still something to pay. */
+  payLink?: string;
+  /** Whether units are set aside for this order right now. */
+  stock: "not_held" | "held" | "reserved" | "shipped" | "released"; reservedUntilIso?: string;
 };
 
 export type AgentRun = {

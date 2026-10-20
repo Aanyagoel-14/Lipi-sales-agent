@@ -48,6 +48,10 @@ const schema = z.object({
   // there is no per-tenant equivalent and never was.
   META_APP_SECRET: z.string().optional(),
   META_VERIFY_TOKEN: z.string().optional(),
+  // Instagram API with Instagram Login — the API Composio's Instagram toolkit
+  // speaks — gives the same Meta app a second id and secret of its own, and
+  // Meta signs Instagram webhooks with that one rather than the App Secret.
+  INSTAGRAM_APP_SECRET: z.string().optional(),
 
   // ------------------------------------------------------------------- X --
   // Lipi's own X app, the same shape as the Meta one. X signs every Account
@@ -86,6 +90,11 @@ const schema = z.object({
   // units of whatever the deployment sells in; this is the ISO code that goes
   // on the payment page.
   STRIPE_CURRENCY: z.string().length(3).default("INR"),
+  // `demo` turns on Lipi's own test checkout: the invoice page's Pay button
+  // settles the invoice at once, with no money moving. For demonstrating the
+  // order flow before a real provider is connected; the page says TEST on it.
+  // Ignored when STRIPE_SECRET_KEY is set — a real provider always wins.
+  PAYMENT_PROVIDER: z.enum(["demo"]).optional(),
 
   // ------------------------------------------------------------- hosting --
   // Edge deployment for generated sites (PRD §3 Phase 3). Optional, and

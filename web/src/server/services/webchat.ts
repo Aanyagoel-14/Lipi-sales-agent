@@ -194,7 +194,11 @@ export async function captureTypedContact(input: {
       duplicateEmail: plan.duplicateEmailOf !== null,
       // Asked of the twin as it stands after the save, so the field the
       // widget shows next is never the one just filled in.
-      contactAsk: nextContactAsk(updated.leadScore, updated.leadStage, contactHeld(updated)),
+      // They have just filled in a field, which is the one moment asking for
+      // the next thing is natural, whenever the twin last asked.
+      contactAsk: nextContactAsk(updated.leadScore, updated.leadStage, contactHeld(updated), {
+        askedAt: updated.contactAskedAt, now: new Date(), justGave: true,
+      }),
     };
   });
 }

@@ -521,6 +521,92 @@ describe("through the routes", () => {
     expect(fakeComposio.calls.execute).toEqual([]);
   });
 
+  /**
+   * A purchase order waits on a person. Approving it is what confirms the
+   * order, issues its invoice and tells the customer; rejecting gives the
+   * stock back. Before this, approving changed nothing about the order.
+   */
+  describe("deciding a purchase order", () => {
+    const purchaseOrder = async () => {
+      await setup("money_only");
+      await connect("telegram");
+      const { conversationId, message } = await conversationWith("telegram", "555", "PO for 2 olive L polos, net 30");
+      // Under money_only the "someone will confirm" reply went out at once;
+      // `conversationWith` ingests without sending, so mark it as it would be.
+      await prisma.message.update({ where: { id: message.id }, data: { deliveryStatus: "sent" } });
+      const approval = await prisma.approval.findFirstOrThrow({ where: { workspaceId, agent: "Sales" } });
+      const order = await prisma.order.findUniqueOrThrow({ where: { id: approval.orderId! } });
+      fakeComposio.calls.execute.length = 0;
+      return { approval, order, conversationId, app: await signedIn() };
+    };
+    const reservedOn = async (variantId: string) =>
+      (await prisma.variant.findUniqueOrThrow({ where: { id: variantId } })).reserved;
+    const sent = () => fakeComposio.calls.execute.filter((call) => call.slug === "TELEGRAM_SEND_MESSAGE");
+
+    it("confirms the order, invoices it and tells the customer, when approved", async () => {
+      const { approval, order, app } = await purchaseOrder();
+      expect(order).toMatchObject({ stage: "Quoted" });
+      expect(order.reservedUntil).toBeInstanceOf(Date);
+
+      const res = await app.post(`/v1/approvals/${approval.id}/approve`).expect(200);
+
+      expect(res.body.delivered).toBe(true);
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } }))
+        .toMatchObject({ stage: "Confirmed", reservedUntil: null, blocked: null });
+      expect(await reservedOn(order.variantId)).toBeGreaterThanOrEqual(2);
+      const invoice = await prisma.invoice.findFirstOrThrow({ where: { orderId: order.id } });
+      expect(sent()).toHaveLength(1);
+      const text = String(sent()[0]!.arguments.text);
+      expect(text).toContain("purchase order is confirmed");
+      expect(text).toContain(invoice.number);
+      expect(text).toMatch(/\/i\/[\w-]+\.[\w-]+/);
+      expect(await events("inventory_twin.hold_confirmed")).toHaveLength(1);
+    });
+
+    it("gives the stock back and sends nothing, when rejected", async () => {
+      const { approval, order, app } = await purchaseOrder();
+      const before = await reservedOn(order.variantId);
+
+      await app.post(`/v1/approvals/${approval.id}/reject`).expect(200);
+
+      expect(await reservedOn(order.variantId)).toBe(before - 2);
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } }))
+        .toMatchObject({ stage: "Quoted", reservedUntil: null, blocked: "Purchase order declined by owner@test.local" });
+      expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(0);
+      expect(sent()).toHaveLength(0);
+    });
+
+    it("refuses when the hold lapsed and the stock has gone", async () => {
+      const { approval, order, app } = await purchaseOrder();
+      await prisma.variant.update({ where: { id: order.variantId }, data: { reserved: { decrement: 2 } } });
+      await prisma.order.update({ where: { id: order.id }, data: { reservedUntil: null } });
+      const variant = await prisma.variant.findUniqueOrThrow({ where: { id: order.variantId } });
+      await prisma.variant.update({ where: { id: variant.id }, data: { reserved: variant.stock } });
+
+      const res = await app.post(`/v1/approvals/${approval.id}/approve`).expect(409);
+
+      expect(res.body.error).toMatch(/not enough/);
+      expect(await prisma.approval.count({ where: { id: approval.id } })).toBe(1);
+      expect(await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({ stage: "Quoted" });
+    });
+  });
+
+  // The widget reads the thread itself, so an operator's reply to a visitor
+  // is delivered the moment it is written. The inbox called it "not delivered".
+  it("marks an operator's reply to a website visitor as sent", async () => {
+    await setup();
+    const { conversationId } = await conversationWith("webchat", "web:visitor-1");
+    const app = await signedIn();
+
+    const res = await app.post(`/v1/conversations/${conversationId}/reply`).send({ text: "On its way." }).expect(201);
+
+    expect(res.body).toMatchObject({ ok: true, delivered: true });
+    const reply = await prisma.message.findFirstOrThrow({ where: { conversationId, text: "On its way." } });
+    expect(reply.deliveryStatus).toBe("sent");
+    expect(reply.deliveryError).toBeNull();
+    expect(await events("reply.sent")).toHaveLength(1);
+  });
+
   it("answers a customer end to end, from the webhook to the provider", async () => {
     await setup();
     const row = await connect("telegram");

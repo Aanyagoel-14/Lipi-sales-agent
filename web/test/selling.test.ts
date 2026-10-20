@@ -20,7 +20,8 @@ const buy = (text: string, handle = "+91 90 000 5555") =>
 beforeEach(async () => { await resetDatabase(); });
 
 describe("selling", () => {
-  it("reserves real stock and creates a real order", async () => {
+  // Stock is taken when they pay (`checkout.ts`); a message only quotes it.
+  it("creates a real order without taking stock until it is paid", async () => {
     await setup();
     const before = await prisma.variant.findFirstOrThrow({
       where: { optionA: "XL", optionB: "Cobalt", product: { workspaceId, name: "Polo Classic" } },
@@ -29,7 +30,7 @@ describe("selling", () => {
     const result = await buy("I need 2 blue XL polos");
 
     const after = await prisma.variant.findUniqueOrThrow({ where: { id: before.id } });
-    expect(after.reserved).toBe(before.reserved + 2);
+    expect(after.reserved).toBe(before.reserved);
     expect(result.order).not.toBeNull();
     expect(await prisma.order.count({ where: { workspaceId } })).toBe(1);
   });
@@ -130,6 +131,19 @@ describe("invoicing", () => {
     const events = await prisma.twinEvent.findMany({ where: { workspaceId, type: "invoice.issued" } });
     expect(events).toHaveLength(1);
   });
+
+  // Whatever wrote the words, the customer gets a way to pay, and the stored
+  // message — the one a channel delivers — says the same.
+  it("puts the invoice link in the reply, above the sign-off", async () => {
+    await setup();
+    await prisma.twinVoice.update({ where: { workspaceId }, data: { signOff: "— Test Co" } });
+    const result = await buy("I need 2 blue XL polos");
+
+    expect(result.invoice?.link).toMatch(/\/i\/[\w-]+\.[\w-]+$/);
+    expect(result.reply).toContain(`Your invoice and payment link: ${result.invoice!.link}\n— Test Co`);
+    const stored = await prisma.message.findUniqueOrThrow({ where: { id: result.replyMessageId } });
+    expect(stored.text).toBe(result.reply);
+  });
 });
 
 describe("voicing the reply", () => {
@@ -141,20 +155,21 @@ describe("voicing the reply", () => {
     let system = "";
     vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
       system = JSON.parse(init.body).messages[0].content;
-      return new Response(JSON.stringify({ choices: [{ message: { content: "Lovely, those are reserved for you." } }] }), { status: 200 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Lovely, two cobalt XL polos it is." } }] }), { status: 200 });
     });
 
     const result = await buy("I need 2 blue XL polos");
 
     expect(result.voicedBy).toBe("openrouter");
-    expect(result.reply).toBe("Lovely, those are reserved for you.");
+    expect(result.reply).toBe(`Lovely, two cobalt XL polos it is.\n\nYour invoice and payment link: ${result.invoice!.link}`);
     expect(system).toContain("AN ORDER WAS CREATED");
+    expect(system).toContain("NOT reserved yet");
     expect(system).toContain(result.order!.id);
     // The conversation must show what the customer was actually sent.
     const message = await prisma.message.findFirstOrThrow({
       where: { conversationId: result.conversationId, from: "agent" },
     });
-    expect(message.text).toBe("Lovely, those are reserved for you.");
+    expect(message.text).toBe(result.reply);
   });
 
   it("grounds the prompt in the policies the message asks about, and says which", async () => {
@@ -192,7 +207,8 @@ describe("voicing the reply", () => {
     expect(result.voicedBy).toBe("template");
     expect(result.degraded).toContain("402");
     expect(result.order).not.toBeNull();
-    expect(result.reply).toContain("Reserved");
+    expect(result.reply).toContain("It's yours once paid.");
+    expect(result.reply).toContain(result.invoice!.link);
   });
 
   /**
@@ -386,11 +402,82 @@ describe("what a customer is allowed to see", () => {
   });
 });
 
+/**
+ * A purchase order is not a retail buy: a person confirms its terms first,
+ * so it is invoiced when they do, not now — a pay-now link under "someone
+ * will confirm the terms" said two things at once.
+ */
+describe("a purchase order", () => {
+  it("is quoted without an invoice or a payment link", async () => {
+    await setup();
+    const result = await buy("PO for 2 olive L polos, net 30");
+
+    expect(result.order).not.toBeNull();
+    expect(result.invoice).toBeNull();
+    expect(result.reply).not.toContain("/i/");
+    expect(await prisma.invoice.count({ where: { workspaceId } })).toBe(0);
+  });
+
+  it("tells the model the stock is held while the terms are confirmed", async () => {
+    await setup();
+    env.OPENROUTER_API_KEY = "test-key";
+    let system = "";
+    vi.stubGlobal("fetch", async (_u: string, init: { body: string }) => {
+      system = JSON.parse(init.body).messages[0].content;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Got it — stock is held while we confirm your terms." } }] }), { status: 200 });
+    });
+    try {
+      const result = await buy("PO for 2 olive L polos, net 30");
+      expect(system).toContain("A PURCHASE ORDER WAS RECORDED");
+      expect(system).toContain("no payment link");
+      // Held is true for a PO, so the sentence stands.
+      expect(result.reply).toBe("Got it — stock is held while we confirm your terms.");
+    } finally {
+      env.OPENROUTER_API_KEY = undefined;
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+/**
+ * The model keeps offering to hold things, because every chat salesperson
+ * it learned from did. Nothing here holds anything before payment, so the
+ * offer is cut, and a reply that was nothing but the offer is replaced.
+ */
+describe("offering to hold stock", () => {
+  beforeEach(() => { env.OPENROUTER_API_KEY = "test-key"; });
+  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); });
+
+  const modelSays = (content: string) =>
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 }));
+
+  it("is cut out of a stock answer", async () => {
+    await setup();
+    modelSays("We have 9 of the Polo Classic in L / Olive at ₹1,196. I can reserve one for you if you like. Which colour?");
+
+    const result = await buy("do you have the polo in L olive");
+
+    expect(result.voicedBy).toBe("openrouter");
+    expect(result.reply).toBe("We have 9 of the Polo Classic in L / Olive at ₹1,196. Which colour?");
+  });
+
+  it("falls back to the composed reply when the offer was the whole answer", async () => {
+    await setup();
+    modelSays("Shall I hold one for you?");
+
+    const result = await buy("do you have the polo in L olive");
+
+    expect(result.voicedBy).toBe("template");
+    expect(result.degraded).toContain("hold stock");
+    expect(result.reply).not.toMatch(/hold|reserve/i);
+  });
+});
+
 describe("a sale that is already made", () => {
   it("cuts the question and confirms the invoice instead", () => {
     const asked = "Hi! XL / Olive Polo Classic is in stock with 9 available. At ₹1,196 each, 2 would be ₹2,392. Shall I reserve them for you? — Test Co";
     expect(repairSettledSale(asked, "— Test Co", "INV-2026-0001-abcd")).toBe(
-      "Hi! XL / Olive Polo Classic is in stock with 9 available. At ₹1,196 each, 2 would be ₹2,392. Invoice INV-2026-0001-abcd is ready to download.\n— Test Co",
+      "Hi! XL / Olive Polo Classic is in stock with 9 available. At ₹1,196 each, 2 would be ₹2,392. Invoice INV-2026-0001-abcd is below — pay through the link to secure it.\n— Test Co",
     );
   });
 
@@ -402,7 +489,7 @@ describe("a sale that is already made", () => {
   ])("catches %j", (question) => {
     const reply = `Two Polo Classic in XL / Olive at ₹1,196 each, ₹2,392 total. ${question}`;
     expect(repairSettledSale(reply, null, null)).toBe(
-      "Two Polo Classic in XL / Olive at ₹1,196 each, ₹2,392 total. It is reserved for you.",
+      "Two Polo Classic in XL / Olive at ₹1,196 each, ₹2,392 total. Pay through the link below to secure it.",
     );
   });
 
@@ -412,7 +499,16 @@ describe("a sale that is already made", () => {
   });
 
   it("gives up when cutting the question leaves nothing", () => {
-    expect(repairSettledSale("Shall I reserve those?", null, "INV-1")).toBeNull();
+    expect(repairSettledSale("Shall I reserve those?", null, "INV-1")).toBe("");
+  });
+
+  // Nothing is held before payment, so "reserved for you" is as false as
+  // asking permission, and goes the same way.
+  it("cuts a claim that the stock is reserved", () => {
+    const claimed = "Two Polo Classic in XL / Olive at ₹1,196 each, ₹2,392 total. Those are reserved for you.";
+    expect(repairSettledSale(claimed, null, "INV-1")).toBe(
+      "Two Polo Classic in XL / Olive at ₹1,196 each, ₹2,392 total. Invoice INV-1 is below — pay through the link to secure it.",
+    );
   });
 
   it("falls back to the composed reply when the model only asks permission", async () => {

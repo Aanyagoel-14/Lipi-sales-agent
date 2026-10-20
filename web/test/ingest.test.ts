@@ -50,15 +50,18 @@ describe("the customer twin", () => {
   });
 });
 
-describe("reserving stock", () => {
-  it("reserves what it promises", async () => {
+describe("quoting stock", () => {
+  // Stock is committed when the customer pays (`services/checkout.ts`), not
+  // on a message: most "I want one" messages are never paid for.
+  it("quotes what is in stock without taking it out of stock", async () => {
     await setup();
     const before = await stockOf("L", "Olive");
     const result = await say("I want 3 olive L polos");
     const after = await stockOf("L", "Olive");
 
     expect(result.order).not.toBeNull();
-    expect(after.reserved).toBe(before.reserved + 3);
+    expect(after.reserved).toBe(before.reserved);
+    expect(result.reservedUntil).toBeNull();
   });
 
   it("prices the order from the catalogue", async () => {
@@ -74,7 +77,9 @@ describe("reserving stock", () => {
     const result = await say("I need 40 cobalt XL polos");
 
     expect(result.order).toBeNull();
-    expect(result.reply).toMatch(/not|out of stock|lead time/i);
+    expect(result.reply).toMatch(/not|out of stock|days away/i);
+    // Nothing is held before payment, so nothing is offered as held either.
+    expect(result.reply).not.toMatch(/hold|reserve/i);
     const variant = await stockOf("XL", "Cobalt");
     expect(variant.reserved).toBe(0);
   });
@@ -155,13 +160,24 @@ describe("the approval policy", () => {
     expect(result.agentRuns.every((r) => r.status === "needs_approval")).toBe(true);
   });
 
-  it("holds only money under 'money_only'", async () => {
+  // A quote at list price for stock that is there is not a money decision:
+  // the customer paying is the commitment, so it goes out and needs nobody.
+  it("sends a quote under 'money_only', since payment is the commitment", async () => {
     await setup("money_only");
     const result = await say("I want 2 olive L polos");
 
+    expect(result.order).not.toBeNull();
     expect(result.replySent).toBe(true);
+    expect(result.agentRuns.every((r) => r.status === "done")).toBe(true);
+  });
+
+  it("still holds a purchase order under 'money_only', with the order on the approval", async () => {
+    await setup("money_only");
+    const result = await say("PO for 5 olive L polos, net 30");
+
     expect(result.agentRuns.find((r) => r.agent === "Sales")?.status).toBe("needs_approval");
-    expect(result.agentRuns.find((r) => r.agent === "Inventory")?.status).toBe("done");
+    const approval = await prisma.approval.findFirstOrThrow({ where: { workspaceId, agent: "Sales" } });
+    expect(approval.orderId).toBe(result.order!.id);
   });
 
   it("lets everything through under 'nothing'", async () => {
@@ -209,8 +225,7 @@ describe("the event trail", () => {
 
     const types = (await prisma.twinEvent.findMany({ where: { workspaceId } })).map((e) => e.type);
     expect(types).toEqual(expect.arrayContaining([
-      "message.received", "intent.extracted", "product_twin.matched",
-      "inventory_twin.reserved", "order_twin.created",
+      "message.received", "intent.extracted", "product_twin.matched", "order_twin.created",
     ]));
   });
 

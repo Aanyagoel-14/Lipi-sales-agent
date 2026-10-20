@@ -33,6 +33,24 @@ export function decrypt(payload: string): string | null {
   }
 }
 
+/**
+ * The token in a customer's invoice link: the invoice number and a MAC over
+ * it. The customer has no account, so the link itself is the credential —
+ * which is why it is signed rather than guessable from the number, and why a
+ * token that does not verify is simply not an invoice.
+ */
+const invoiceMac = (number: string) =>
+  createHmac("sha256", key).update(`invoice:${number}`).digest("base64url").slice(0, 22);
+
+export const invoiceToken = (number: string) => `${Buffer.from(number).toString("base64url")}.${invoiceMac(number)}`;
+
+export function invoiceNumberFrom(token: string): string | null {
+  const [encoded, mac] = token.split(".");
+  if (!encoded || !mac) return null;
+  const number = Buffer.from(encoded, "base64url").toString("utf8");
+  return number && secretsMatch(mac, invoiceMac(number)) ? number : null;
+}
+
 /** Meta signs webhook bodies with the app secret; the raw body is what is signed. */
 export function verifyMetaSignature(raw: Buffer, header: string | undefined, appSecret: string): boolean {
   if (!header?.startsWith("sha256=")) return false;

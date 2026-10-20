@@ -63,6 +63,8 @@ enum OrderStage {
   Shipped
   Delivered
   Returned
+  /// Withdrawn before any money changed hands. A paid order that comes back is Returned.
+  Cancelled
 }
 
 enum RunStatus {
@@ -135,6 +137,9 @@ model Customer {
   /// which is what a growth or sales operator triaging a lead list needs.
   leadScore Int       @default(0)
   leadStage LeadStage @default(visitor)
+  /// When the twin last asked this person for a contact detail, so it does
+  /// not ask again on every message (`services/leads.ts`).
+  contactAskedAt DateTime?
 
   /// How to reach this person outside the thread they arrived in. A webchat
   /// visitor's `handle` is `web:<visitorId>` — an opaque token their browser
@@ -450,6 +455,11 @@ model Approval {
 
   runId String   @unique
   run   AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  /// The order this approval decides, when it decides one: a purchase order,
+  /// whose terms a person confirms. Approving confirms the order and issues
+  /// its invoice; rejecting releases its stock. Null for every other approval.
+  orderId String?
 
   @@index([workspaceId])
   @@map("approvals")

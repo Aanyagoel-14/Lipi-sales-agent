@@ -1,6 +1,7 @@
 import { env } from "../env";
 import { chatForReply } from "../lib/openrouter";
 import { checkModelBudget, type ModelMeter } from "../lib/metering";
+import { publicInvoiceUrl } from "../lib/payments";
 import { prisma } from "../lib/prisma";
 import { toRupees } from "../lib/money";
 import { buildGrounding } from "./briefing";
@@ -63,7 +64,11 @@ export type SellResult = {
    *  on another twin here — the operator's flag, never a merge. */
   contact: IngestResult["contact"];
   order: (IngestResult["order"] & { stage: string }) | null;
-  invoice: { number: string; amountInr: number; dueIso: string; url: string } | null;
+  /**
+   * `url` is the dashboard's PDF; `link` is the customer's own invoice page,
+   * signed, with the way to pay on it. `link` is what the reply carries.
+   */
+  invoice: { number: string; amountInr: number; dueIso: string; url: string; link: string } | null;
   intent: string;
   held: boolean;
   degraded?: string;
@@ -181,17 +186,25 @@ function outcome(result: IngestResult, invoice: SellResult["invoice"]) {
   if (result.matched) lines.push(`Matched product: ${result.matched.product}, variant ${result.matched.variant}.`);
   else lines.push("No product in the catalogue matched what they said.");
 
-  if (result.order) {
+  if (result.order && result.extracted.intent === "purchase_order") {
+    lines.push(
+      `A PURCHASE ORDER WAS RECORDED: ${result.order.id}, total INR ${result.order.valueInr.toLocaleString("en-IN")}. ` +
+        "Its stock is held while a person confirms the terms, and the invoice follows once they do. Tell them " +
+        "someone will confirm shortly. There is no payment link yet — never write one.",
+    );
+  } else if (result.order) {
     lines.push(
       `AN ORDER WAS CREATED: ${result.order.id}, total INR ${result.order.valueInr.toLocaleString("en-IN")}. ` +
-        `Stock is reserved for them. Confirm this warmly and say what happens next.`,
+        "It is NOT reserved yet: it is set aside for them the moment they pay. Confirm the order warmly and tell " +
+        "them to pay through the link below to secure it. The link is added after your message automatically — " +
+        "never write a URL yourself.",
     );
   }
 
   if (invoice) {
     lines.push(
       `Invoice ${invoice.number} has been raised for INR ${invoice.amountInr.toLocaleString("en-IN")}, ` +
-        `due ${invoice.dueIso}. Tell them it is ready to download.`,
+        `due ${invoice.dueIso}. Their invoice and its payment link are added below your message automatically.`,
     );
   }
 
@@ -207,9 +220,16 @@ function outcome(result: IngestResult, invoice: SellResult["invoice"]) {
   }
 
   if (result.contactAsk) {
+    // The reason has to be true of this conversation: "so the invoice
+    // reaches you" to someone whose order arrived damaged reads as a form.
+    const why = result.order || invoice
+      ? "so the invoice and order updates reach them"
+      : result.extracted.intent === "complaint" || result.extracted.intent === "return"
+        ? "so someone can follow this up with them"
+        : "so someone can follow up if needed";
     lines.push(
       `ASK THEM FOR: ${CONTACT_WORDING[result.contactAsk]}. Ask for this ONE thing, once, in a single short ` +
-        "sentence at the end, and say why it helps (so someone can follow up, so the invoice reaches them). " +
+        `sentence at the end, and say why it helps (${why}). ` +
         "Do not ask for anything else about them, and do not insist if they would rather not.",
     );
   }
@@ -235,10 +255,11 @@ ${facts}
 How to reply:
 - NUMBERS ARE NOT YOURS TO CHOOSE. Every price, quantity, stock count, order id and invoice number must appear verbatim above. Never add, total, estimate or round. If a number you want is not written above, leave it out.
 - If the system reserved something, created an order or raised an invoice, it is ALREADY DONE. Confirm it as done and say what happens next. Never ask permission for it ("shall I go ahead?") — the customer has been promised it, and asking makes the twin look like it did not do what it did.
-- Sell. Recommend something specific, say why, and end with a question that moves them forward — which size, how many, shall I reserve it.
+- Sell. Recommend something specific, say why, and end with a question that moves them forward — which size, how many, shall I send the invoice.
+- NOTHING IS HELD BEFORE PAYMENT. Never offer to reserve, hold or set aside stock, and never say something is reserved or held for them. An item is theirs when they pay through the link; until then, say it is in stock.
 - WHAT YOU MAY RECOMMEND IS ALREADY CHOSEN. If there is a "WHAT TO PUT IN FRONT OF THEM" list above, the alternative, the companion or the step up comes from it, with its price and its count as written. Do not substitute a product of your own choosing, and if that list says nothing replaces what they wanted, say exactly that rather than reaching for something else.
 - HANDLING AN OBJECTION IS A MATTER OF WORDS, NOT OF PRICE. If they say it is too expensive, hesitate, or compare you to someone cheaper: you may say what makes it worth it, restate a policy written above, or put a cheaper in-stock option from the lists above in front of them. You may NEVER offer a discount, a percentage off, free delivery, a waived fee or a thrown-in extra — none of that is yours to give, and a reply that does it is thrown away. If they ask for a discount outright, tell them what the policy above says about pricing, if it says anything, and that anything beyond it needs a person.
-- BUT if an order was already created above, the sale is closed: do not ask "shall I reserve/proceed/go ahead". Confirm it, tell them the invoice is ready, and ask only whether they need anything else.
+- BUT if an order was already created above, do not ask "shall I reserve/proceed/go ahead". Confirm it, tell them to pay through the link below to secure it, and ask only whether they need anything else. Never say it is reserved or held for them: it is not, until they pay.
 - ASKING WHO THEY ARE IS NOT YOURS TO DECIDE EITHER. Ask for a contact detail only when the block above says "ASK THEM FOR", and only for that one thing. Never ask for two, never ask for something the block says they have already given, and never make answering a condition of helping them.
 - Put the closing question on its own line, after any list. Never let it run onto the end of a list item.
 - When you are showing more than one option, lay them out as a list with a real newline before each "- ", one product per line with its price. Never bury choices in a paragraph.
@@ -277,28 +298,80 @@ const voiceReply = (system: string, history: SellTurn[], meter: ModelMeter) =>
 const ASKS_PERMISSION =
   /\b(shall|should|may|can|would you like me to|do you want me to|want me to)\b[^.!?]{0,60}\b(reserve|proceed|go ahead|place|book|confirm|checkout|check out|order)\b/i;
 
-export function repairSettledSale(reply: string, signOff: string | null, invoiceNumber: string | null): string | null {
-  // The sign-off is glued to the last sentence, which is the one being cut.
-  const trimmed = signOff && reply.endsWith(signOff) ? reply.slice(0, -signOff.length).trimEnd() : reply;
+/**
+ * Offering a hold, or claiming one. Nothing is held before payment, so both
+ * are false, and the model keeps producing them because every chat
+ * salesperson it has read did hold things.
+ */
+const OFFERS_HOLD =
+  /\b(shall|should|can|could|may|want me to|would you like me to|like me to|happy to|i can|i'll|i will|we can|we'll|we will|we could|let me)\b[^.!?]{0,40}\b(reserve|hold|set aside|keep(?: \w+){0,2} aside|put(?: \w+){0,2} aside)\b/i;
+const CLAIMS_HOLD =
+  /\b(is|are|'s|'re|been|now|already)\s+(reserved|held|on hold|set aside|put aside|kept aside)\b|\breserved for you\b/i;
 
+/** The sentences that survive the patterns, and whether any was cut. */
+function cutSentences(reply: string, signOff: string | null, patterns: RegExp[]) {
+  // The sign-off is glued to the last sentence, which is the one being cut,
+  // so it comes off first and goes back on after — if it was there at all.
+  const signed = Boolean(signOff && reply.endsWith(signOff));
+  const trimmed = signed ? reply.slice(0, -signOff!.length).trimEnd() : reply;
   const sentences = trimmed.split(/(?<=[.!?])\s+/);
-  const kept = sentences.filter((sentence) => !ASKS_PERMISSION.test(sentence));
-  if (kept.length === sentences.length) return null;
+  const kept = sentences.filter((sentence) => !patterns.some((pattern) => pattern.test(sentence)));
+  const text = kept.join(" ").trim();
+  return { text, cut: kept.length !== sentences.length, close: (body: string) => (signed ? `${body}\n${signOff}` : body) };
+}
 
-  let repaired = kept.join(" ").trim();
+/**
+ * Three answers: null, nothing needed cutting; "", what was cut was the
+ * whole reply and the caller should send the composed one instead; a
+ * string, the reply with the offending sentences gone.
+ */
+export function repairSettledSale(reply: string, signOff: string | null, invoiceNumber: string | null): string | null {
+  const { text, cut, close } = cutSentences(reply, signOff, [ASKS_PERMISSION, OFFERS_HOLD, CLAIMS_HOLD]);
+  if (!cut) return null;
   // Cutting the only substantial sentence leaves nothing worth sending.
-  if (repaired.length < 20) return null;
+  if (text.length < 20) return "";
 
-  repaired += invoiceNumber
-    ? ` Invoice ${invoiceNumber} is ready to download.`
-    : " It is reserved for you.";
+  return close(text + (invoiceNumber
+    ? ` Invoice ${invoiceNumber} is below — pay through the link to secure it.`
+    : " Pay through the link below to secure it."));
+}
 
-  return signOff ? `${repaired}\n${signOff}` : repaired;
+/** The same cut for a reply with no order in it: a stock question is answered, not followed by an offer to hold. */
+export function repairHoldTalk(reply: string, signOff: string | null): string | null {
+  const { text, cut, close } = cutSentences(reply, signOff, [OFFERS_HOLD, CLAIMS_HOLD]);
+  if (!cut) return null;
+  if (text.length < 20) return "";
+  return close(text);
 }
 
 const WANTS_INVOICE = /\b(invoice|bill|receipt|proforma)\b/i;
 
-export async function sell(input: {
+/**
+ * The customer's invoice link, on every reply that has an invoice.
+ *
+ * Added here rather than asked of the model: the model may paraphrase or drop
+ * a URL, and a sale whose payment link went missing is a sale that does not
+ * happen. Every path out of `sellOnce()` — the model's words, the template, a
+ * degraded fallback — passes through this, and the stored message is
+ * rewritten to match, because it is the row the channel delivers.
+ */
+export async function sell(input: Parameters<typeof sellOnce>[0]): Promise<SellResult> {
+  const result = await sellOnce(input);
+  if (!result.invoice || result.reply.includes(result.invoice.link)) return result;
+
+  // Above the sign-off, so the message still ends the way the business signs.
+  const signOff = (await prisma.twinVoice.findUnique({
+    where: { workspaceId: input.workspaceId }, select: { signOff: true },
+  }))?.signOff;
+  const line = `Your invoice and payment link: ${result.invoice.link}`;
+  const reply = signOff && result.reply.endsWith(signOff)
+    ? `${result.reply.slice(0, -signOff.length).trimEnd()}\n\n${line}\n${signOff}`
+    : `${result.reply}\n\n${line}`;
+  await prisma.message.update({ where: { id: result.replyMessageId }, data: { text: reply } });
+  return { ...result, reply };
+}
+
+async function sellOnce(input: {
   workspaceId: string;
   channel: Channel;
   handle: string;
@@ -330,10 +403,15 @@ export async function sell(input: {
   });
 
   /* ------------------------------------------------------------- invoicing */
-  // An order always gets its invoice. Asking for "the invoice" with no new
-  // order falls back to their most recent one, which is what a customer means.
-  let invoiceOrderId = result.order?.id ?? null;
-  if (!invoiceOrderId && WANTS_INVOICE.test(input.text)) {
+  // An order gets its invoice at once, with the link to pay it — unless it
+  // is a purchase order, whose terms a person confirms first; its invoice is
+  // issued when they do (`/v1/approvals`), and a pay-now link beside "someone
+  // will confirm the terms" would contradict it. Asking for "the invoice"
+  // with no new order falls back to their most recent one, which is what a
+  // customer means.
+  const awaitsTerms = result.extracted.intent === "purchase_order";
+  let invoiceOrderId = awaitsTerms ? null : result.order?.id ?? null;
+  if (!result.order && WANTS_INVOICE.test(input.text)) {
     const last = await prisma.order.findFirst({
       where: { workspaceId: input.workspaceId, customerId: result.customer.id },
       orderBy: { createdAt: "desc" },
@@ -350,6 +428,7 @@ export async function sell(input: {
       amountInr: toRupees(row.amount),
       dueIso: row.dueOn.toISOString().slice(0, 10),
       url: `/v1/invoices/${encodeURIComponent(row.number)}/pdf`,
+      link: publicInvoiceUrl(row.number),
     };
   }
 
@@ -433,18 +512,25 @@ export async function sell(input: {
       };
     }
 
-    // A model that asks to do what it has already done is stating the
-    // opposite of what happened, so the claim is repaired before sending.
+    // Nothing is held before payment, so the model may neither offer a hold
+    // nor claim one, and an order already open is not asked about. Each is
+    // a sentence cut out; a reply with nothing left after the cut falls back
+    // to the composed one, which is always correct. A purchase order is the
+    // exception: its stock really is held while a person confirms it.
     let finalReply = spoken;
-    if (result.order) {
-      const repaired = repairSettledSale(spoken, voice.signOff, invoice?.number ?? null);
-      if (repaired === null && ASKS_PERMISSION.test(spoken)) {
+    if (result.extracted.intent !== "purchase_order") {
+      const repaired = result.order
+        ? repairSettledSale(spoken, voice.signOff, invoice?.number ?? null)
+        : repairHoldTalk(spoken, voice.signOff);
+      if (repaired === "") {
         return {
           ...base, reply: result.reply, voicedBy: "template",
-          degraded: "Model asked to place an order it had already placed, so the plain reply was sent",
+          degraded: result.order
+            ? "Model asked to place an order it had already placed, so the plain reply was sent"
+            : "Model offered to hold stock, which nothing does before payment, so the plain reply was sent",
         };
       }
-      if (repaired) finalReply = repaired;
+      if (repaired !== null) finalReply = repaired;
     }
 
     // The spoken reply is what the customer actually got, so it is what the

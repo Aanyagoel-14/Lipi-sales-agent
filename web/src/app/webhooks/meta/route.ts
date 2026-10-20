@@ -48,10 +48,14 @@ export async function POST(req: Request) {
   // No App Secret means no way to tell a genuine delivery from a forged one.
   // Refusing every body is the only safe reading of that, in development as
   // much as in production — an unverified webhook writes to real twins.
-  if (!env.META_APP_SECRET) return status(401);
-  if (!verifyMetaSignature(raw, req.headers.get("x-hub-signature-256") ?? undefined, env.META_APP_SECRET)) {
-    return status(401);
-  }
+  //
+  // Two secrets, both this deployment's own: WhatsApp and Messenger are
+  // signed with the App Secret, Instagram (Instagram Login) with the app's
+  // Instagram secret. A body only has to verify against one of them; which
+  // channel it is for is decided by its `object`, below, not by the secret.
+  const secrets = [env.META_APP_SECRET, env.INSTAGRAM_APP_SECRET].filter((secret): secret is string => Boolean(secret));
+  const signature = req.headers.get("x-hub-signature-256") ?? undefined;
+  if (!secrets.some((secret) => verifyMetaSignature(raw, signature, secret))) return status(401);
 
   let payload: { object?: unknown; entry?: unknown };
   try {

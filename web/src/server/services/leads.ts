@@ -95,20 +95,42 @@ export const CONTACT_FIELDS = ["name", "email", "phone"] as const;
 
 export type ContactField = (typeof CONTACT_FIELDS)[number];
 
+/** How long the twin waits before asking the same person again. */
+export const CONTACT_ASK_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/** When the twin last asked, and whether this message answered it. */
+export type AskHistory = { askedAt: Date | null; now: Date; justGave: boolean };
+
 /**
  * One field, or nothing. Never two at once: a reply that ends in two
  * questions gets one answer at best, and the cheapest thing to give is asked
  * for first.
  *
+ * A name, then one way to reach them. Email and phone are two answers to the
+ * same question, and a person who has given one has been reached; asking
+ * for the other after it is the twin being pushy, which it was.
+ *
+ * Asked once, not on every message: a question ignored is answered by
+ * leaving it for a day, unless this very message handed something over — a
+ * person who has just given their name is the one person it is natural to
+ * ask for the next thing.
+ *
  * A past buyer is always worth reaching, whatever this particular message
  * scored — the relationship the `customer` stage describes is real, and
  * chasing an order is a human's job that needs an address to do it with.
  */
-export function nextContactAsk(score: number, stage: LeadStage, held: ContactHeld): ContactField | null {
+export function nextContactAsk(
+  score: number,
+  stage: LeadStage,
+  held: ContactHeld,
+  history: AskHistory = { askedAt: null, now: new Date(), justGave: false },
+): ContactField | null {
   if (score < CONTACT_ASK_SCORE && stage !== "customer") return null;
 
+  const recently = history.askedAt !== null && history.now.getTime() - history.askedAt.getTime() < CONTACT_ASK_COOLDOWN_MS;
+  if (recently && !history.justGave) return null;
+
   if (!held.name) return "name";
-  if (!held.email) return "email";
-  if (!held.phone) return "phone";
+  if (!held.email && !held.phone) return "email";
   return null;
 }

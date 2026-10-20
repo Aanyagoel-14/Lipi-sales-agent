@@ -1,4 +1,5 @@
 import { env } from "../env";
+import { invoiceToken } from "./crypto";
 
 /**
  * Checkout links, behind one seam.
@@ -146,11 +147,37 @@ export const stripePaymentProvider: PaymentProvider = {
   },
 };
 
+/**
+ * Lipi's own test checkout, for demonstrating the order flow before a real
+ * provider is connected. The link is the customer's invoice page, whose Pay
+ * button settles the invoice through the same `settleInvoice` a provider's
+ * webhook would — so the order, the stock and the confirmation message all
+ * behave exactly as they will with real money. Nothing is charged, and the
+ * page says TEST.
+ */
+export const demoPaymentProvider: PaymentProvider = {
+  name: "demo",
+  configured: () => env.PAYMENT_PROVIDER === "demo",
+
+  async createCheckoutLink(request) {
+    return {
+      ok: true,
+      provider: "demo",
+      link: { url: publicInvoiceUrl(request.reference), providerRef: `demo_${request.reference}`, expiresAt: null },
+    };
+  },
+};
+
+/** Where a customer opens an invoice: the signed page, reachable without an account. */
+export const publicInvoiceUrl = (number: string) => `${env.PUBLIC_URL.replace(/\/$/, "")}/i/${invoiceToken(number)}`;
+
 let provider: PaymentProvider | null = null;
 
-/** The provider this deployment actually has, decided once from the env. */
+/** The provider this deployment actually has, decided once from the env. A real one always wins. */
 export function paymentProvider(): PaymentProvider {
-  provider ??= stripePaymentProvider.configured() ? stripePaymentProvider : noPaymentProvider;
+  provider ??= stripePaymentProvider.configured() ? stripePaymentProvider
+    : demoPaymentProvider.configured() ? demoPaymentProvider
+    : noPaymentProvider;
   return provider;
 }
 

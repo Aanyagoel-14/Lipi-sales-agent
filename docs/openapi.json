@@ -615,7 +615,8 @@
               "Packed",
               "Shipped",
               "Delivered",
-              "Returned"
+              "Returned",
+              "Cancelled"
             ]
           },
           "channel": {
@@ -2272,7 +2273,8 @@
                   "Packed",
                   "Shipped",
                   "Delivered",
-                  "Returned"
+                  "Returned",
+                  "Cancelled"
                 ]
               }
             }

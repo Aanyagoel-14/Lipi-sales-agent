@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { prisma, type Tx } from "../lib/prisma";
 import { recordEvent } from "../lib/events";
 import type { TwinEffect } from "../lib/events";
@@ -112,6 +113,76 @@ export async function releaseExpiredReservations(workspaceId: string, now = new 
 export async function firmUpReservation(tx: Tx, orderId: string) {
   await tx.order.update({ where: { id: orderId }, data: { reservedUntil: null } });
 }
+
+export type ConfirmOutcome = { ok: true } | { ok: false; reason: string };
+
+/**
+ * The customer, or the person confirming their purchase order, has agreed:
+ * the order is `Confirmed` and its stock is held until it settles.
+ *
+ * An order that already holds its stock keeps it, with the four-hour expiry
+ * taken off. One that holds none — a quote never paid for, confirmed by hand
+ * because the money came another way; a purchase order whose hold the sweep
+ * let go — takes its stock now, and only if it is still there: confirming an
+ * order the shelf cannot fill is a promise the twin would then have to break.
+ */
+export async function confirmOrder(tx: Tx, workspaceId: string, orderId: string, now = new Date()): Promise<ConfirmOutcome> {
+  const order = await tx.order.findFirst({ where: { id: orderId, workspaceId } });
+  if (!order) return { ok: false, reason: "Order not found" };
+  if (!(PROVISIONAL as readonly string[]).includes(order.stage)) return { ok: true };
+
+  const event = (type: string, payload: string) =>
+    tx.twinEvent.create({ data: { id: `evt_${randomUUID().slice(0, 8)}`, workspaceId, occurredAt: now, type, twin: "inventory", payload } });
+
+  if (holdsStock(order)) {
+    await event("inventory_twin.hold_confirmed", `order=${order.id} qty=${order.qty} held_until=${order.reservedUntil!.toISOString()}`);
+  } else {
+    const variant = await tx.variant.findUniqueOrThrow({ where: { id: order.variantId } });
+    const available = variant.stock - variant.reserved;
+    if (available < order.qty) return { ok: false, reason: `Only ${Math.max(available, 0)} left — not enough to confirm ${order.qty}` };
+    await tx.variant.update({ where: { id: order.variantId }, data: { reserved: { increment: order.qty } } });
+    await event("inventory_twin.reserved", `order=${order.id} qty=${order.qty} remaining=${available - order.qty} via=confirmed`);
+  }
+
+  await tx.order.update({ where: { id: order.id }, data: { stage: "Confirmed", reservedUntil: null, blocked: null } });
+  return { ok: true };
+}
+
+/**
+ * Gives a provisional hold back now rather than when it lapses: the person
+ * who was to confirm the order has declined it. Guarded as the sweep is, and
+ * a no-op on an order that holds nothing.
+ */
+export async function releaseHold(tx: Tx, workspaceId: string, orderId: string, reason: string, now = new Date()) {
+  const order = await tx.order.findFirst({
+    where: { id: orderId, workspaceId, reservedUntil: { not: null }, stage: { in: [...PROVISIONAL] } },
+  });
+  if (!order) return;
+
+  const variant = await tx.variant.findUnique({ where: { id: order.variantId }, select: { reserved: true } });
+  const give = Math.min(order.qty, variant?.reserved ?? 0);
+  if (give > 0) await tx.variant.update({ where: { id: order.variantId }, data: { reserved: { decrement: give } } });
+  await tx.order.update({ where: { id: order.id }, data: { reservedUntil: null, blocked: reason.slice(0, 200) } });
+  await tx.twinEvent.create({
+    data: {
+      id: `evt_${randomUUID().slice(0, 8)}`, workspaceId, occurredAt: now,
+      type: "inventory_twin.hold_released", twin: "inventory",
+      payload: `order=${order.id} variant=${order.variantId} released=${give}`,
+    },
+  });
+}
+
+/**
+ * Whether this order has stock set aside for it right now.
+ *
+ * Past `Quoted` it always does — it was paid for or confirmed. At `Inquiry`
+ * or `Quoted` it does only while a provisional hold is live: a quote from a
+ * chat holds nothing until it is paid (`services/checkout.ts`), and a hold
+ * the sweep let go has already handed its units back. Releasing stock for an
+ * order that holds none would hand out someone else's reservation.
+ */
+export const holdsStock = (order: { stage: string; reservedUntil: Date | null }) =>
+  !(PROVISIONAL as readonly string[]).includes(order.stage) || order.reservedUntil !== null;
 
 /** The effects a caller should append when it reserves with a hold. */
 export const holdEffect = (orderId: string, qty: number, until: Date): TwinEffect => ({

@@ -213,6 +213,21 @@ describe("routing one URL to many tenants", () => {
     expect(await conversationsIn(beta)).toHaveLength(0);
   });
 
+  // Instagram Login signs with the app's Instagram secret, not the App Secret.
+  it("accepts an Instagram DM signed with the Instagram app secret", async () => {
+    const body = messagingBody("instagram", B.ig, "is the linen shirt in stock");
+    const original = env.INSTAGRAM_APP_SECRET;
+    env.INSTAGRAM_APP_SECRET = "test-instagram-app-secret";
+    try {
+      await deliver(body, sign(body, "test-instagram-app-secret")).expect(200);
+      await deliver(body, sign(body, "some-other-secret")).expect(401);
+    } finally {
+      env.INSTAGRAM_APP_SECRET = original;
+    }
+    await settle();
+    expect(await conversationsIn(beta)).toHaveLength(1);
+  });
+
   it("delivers an Instagram DM by professional account id", async () => {
     await deliver(messagingBody("instagram", B.ig, "is the linen shirt in stock")).expect(200);
     await settle();
@@ -554,7 +569,7 @@ describe("the X route", () => {
 // ----------------------------------------------------- the loop, intact --
 
 describe("the loop an inbound message sets off", () => {
-  it("builds the twins, reserves the stock, quotes the order and sends the reply", async () => {
+  it("builds the twins, quotes the order and sends the reply with its invoice link", async () => {
     const before = await prisma.variant.findFirstOrThrow({
       where: { optionA: "L", optionB: "Olive", product: { workspaceId: alpha, name: "Polo Classic" } },
     });
@@ -575,7 +590,7 @@ describe("the loop an inbound message sets off", () => {
     expect(order.value).toBe(1196 * 2 * 100);
 
     const after = await prisma.variant.findUniqueOrThrow({ where: { id: before.id } });
-    expect(after.reserved).toBe(before.reserved + 2);
+    expect(after.reserved).toBe(before.reserved);
 
     expect(await prisma.agentRun.count({ where: { workspaceId: alpha } })).toBeGreaterThan(0);
     expect(await prisma.twinEvent.count({ where: { workspaceId: alpha } })).toBeGreaterThan(0);

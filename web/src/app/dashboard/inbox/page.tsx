@@ -1,3 +1,4 @@
+import { Markdown } from "@/components/dash/markdown";
 import { ReplyBox } from "@/components/dash/actions";
 import { EmptyState, PageHead, Panel, Tag } from "@/components/dash/ui";
 import { channelLabel, getConversation, getConversations, inr, timeOf, type QuoteCard } from "@/lib/dash";
@@ -142,13 +143,16 @@ export default async function InboxPage({ searchParams }: Props) {
                 const agent = m.from === "agent";
                 return (
                   <div key={i} className={`flex flex-col gap-1.5 ${agent ? "items-end" : "items-start"}`}>
-                    <p
-                      className={`w-fit max-w-[34ch] rounded-2xl px-3.5 py-2 text-[0.8125rem] leading-relaxed ${
+                    {/* Rendered, not printed: the twin writes lists and links,
+                        and `overflow-wrap:anywhere` keeps an invoice URL or a
+                        pasted blob of HTML inside the bubble. */}
+                    <div
+                      className={`w-fit max-w-[34ch] rounded-2xl px-3.5 py-2 text-[0.8125rem] leading-relaxed [overflow-wrap:anywhere] ${
                         agent ? "bg-ink text-white" : "bg-chip text-ink"
                       }`}
                     >
-                      {m.text}
-                    </p>
+                      <Markdown tone={agent ? "dark" : "light"}>{m.text}</Markdown>
+                    </div>
 
                     {m.quote ? <QuoteAttachment quote={m.quote} /> : null}
 
