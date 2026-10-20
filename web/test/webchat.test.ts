@@ -625,7 +625,8 @@ describe("the contact field the widget shows", () => {
     await buy();
 
     expect((await post("name", "Priya Sharma").expect(200)).body.contactAsk).toBe("email");
-    expect((await post("email", "priya@shop.test").expect(200)).body.contactAsk).toBe("phone");
+    // One way to reach them is enough; the phone field is never shown.
+    expect((await post("email", "priya@shop.test").expect(200)).body.contactAsk).toBeNull();
     expect((await post("phone", "9876543210").expect(200)).body.contactAsk).toBeNull();
 
     const customer = await twin();

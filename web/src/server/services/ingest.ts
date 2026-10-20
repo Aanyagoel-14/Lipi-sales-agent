@@ -256,7 +256,11 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     // is a commercial commitment on the customer's own terms (net-30, a PO
     // number), not a self-serve retail buy, so it always needs a human's eyes
     // even under a policy of "nothing".
-    const runs: { agent: string; action: string; touchesMoney: boolean; ms: number; mandatory?: boolean }[] = [];
+    const runs: {
+      agent: string; action: string; touchesMoney: boolean; ms: number; mandatory?: boolean;
+      /** The order this run's approval decides (a purchase order). */
+      orderId?: string;
+    }[] = [];
     let order: { id: string; valueInr: number } | null = null;
     let reservedUntil: Date | null = null;
     let parts: ReplyParts;
@@ -301,9 +305,11 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         record("inventory_twin.shortfall", "inventory", `sku=${match.sku} requested=${wants} available=${available}`);
         runs.push({ agent: "Procurement", action: `Shortfall of ${wants - available} on ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}`, touchesMoney: true, ms: 1800 });
 
+        // Nothing is held before payment, so nothing is offered as held: the
+        // honest offer is the quantity there is, or another variant.
         parts = available > 0
-          ? { core: `I have ${available} of those, not ${wants}.`, detail: `Lead time on the rest is ${match.product.leadTimeDays} days.`, question: `Want me to hold the ${available} and order the rest?` }
-          : { core: "That variant is out of stock.", detail: `Lead time is ${match.product.leadTimeDays} days.`, question: "Shall I put it on order?" };
+          ? { core: `I have ${available} of those, not ${wants}.`, detail: `More is ${match.product.leadTimeDays} days away.`, question: `Would ${available} do for now?` }
+          : { core: "That variant is out of stock.", detail: `More is ${match.product.leadTimeDays} days away.`, question: "Would another size or colour do?" };
       }
     } else if (extracted.intent === "purchase_order" && match && match.precise) {
       // C-1 fix: a purchase order is the highest-value message type this twin
@@ -342,7 +348,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         runs.push({
           agent: "Sales",
           action: `Purchase order for ${wants} × ${match.product.name} ${match.variant.optionA} ${match.variant.optionB}, reserved stock pending confirmation`,
-          touchesMoney: true, ms: 1200, mandatory: true,
+          touchesMoney: true, ms: 1200, mandatory: true, orderId: created.id,
         });
         runs.push({ agent: "Inventory", action: `Reserved ${wants} units against PO, ${remaining} left unreserved`, touchesMoney: false, ms: 380 });
 
@@ -367,8 +373,8 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
         });
 
         parts = available > 0
-          ? { core: `I can only cover ${available} of the ${wants} on your PO right now.`, detail: `Lead time on the rest is ${match.product.leadTimeDays} days.`, question: "Shall I hold what I have and put the rest on order?" }
-          : { core: "That variant is out of stock for the PO as written.", detail: `Lead time is ${match.product.leadTimeDays} days.`, question: "Shall I put the full quantity on order?" };
+          ? { core: `I can only cover ${available} of the ${wants} on your PO right now.`, detail: `Lead time on the rest is ${match.product.leadTimeDays} days.`, question: "Someone will come back to you on what we can supply and when." }
+          : { core: "That variant is out of stock for the PO as written.", detail: `Lead time is ${match.product.leadTimeDays} days.`, question: "Someone will come back to you on when we can supply it." };
       }
     } else if (extracted.intent === "purchase_order" && match) {
       // PO named a product but not a precise variant. Same caution as a buy:
@@ -402,14 +408,14 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
             }
           : {
               core: `The ${match.product.name} is out of stock right now.`,
-              detail: `Lead time is ${match.product.leadTimeDays} days.`,
-              question: "Shall I put you down for it?",
+              detail: `More is ${match.product.leadTimeDays} days away.`,
+              question: "Would something else do in the meantime?",
             };
       } else {
         runs.push({ agent: "Inventory", action: `Checked ${match.sku}, ${available} available`, touchesMoney: false, ms: 320 });
         parts = available > 0
           ? { core: `${available} left in ${match.variant.optionA} / ${match.variant.optionB}.`, detail: knowledge?.body, question: "Shall I send you the invoice and a payment link?" }
-          : { core: `None left in ${match.variant.optionA} / ${match.variant.optionB}.`, detail: `I can restock in ${match.product.leadTimeDays} days.`, question: "Shall I put you down for it?" };
+          : { core: `None left in ${match.variant.optionA} / ${match.variant.optionB}.`, detail: `More is ${match.product.leadTimeDays} days away.`, question: "Would another size or colour do?" };
       }
     } else if (extracted.intent === "buy" && match) {
       // Product named but not the variant. Reserving a guess would be worse
@@ -458,17 +464,25 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       justOrdered: Boolean(order),
       orderCount: priorOrders,
     });
-    if (leadScore !== customer.leadScore || leadStage !== customer.leadStage) {
-      customer = await tx.customer.update({
-        where: { id: customer.id },
-        data: { leadScore, leadStage: leadStage as LeadStage },
-      });
-      record("lead.scored", "customer", `${customer.id} score=${leadScore} stage=${leadStage}`);
-    }
+    const rescored = leadScore !== customer.leadScore || leadStage !== customer.leadStage;
 
     // Asked of the twin as it stands after this message, so a detail given in
-    // the same breath is never asked for again.
-    const contactAsk = nextContactAsk(leadScore, leadStage, contactHeld(customer));
+    // the same breath is never asked for again — and asked once, not on
+    // every message, which is what `contactAskedAt` remembers.
+    const contactAsk = nextContactAsk(leadScore, leadStage, contactHeld(customer), {
+      askedAt: customer.contactAskedAt, now, justGave: contact.captured.length > 0,
+    });
+
+    if (rescored || contactAsk) {
+      customer = await tx.customer.update({
+        where: { id: customer.id },
+        data: {
+          ...(rescored ? { leadScore, leadStage: leadStage as LeadStage } : {}),
+          ...(contactAsk ? { contactAskedAt: now } : {}),
+        },
+      });
+      if (rescored) record("lead.scored", "customer", `${customer.id} score=${leadScore} stage=${leadStage}`);
+    }
 
     /* -------------------------------------------------- agents and reply */
     const held = needsApproval(workspace.approvalPolicy, false);
@@ -491,6 +505,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
             detail: `Raised from ${conversation.id}`,
             impact: order ? `Order ${order.id}, ₹${order.valueInr.toLocaleString("en-IN")}` : "No order value yet",
             raisedAt: now, severity: "attention", runId: run.id,
+            orderId: r.orderId ?? null,
           },
         });
       }

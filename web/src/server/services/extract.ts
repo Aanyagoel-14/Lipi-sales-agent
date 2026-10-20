@@ -274,30 +274,73 @@ const ASKS_STOCK = /\b(in stock|back in stock|available|availability|do (?:you|u
  */
 const COMMITS = /\b(need|want|order|buy|send me|take|purchase|give me|get me|grab|reserve|book|add|i'?ll have|(?:can|could|may) i (?:get|have))\b/;
 
+/** Asking what it costs, which is a question, not a purchase. */
+const ASKS_PRICE = /\b(price|pricing|rate|cost|costs|how much|quote|quotation)\b/;
+
 /**
- * Whatever read the message, a stock question with no word of wanting it is
- * not a purchase.
- *
- * `buy` is the one intent that writes: it reserves stock, opens an order and
- * issues an invoice. A model that reads "Do u have polo in L?" as `buy` —
- * which one did, live — commits stock the customer never asked for and tells
- * them so. That decision is a fact, and facts are decided in code; the model
- * only proposes it.
+ * Asking for money off. A discount is never the twin's to give, so a message
+ * that turns on one is a negotiation whatever else it says — "I'll buy 5 if
+ * you do 20% off" is not an order for 5 at list price.
  */
-export function guardBuy(result: ExtractionResult, text: string): ExtractionResult {
-  if (result.intent !== "buy") return result;
+const HAGGLES = /\b(discount|cheaper|best price|lowest price|any deal|offer price|\d+\s*%\s*off|percent off)\b/;
+
+/** Asking for paperwork on a sale already made, not making one. */
+const ASKS_INVOICE = /\b(invoice|bill|receipt|proforma)\b/;
+
+/**
+ * What makes a purchase order one: the instrument is named, or its terms
+ * are. The model's own definition says so; this is it, checked.
+ */
+const PO_MARKERS = /\b(po|p\.o\.|purchase order|net\s*\d+)\b/;
+
+/**
+ * Whatever read the message, what it does is decided here.
+ *
+ * `buy` and `purchase_order` are the intents that write: they open an order,
+ * and one of them reserves stock and raises an approval. A model read "Do u
+ * have polo in L?" as `buy` live, "How much is the linen shirt?" and "20%
+ * off if I buy 5?" as `buy`, and "Send me the invoice" as a purchase order
+ * — each of which opened an order or an approval nobody asked for. Each is
+ * a fact about the message that a few words settle, and facts are decided
+ * in code; the model only proposes.
+ */
+export function guardIntent(result: ExtractionResult, text: string, vocab: Vocabulary): ExtractionResult {
   const t = text.toLowerCase();
-  return ASKS_STOCK.test(t) && !COMMITS.test(t) ? { ...result, intent: "inventory_request" } : result;
+
+  if (result.intent === "buy") {
+    if (HAGGLES.test(t)) return { ...result, intent: "quote_request" };
+    if (ASKS_PRICE.test(t) && !COMMITS.test(t)) return { ...result, intent: "quote_request" };
+    if (ASKS_STOCK.test(t) && !COMMITS.test(t)) return { ...result, intent: "inventory_request" };
+    return result;
+  }
+
+  // Not a purchase order without the words that make it one. The rules know
+  // every other intent, and never produce this one without the markers.
+  if (result.intent === "purchase_order" && !PO_MARKERS.test(t)) {
+    return { ...result, intent: extractWithRules(text, vocab).intent };
+  }
+
+  return result;
 }
+
+/** Kept for callers that only guard a buy. */
+export const guardBuy = (result: ExtractionResult, text: string, vocab: Vocabulary) => guardIntent(result, text, vocab);
 
 export function extractWithRules(text: string, vocab: Vocabulary, now = new Date()): ExtractionResult {
   const t = text.toLowerCase();
 
+  const categoryKey = Object.keys(vocab.categories)
+    .sort((a, b) => b.length - a.length)
+    .find((k) => new RegExp(`\\b${escape(k)}\\b`).test(t));
+
   const intent: Extracted["intent"] =
     /\b(return|exchange|swap|refund)\b/.test(t) ? "return"
-    : /\b(po|purchase order|net \d+)\b/.test(t) ? "purchase_order"
-    : /\b(price|pricing|rate|cost|discount|quote|quotation|how much)\b/.test(t) ? "quote_request"
+    : PO_MARKERS.test(t) ? "purchase_order"
+    : HAGGLES.test(t) || ASKS_PRICE.test(t) ? "quote_request"
     : /\b(broken|damaged|faulty|complain|terrible|awful)\b/.test(t) ? "complaint"
+    // "Send me the invoice" names no product: it is about a sale already
+    // made. With a product it is a purchase that wants its paperwork.
+    : ASKS_INVOICE.test(t) && !categoryKey ? "support"
     : ASKS_STOCK.test(t) ? "inventory_request"
     // "give me two polos" is as much a purchase as "I need two polos". A
     // buy phrase the rules do not know reads as `other`, and the twin answers
@@ -307,10 +350,6 @@ export function extractWithRules(text: string, vocab: Vocabulary, now = new Date
     : "other";
 
   const quantity = parseQuantity(t);
-
-  const categoryKey = Object.keys(vocab.categories)
-    .sort((a, b) => b.length - a.length)
-    .find((k) => new RegExp(`\\b${escape(k)}\\b`).test(t));
 
   let deadline: string | null = null;
   const day = WEEKDAYS.find((d) => new RegExp(`\\b${d}\\b`).test(t));
@@ -437,7 +476,7 @@ export async function extract(
   }
 
   try {
-    return guardBuy(await extractWithOpenRouter(text, vocab, now, meter), text);
+    return guardIntent(await extractWithOpenRouter(text, vocab, now, meter), text, vocab);
   } catch (error) {
     console.warn(`[extract] OpenRouter failed, using rules: ${(error as Error).message}`);
     return extractWithRules(text, vocab, now);

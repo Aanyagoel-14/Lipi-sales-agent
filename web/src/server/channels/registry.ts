@@ -909,7 +909,52 @@ export function parseAddress(raw: string): { address: string; name?: string } | 
 export const GMAIL_QUERY = "in:inbox -from:me -category:promotions -category:social -category:updates -category:forums";
 
 /** Senders that are machines. Answering one starts a loop or a bounce. */
-const AUTOMATED_SENDER = /^(no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounces?|notifications?)([+.@-]|$)/i;
+const AUTOMATED_SENDER =
+  /^(no-?reply|do-?not-?reply|mailer-daemon|postmaster|bounces?|notifications?|alerts?|security|mailer|newsletter|marketing|updates?|digest)([+.@-]|$)/i;
+
+/**
+ * Domains that only ever send notifications — a login alert from Meta, a
+ * security notice from Google. One such mail reached the twin as a
+ * "customer", had a phone number read out of its HTML, and got a reply.
+ */
+const NOTIFICATION_DOMAIN =
+  /(^|\.)(facebookmail\.com|account\.meta\.com|mail\.instagram\.com|accounts\.google\.com|notifications\.google\.com|email\.apple\.com|id\.apple\.com|linkedin\.com|amazonses\.com)$/i;
+
+/** The most of an email the twin reads. A customer question fits; a forwarded thread or a template does not need to. */
+const EMAIL_TEXT_LIMIT = 4000;
+
+const looksLikeHtml = (text: string) =>
+  /^\s*<(!doctype|html|head|body|table|div|center)\b/i.test(text) || /<\/(p|div|td|tr|table|body|html)>/i.test(text);
+
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+
+/**
+ * An HTML-only email, as the words a person would read in it. Head, style
+ * and script go; block ends become line breaks; tags go; entities are
+ * decoded. Not a renderer — enough that the model reads the message rather
+ * than its stylesheet.
+ */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<(head|style|script)\b[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    // A paragraph end is a blank line; a line break or a row end is a newline.
+    .replace(/<\s*(\/p|\/div|\/h[1-6]|\/blockquote)\b[^>]*>/gi, "\n\n")
+    .replace(/<\s*(br|\/tr|\/li)\b[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, code: string) => {
+      const key = code.toLowerCase();
+      if (key in ENTITIES) return ENTITIES[key]!;
+      if (key.startsWith("#x")) return String.fromCodePoint(parseInt(key.slice(2), 16));
+      if (key.startsWith("#")) return String.fromCodePoint(parseInt(key.slice(1), 10));
+      return whole;
+    })
+    .split("\n")
+    .map((line) => line.replace(/[ \t\u00a0]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 /**
  * Headers that mark bulk or automatic mail (RFC 2369, RFC 3834). The
@@ -996,12 +1041,16 @@ const email: ChannelSpec = {
     if (labels.includes("SENT") || labels.includes("DRAFT")) return [];
     if (connection.externalId && from.address === connection.externalId.toLowerCase()) return [];
     if (AUTOMATED_SENDER.test(from.address)) return [];
+    if (NOTIFICATION_DOMAIN.test(from.address.split("@")[1] ?? "")) return [];
 
     const raw = record(data.payload);
     const headers = Array.isArray(raw?.headers) ? (raw.headers as { name?: unknown; value?: unknown }[]) : [];
     if (isBulk(headers)) return [];
 
-    const text = stripQuoted(str(data.message_text) ?? str(data.snippet) ?? "");
+    // Some mail has no plain-text part, and the trigger hands over the HTML
+    // one; the model should read the words in it, not the markup.
+    const mail = str(data.message_text) ?? str(data.snippet) ?? "";
+    const text = stripQuoted(looksLikeHtml(mail) ? htmlToText(mail) : mail).slice(0, EMAIL_TEXT_LIMIT);
     if (!text) return [];
 
     return [{

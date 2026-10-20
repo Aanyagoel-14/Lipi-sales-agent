@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
 import { afterSettled } from "./next/server";
 import { fakeComposio } from "./fakes/composio";
-import { GMAIL_QUERY, specFor, stripQuoted } from "@/server/channels/registry";
+import { GMAIL_QUERY, htmlToText, specFor, stripQuoted } from "@/server/channels/registry";
 import { env } from "@/server/env";
 import { prisma } from "@/server/lib/prisma";
 import { _resetRateLimitsForTests } from "@/server/lib/rate-limit";
@@ -216,6 +216,10 @@ describe("mail nobody should answer", () => {
   };
 
   it("drops a no-reply sender", () => nothingFrom(gmail({ sender: "Shop <no-reply@shop.test>" })));
+  // A Meta login alert reached the twin as a customer, had a phone number
+  // read out of its HTML, and was answered.
+  it("drops a platform security notice", () => nothingFrom(gmail({ sender: "Meta Account Security <security@account.meta.com>" })));
+  it("drops an alerts@ sender", () => nothingFrom(gmail({ sender: "Alerts <alerts@bank.test>" })));
   it("drops a bounce", () => nothingFrom(gmail({ sender: "Mail Delivery Subsystem <mailer-daemon@googlemail.com>" })));
   it("drops our own sent copy", () => nothingFrom(gmail({ label_ids: ["SENT", "INBOX"] })));
   it("drops mail from the mailbox itself", () => nothingFrom(gmail({ sender: `Acme <${MAILBOX.toUpperCase()}>` })));
@@ -240,6 +244,26 @@ describe("the reply builder", () => {
   it("starts a fresh email as a reply to their subject when there is not", () => {
     expect(spec.send({ to: "deepa@example.com", text: "Done.", config: {}, subject: "Polo in L?" }))
       .toEqual({ slug: "GMAIL_SEND_EMAIL", arguments: { recipient_email: "deepa@example.com", subject: "Re: Polo in L?", body: "Done." } });
+  });
+});
+
+describe("an HTML-only email", () => {
+  beforeEach(async () => { await connectEmail(alpha, ACCOUNT_A, MAILBOX); });
+
+  it("reaches the model as its words, not its markup", async () => {
+    const html = "<!DOCTYPE html><html><head><style>p{margin:0}</style></head><body><div><p>Hi,<br>do you have the polo in L?</p><p>Thanks &amp; regards</p></div></body></html>";
+    await deliver(trigger(gmail({ message_text: html })));
+
+    const [conversation] = await conversationsIn(alpha);
+    expect(conversation!.messages.find((m) => m.from === "customer")!.text).toBe("Hi,\ndo you have the polo in L?\n\nThanks & regards");
+  });
+
+  it("keeps a plain email exactly as written", () => {
+    expect(htmlToText("Two please.\nSize L.")).toBe("Two please.\nSize L.");
+  });
+
+  it("decodes entities and drops the head", () => {
+    expect(htmlToText("<html><head><title>x</title></head><body>Price &lt; &#8377;2,000 &nbsp;please</body></html>")).toBe("Price < ₹2,000 please");
   });
 });
 

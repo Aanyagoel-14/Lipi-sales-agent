@@ -278,6 +278,40 @@ async function credentialIsDead(
   }
 }
 
+/**
+ * A message to a customer that no customer message prompted: payment
+ * received, a purchase order confirmed. Written into their latest
+ * conversation on the channel the order came in on and sent through
+ * `sendReply`, so it shows in the inbox and is delivered exactly as a reply
+ * would be. Null when there is no conversation to put it in.
+ */
+export async function messageCustomer(args: {
+  workspaceId: string;
+  orderId: string;
+  text: string;
+  by?: string;
+}): Promise<SendOutcome | null> {
+  const order = await prisma.order.findFirst({
+    where: { id: args.orderId, workspaceId: args.workspaceId },
+    select: { customerId: true, channel: true },
+  });
+  if (!order) return null;
+
+  const conversation = await prisma.conversation.findFirst({
+    where: { workspaceId: args.workspaceId, customerId: order.customerId, channel: order.channel },
+    orderBy: { lastAt: "desc" },
+  });
+  if (!conversation) return null;
+
+  const now = new Date();
+  const message = await prisma.message.create({
+    data: { from: "agent", text: args.text, sentAt: now, conversationId: conversation.id, deliveryStatus: "pending" },
+  });
+  await prisma.conversation.update({ where: { id: conversation.id }, data: { lastAt: now } });
+
+  return sendReply({ workspaceId: args.workspaceId, conversationId: conversation.id, messageId: message.id, by: args.by });
+}
+
 export async function sendReply(args: {
   workspaceId: string;
   conversationId: string;
@@ -305,9 +339,20 @@ export async function sendReply(args: {
     where: { workspaceId_channel: { workspaceId: args.workspaceId, channel } },
   });
 
-  // Nothing to retry and nothing wrong with the channel: the workspace simply
-  // has not connected it. The message stays in the thread, marked for what it
-  // is, and no event is written — this is not an incident.
+  // The website widget has no provider: it polls the conversation itself and
+  // shows every agent message it finds, so a message written here has, for
+  // its purposes, been sent. The inbox showed these as "not delivered" to an
+  // operator whose visitor was reading them.
+  if (channel === "webchat") {
+    await prisma.message.update({ where: { id: message.id }, data: { deliveryStatus: "sent", deliveryError: null } });
+    await recordEvent(args.workspaceId, "reply.sent", "conversation",
+      `${conversation.id} via webchat${args.by ? ` by ${args.by}` : ""}`);
+    return { delivered: true };
+  }
+
+  // Nothing to retry and nothing wrong with the channel: there is no
+  // provider for it. The message stays in the thread, marked for what it is,
+  // and no event is written — this is not an incident.
   if (!spec) {
     const reason = `${channel} cannot send messages`;
     await markFailed(message.id, reason);

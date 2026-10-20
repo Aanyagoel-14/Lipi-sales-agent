@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectContact, extractWithRules, guardBuy, vocabularyFor } from "@/server/services/extract";
+import { detectContact, extractWithRules, guardIntent, vocabularyFor } from "@/server/services/extract";
 
 const apparel = vocabularyFor("apparel");
 const parts = vocabularyFor("auto_parts");
@@ -151,16 +151,35 @@ describe("ways of saying buy", () => {
  * told a polo had been put aside for them. Whatever the model says, a stock
  * question with no word of wanting the thing is answered, not acted on.
  */
-describe("a stock question is never a purchase", () => {
+describe("what the model may not decide", () => {
   const asBuy = (text: string) => ({ ...extractWithRules(text, apparel, AUG), intent: "buy" as const });
+  const asPO = (text: string) => ({ ...extractWithRules(text, apparel, AUG), intent: "purchase_order" as const });
 
   it.each([
     "Do u have polo in L?",
     "do you have the chino in 32",
     "is the olive polo available?",
     "have you got any polos in XL",
-  ])("overrules a model that read %j as buy", (text) => {
-    expect(guardBuy(asBuy(text), text).intent).toBe("inventory_request");
+  ])("overrules a model that read %j as buy: it is a stock question", (text) => {
+    expect(guardIntent(asBuy(text), text, apparel).intent).toBe("inventory_request");
+  });
+
+  // Both read as `buy` live, which opened an order and an invoice for a
+  // customer who had asked a price and one who had asked for money off.
+  it.each([
+    "How much is the linen shirt?",
+    "what's the price of the polo in L",
+    "how much for 2 polos",
+  ])("overrules a model that read %j as buy: it is a price question", (text) => {
+    expect(guardIntent(asBuy(text), text, apparel).intent).toBe("quote_request");
+  });
+
+  it.each([
+    "Can you give me 20% off if I buy 5?",
+    "I'll take 5 if you do them cheaper",
+    "any discount on the polo?",
+  ])("overrules a model that read %j as buy: asking for money off is a negotiation", (text) => {
+    expect(guardIntent(asBuy(text), text, apparel).intent).toBe("quote_request");
   });
 
   it.each([
@@ -169,16 +188,33 @@ describe("a stock question is never a purchase", () => {
     "is it available? can I get one in L",
     "need 2 olive L polos",
   ])("leaves %j a purchase", (text) => {
-    expect(guardBuy(asBuy(text), text).intent).toBe("buy");
+    expect(guardIntent(asBuy(text), text, apparel).intent).toBe("buy");
+  });
+
+  // "Send me the invoice" was read as a purchase order and raised an
+  // approval for a PO with no product in it.
+  it("overrules a purchase order that names no PO and no terms", () => {
+    expect(guardIntent(asPO("Send me the invoice"), "Send me the invoice", apparel).intent).toBe("support");
+    expect(guardIntent(asPO("I want 2 olive L polos"), "I want 2 olive L polos", apparel).intent).toBe("buy");
+  });
+
+  it("leaves a purchase order that is one", () => {
+    const po = asPO("PO for 5 olive L polos, net 30");
+    expect(guardIntent(po, "PO for 5 olive L polos, net 30", apparel)).toBe(po);
   });
 
   it("leaves every other intent alone", () => {
     const quote = { ...extractWithRules("how much is the polo", apparel, AUG), intent: "quote_request" as const };
-    expect(guardBuy(quote, "how much is the polo")).toBe(quote);
+    expect(guardIntent(quote, "how much is the polo", apparel)).toBe(quote);
   });
 
-  it("reads it the same way without a model", () => {
-    expect(extractWithRules("Do u have polo in L?", apparel, AUG).intent).toBe("inventory_request");
+  it.each([
+    ["Do u have polo in L?", "inventory_request"],
+    ["Send me the invoice", "support"],
+    ["I want 2 olive L polos and an invoice", "buy"],
+    ["20% off if I buy 5?", "quote_request"],
+  ])("reads %j the same way without a model", (text, intent) => {
+    expect(extractWithRules(text, apparel, AUG).intent).toBe(intent);
   });
 });
 

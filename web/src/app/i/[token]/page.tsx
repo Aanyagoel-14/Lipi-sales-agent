@@ -43,7 +43,7 @@ export default async function InvoicePage({ params, searchParams }: Props) {
     where: { number },
     include: {
       workspace: { select: { name: true } },
-      customer: { select: { name: true } },
+      customer: { select: { name: true, handle: true } },
       order: { include: { product: { select: { name: true } } } },
       payments: true,
     },
@@ -79,7 +79,9 @@ export default async function InvoicePage({ params, searchParams }: Props) {
           </header>
 
           <p className="mb-1 text-sm text-ink-muted">Billed to</p>
-          <p className="mb-6">{invoice.customer.name}</p>
+          {/* Until they say who they are, the name on file is their account
+              id, which is not a thing to print on an invoice. */}
+          <p className="mb-6">{invoice.customer.name === invoice.customer.handle ? "Customer" : invoice.customer.name}</p>
 
           {order ? (
             <div className="mb-6 flex justify-between border-y border-line py-3">

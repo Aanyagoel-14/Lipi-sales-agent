@@ -211,14 +211,30 @@ describe("asking for contact details", () => {
     expect(nextContactAsk(score, stage, held())).toBe("name");
   });
 
-  it("asks for one thing at a time, in order", () => {
+  it("asks for a name, then one way to reach them, and stops", () => {
     expect(nextContactAsk(60, "qualified", held())).toBe("name");
     expect(nextContactAsk(60, "qualified", held({ name: true }))).toBe("email");
-    expect(nextContactAsk(60, "qualified", held({ name: true, email: true }))).toBe("phone");
+    // Email and phone are two answers to the same question; one is enough.
+    expect(nextContactAsk(60, "qualified", held({ name: true, email: true }))).toBeNull();
+    expect(nextContactAsk(60, "qualified", held({ name: true, phone: true }))).toBeNull();
   });
 
   it("never asks again for something it already has", () => {
     expect(nextContactAsk(100, "customer", held({ name: true, email: true, phone: true }))).toBeNull();
+  });
+
+  // Asked on every message, the twin read as a form. One ask, then a day's
+  // silence — unless this message handed something over, which is when the
+  // next question is natural.
+  it("does not ask again within a day of asking", () => {
+    const now = new Date("2026-10-18T12:00:00Z");
+    const justAsked = { askedAt: new Date("2026-10-18T11:30:00Z"), now, justGave: false };
+    const yesterday = { askedAt: new Date("2026-10-17T11:00:00Z"), now, justGave: false };
+    const answered = { askedAt: new Date("2026-10-18T11:30:00Z"), now, justGave: true };
+
+    expect(nextContactAsk(60, "qualified", held(), justAsked)).toBeNull();
+    expect(nextContactAsk(60, "qualified", held(), yesterday)).toBe("name");
+    expect(nextContactAsk(60, "qualified", held({ name: true }), answered)).toBe("email");
   });
 
   // A buyer is worth reaching whatever this particular message scored: they

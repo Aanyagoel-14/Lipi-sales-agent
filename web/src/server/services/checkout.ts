@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PaymentMethod } from "@/generated/prisma/client";
-import { sendReply } from "../channels/outbound";
+import { messageCustomer } from "../channels/outbound";
 import { prisma } from "../lib/prisma";
 import { toRupees } from "../lib/money";
 import { REORDER_POINT } from "./ingest";
@@ -116,36 +116,25 @@ export async function settleInvoice(
 }
 
 /**
- * Tells the customer, on the channel they bought on, that it worked.
- *
- * Written into their latest conversation on that channel and sent through
- * the one outbound path, so it shows in the inbox like any other reply. A
+ * Tells the customer, on the channel they bought on, that it worked. A
  * customer who bought on the website widget has no channel to push to; the
  * invoice page they paid on already says it.
  */
 async function confirmToCustomer(workspaceId: string, number: string) {
   const invoice = await prisma.invoice.findFirst({
     where: { workspaceId, number },
-    include: { order: { include: { product: true } }, customer: true },
+    include: { order: { include: { product: true } } },
   });
-  if (!invoice?.order) return;
+  if (!invoice?.order || invoice.order.channel === "webchat") return;
   const { order } = invoice;
 
-  const conversation = await prisma.conversation.findFirst({
-    where: { workspaceId, customerId: invoice.customerId, channel: order.channel },
-    orderBy: { lastAt: "desc" },
-  });
-  if (!conversation || order.channel === "webchat") return;
-
-  const text =
-    `Payment received for ${invoice.number} — ₹${toRupees(invoice.amount).toLocaleString("en-IN")}. ` +
-    `Your ${order.qty} × ${order.product.name} (${order.variant}) is confirmed and set aside for you. ` +
-    "We'll let you know when it ships.";
-
-  const message = await prisma.message.create({
-    data: { from: "agent", text, sentAt: new Date(), conversationId: conversation.id },
-  });
-  await prisma.conversation.update({ where: { id: conversation.id }, data: { lastAt: new Date(), unread: true } });
-  await sendReply({ workspaceId, conversationId: conversation.id, messageId: message.id, by: "payment" })
-    .catch((error: unknown) => console.error(`[checkout] confirmation not sent: ${(error as Error).message}`));
+  await messageCustomer({
+    workspaceId,
+    orderId: order.id,
+    by: "payment",
+    text:
+      `Payment received for ${invoice.number} — ₹${toRupees(invoice.amount).toLocaleString("en-IN")}. ` +
+      `Your ${order.qty} × ${order.product.name} (${order.variant}) is confirmed and set aside for you. ` +
+      "We'll let you know when it ships.",
+  }).catch((error: unknown) => console.error(`[checkout] confirmation not sent: ${(error as Error).message}`));
 }

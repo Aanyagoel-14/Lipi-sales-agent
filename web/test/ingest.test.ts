@@ -77,7 +77,9 @@ describe("quoting stock", () => {
     const result = await say("I need 40 cobalt XL polos");
 
     expect(result.order).toBeNull();
-    expect(result.reply).toMatch(/not|out of stock|lead time/i);
+    expect(result.reply).toMatch(/not|out of stock|days away/i);
+    // Nothing is held before payment, so nothing is offered as held either.
+    expect(result.reply).not.toMatch(/hold|reserve/i);
     const variant = await stockOf("XL", "Cobalt");
     expect(variant.reserved).toBe(0);
   });
@@ -169,11 +171,13 @@ describe("the approval policy", () => {
     expect(result.agentRuns.every((r) => r.status === "done")).toBe(true);
   });
 
-  it("still holds a purchase order under 'money_only'", async () => {
+  it("still holds a purchase order under 'money_only', with the order on the approval", async () => {
     await setup("money_only");
     const result = await say("PO for 5 olive L polos, net 30");
 
     expect(result.agentRuns.find((r) => r.agent === "Sales")?.status).toBe("needs_approval");
+    const approval = await prisma.approval.findFirstOrThrow({ where: { workspaceId, agent: "Sales" } });
+    expect(approval.orderId).toBe(result.order!.id);
   });
 
   it("lets everything through under 'nothing'", async () => {

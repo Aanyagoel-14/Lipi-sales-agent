@@ -175,6 +175,26 @@ describe("what the twin is told to ask for next", () => {
 
     expect(result.contactAsk).toBeNull();
   });
+
+  it("stops once it has one way to reach them", async () => {
+    await say("my name is Priya Sharma, call 9876543210");
+    const result = await say("I need 3 olive L polos");
+
+    expect(result.contactAsk).toBeNull();
+  });
+
+  // Asked and ignored, the twin leaves it: the same question on every
+  // message is what made it read as a form. It remembers on the twin.
+  it("asks once, and not again on the next message", async () => {
+    const first = await say("I need 3 olive L polos");
+    expect(first.contactAsk).toBe("name");
+
+    const next = await say("and do you have it in olive?");
+    expect(next.contactAsk).toBeNull();
+
+    const customer = await prisma.customer.findFirstOrThrow({ where: { workspaceId } });
+    expect(customer.contactAskedAt).toBeInstanceOf(Date);
+  });
 });
 
 /**
@@ -192,9 +212,10 @@ describe("what the channel already gives the twin", () => {
 
     expect(result.contactAsk).toBe("name");
 
+    // The number is a way to reach them already, so nothing more is asked.
     await ingest({ workspaceId, channel: "whatsapp", handle: "919876543210", text: "my name is Priya" });
     const next = await on("whatsapp", "919876543210");
-    expect(next.contactAsk).toBe("email");
+    expect(next.contactAsk).toBeNull();
   });
 
   it("does not ask an email customer for their email address", async () => {
@@ -204,7 +225,7 @@ describe("what the channel already gives the twin", () => {
 
     await ingest({ workspaceId, channel: "email", handle: "priya@shop.test", text: "my name is Priya" });
     const next = await on("email", "priya@shop.test");
-    expect(next.contactAsk).toBe("phone");
+    expect(next.contactAsk).toBeNull();
   });
 
   // A Telegram chat id is neither, so nothing is assumed from it.
@@ -213,8 +234,10 @@ describe("what the channel already gives the twin", () => {
 
     expect(result.contactAsk).toBe("name");
 
-    await ingest({ workspaceId, channel: "telegram", handle: "845112039", text: "my name is Priya" });
+    // Asked for on the turn the name arrives — and not again straight after.
+    const gave = await ingest({ workspaceId, channel: "telegram", handle: "845112039", text: "my name is Priya" });
+    expect(gave.contactAsk).toBe("email");
     const next = await on("telegram", "845112039");
-    expect(next.contactAsk).toBe("email");
+    expect(next.contactAsk).toBeNull();
   });
 });

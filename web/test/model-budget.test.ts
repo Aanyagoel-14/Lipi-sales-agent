@@ -65,7 +65,7 @@ afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); });
 describe("metering every model call", () => {
   it("writes one row per call, named by what spent it", async () => {
     await setup();
-    answers("Lovely, those are reserved for you.");
+    answers("Lovely, two cobalt XL polos it is.");
 
     const result = await buy("I need 2 blue XL polos");
 
