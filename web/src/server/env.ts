@@ -41,6 +41,11 @@ const schema = z.object({
   COMPOSIO_AUTH_CONFIG_TELEGRAM: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_X: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_GMAIL: z.string().optional(),
+  // Razorpay is connected the same way (key id and secret to Composio, which
+  // then creates every payment link), but it is a gateway, not a channel:
+  // see `server/payments/razorpay.ts`. Absent means the Payments card says
+  // the deployment does not offer it.
+  COMPOSIO_AUTH_CONFIG_RAZORPAY: z.string().optional(),
   // Lipi's own Meta app: one App Secret and one verify token for the whole
   // deployment, set once in the Meta app against `/webhooks/meta`. Meta
   // signs every inbound body with the *subscribing* app's secret, so these
@@ -79,9 +84,13 @@ const schema = z.object({
   // shape of a payload the twin trusts without anything here changing.
   SHOPIFY_API_VERSION: z.string().default("2025-01"),
 
-  // -------------------------------------------------------------- Stripe --
-  // Checkout links. Optional, and absent means the `Stripe_Invoice` skill
-  // still issues a real invoice with a real downloadable PDF — it just
+  // ------------------------------------------------------------ payments --
+  // A workspace that has connected its own Razorpay account collects through
+  // it, whatever is set here (`paymentProviderFor`). These are the
+  // deployment-wide fallbacks for one that has not.
+  //
+  // Stripe checkout links. Optional, and absent means the `Stripe_Invoice`
+  // skill still issues a real invoice with a real downloadable PDF — it just
   // reports that no payment link could be created and why. It never invents
   // a URL; see `server/lib/payments.ts` for why that distinction is the whole
   // point of the seam.

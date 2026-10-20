@@ -60,8 +60,9 @@ go in `web/.env`.
 | WhatsApp | `whatsapp` | API_KEY (system-user token as `bearer_token`, WABA id as `generic_id`) | `COMPOSIO_AUTH_CONFIG_WHATSAPP` |
 | Instagram | `instagram` | OAuth2, **custom** on Lipi's Meta app for anything live | `COMPOSIO_AUTH_CONFIG_INSTAGRAM` |
 | Email | `gmail` | OAuth2, Composio-managed is fine to start | `COMPOSIO_AUTH_CONFIG_GMAIL` |
+| Razorpay (payments) | `razorpay` | API_KEY (key secret as `generic_api_key`, key id as `generic_id`); see `razorpay.md` | `COMPOSIO_AUTH_CONFIG_RAZORPAY` |
 
-The fastest path is the setup script, which creates whichever of the four the project does
+The fastest path is the setup script, which creates whichever of these the project does
 not have yet and prints the ids to paste into `web/.env`:
 
 ```

@@ -544,6 +544,8 @@ describe("Stripe_Invoice", () => {
 
     const provider: PaymentProvider = {
       name: "stripe",
+      test: false,
+      shareable: false,
       configured: () => true,
       async createCheckoutLink(request) {
         return {
