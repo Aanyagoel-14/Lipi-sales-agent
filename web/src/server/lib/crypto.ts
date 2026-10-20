@@ -74,6 +74,19 @@ export function verifyShopifyWebhook(raw: Buffer, header: string | undefined, ap
 }
 
 /**
+ * Razorpay signs a webhook body with the secret the operator typed into its
+ * webhook form — hex, no prefix, in `X-Razorpay-Signature`. The secret is
+ * the tenant's rather than the deployment's, which is why it is kept on the
+ * payment connection (encrypted) instead of in the env; the rule about the
+ * raw bytes is the same as everywhere else on this page.
+ */
+export function verifyRazorpaySignature(raw: Buffer, header: string | undefined, webhookSecret: string): boolean {
+  if (!header) return false;
+  const expected = createHmac("sha256", webhookSecret).update(raw).digest("hex");
+  return secretsMatch(expected, header.trim().toLowerCase());
+}
+
+/**
  * X's one signing construction, which both halves of its webhook contract
  * use: HMAC-SHA256 under the *app's* consumer secret, base64 where Meta's is
  * hex, prefixed `sha256=`. Written once because a delivery we verified with

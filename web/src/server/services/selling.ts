@@ -1,10 +1,12 @@
 import { env } from "../env";
 import { chatForReply } from "../lib/openrouter";
 import { checkModelBudget, type ModelMeter } from "../lib/metering";
-import { publicInvoiceUrl } from "../lib/payments";
+import { recordEvent } from "../lib/events";
+import { paymentProviderFor, publicInvoiceUrl } from "../lib/payments";
 import { prisma } from "../lib/prisma";
 import { toRupees } from "../lib/money";
 import { buildGrounding } from "./briefing";
+import { checkoutFor } from "./checkout";
 import { ingest, type IngestResult } from "./ingest";
 import { invoiceForOrder } from "./invoicing";
 import type { ContactField } from "./leads";
@@ -66,9 +68,12 @@ export type SellResult = {
   order: (IngestResult["order"] & { stage: string }) | null;
   /**
    * `url` is the dashboard's PDF; `link` is the customer's own invoice page,
-   * signed, with the way to pay on it. `link` is what the reply carries.
+   * signed, with the way to pay on it. `payUrl` is the gateway's own link
+   * when the workspace has one that is meant to be handed over directly (a
+   * Razorpay payment link); null when paying starts from the invoice page.
+   * The reply carries `link`, and `payUrl` above it when there is one.
    */
-  invoice: { number: string; amountInr: number; dueIso: string; url: string; link: string } | null;
+  invoice: { number: string; amountInr: number; dueIso: string; url: string; link: string; payUrl: string | null } | null;
   intent: string;
   held: boolean;
   degraded?: string;
@@ -347,6 +352,28 @@ export function repairHoldTalk(reply: string, signOff: string | null): string | 
 const WANTS_INVOICE = /\b(invoice|bill|receipt|proforma)\b/i;
 
 /**
+ * The gateway's link for an invoice, when the workspace's gateway issues
+ * the kind that goes in a chat message. Made now, in the reply, because that
+ * is how a shop that sells in chat gets paid: the customer says yes and the
+ * link arrives in the same thread. A gateway that will not answer costs the
+ * reply nothing — the invoice page still has the Pay button, which tries
+ * again — and the reason is in the event trail, not the customer's message.
+ */
+async function shareablePayLink(workspaceId: string, number: string): Promise<string | null> {
+  const provider = await paymentProviderFor(workspaceId);
+  if (!provider.shareable || !provider.configured()) return null;
+  try {
+    const { checkout } = await checkoutFor(workspaceId, number, provider);
+    if (checkout.ok) return checkout.link.url;
+    await recordEvent(workspaceId, "checkout.link_unavailable", "order",
+      `invoice=${number} provider=${checkout.provider} reason="${checkout.reason.slice(0, 200)}"`);
+  } catch (error) {
+    console.error(`[selling] payment link for ${number} not created: ${(error as Error).message}`);
+  }
+  return null;
+}
+
+/**
  * The customer's invoice link, on every reply that has an invoice.
  *
  * Added here rather than asked of the model: the model may paraphrase or drop
@@ -363,7 +390,11 @@ export async function sell(input: Parameters<typeof sellOnce>[0]): Promise<SellR
   const signOff = (await prisma.twinVoice.findUnique({
     where: { workspaceId: input.workspaceId }, select: { signOff: true },
   }))?.signOff;
-  const line = `Your invoice and payment link: ${result.invoice.link}`;
+  // The gateway's own link first, when there is one: it is the thing to tap.
+  // The invoice page is still there for the document and the PDF.
+  const line = result.invoice.payUrl
+    ? `Pay securely here: ${result.invoice.payUrl}\nYour invoice: ${result.invoice.link}`
+    : `Your invoice and payment link: ${result.invoice.link}`;
   const reply = signOff && result.reply.endsWith(signOff)
     ? `${result.reply.slice(0, -signOff.length).trimEnd()}\n\n${line}\n${signOff}`
     : `${result.reply}\n\n${line}`;
@@ -429,6 +460,7 @@ async function sellOnce(input: {
       dueIso: row.dueOn.toISOString().slice(0, 10),
       url: `/v1/invoices/${encodeURIComponent(row.number)}/pdf`,
       link: publicInvoiceUrl(row.number),
+      payUrl: await shareablePayLink(input.workspaceId, row.number),
     };
   }
 

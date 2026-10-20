@@ -4,6 +4,7 @@ import { body, HttpError, json, route } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
 import { requireUser } from "@/server/lib/session";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
+import { closePaymentLinksFor } from "@/server/payments/razorpay";
 import { settleInvoice } from "@/server/services/checkout";
 import { invoiceForOrder } from "@/server/services/invoicing";
 import { confirmOrder, holdsStock } from "@/server/services/reservations";
@@ -44,7 +45,7 @@ const NEXT: Record<Stage, readonly Stage[]> = {
 const stageSchema = z.object({
   stage: z.enum(STAGES),
   /** Read only when the stage is Paid: how the money came, and any reference the operator has for it. */
-  method: z.enum(["bank_transfer", "card", "upi", "cash"]).optional(),
+  method: z.enum(["bank_transfer", "card", "upi", "cash", "wallet", "other"]).optional(),
   reference: z.string().trim().max(80).optional(),
 });
 
@@ -145,6 +146,13 @@ export const POST = route<{ id: string }>(async (req, { id: orderId }) => {
         ? `Your order ${orderId} — ${what} — has shipped.`
         : `Your order ${orderId} — ${what} — has been delivered. Thank you!`,
     }).catch((error: unknown) => console.error(`[orders] shipping note not sent: ${(error as Error).message}`));
+  }
+
+  // A cancelled order's payment link must stop taking money. Best effort,
+  // after the stage is settled: the webhook closes the row if this cannot.
+  if (data.stage === "Cancelled") {
+    await closePaymentLinksFor(workspaceId, orderId)
+      .catch((error: unknown) => console.error(`[orders] payment link not cancelled: ${(error as Error).message}`));
   }
 
   return json({ ok: true, stage: data.stage });

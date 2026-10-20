@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { invoiceNumberFrom } from "@/server/lib/crypto";
-import { paymentProvider } from "@/server/lib/payments";
+import { paymentProviderFor } from "@/server/lib/payments";
 import { toRupees } from "@/server/lib/money";
 import { prisma } from "@/server/lib/prisma";
 
@@ -31,6 +31,7 @@ const NOTICE: Record<string, string> = {
   sold_out: "Sorry — this item sold out before payment. You have not been charged.",
   unavailable: "Online payment isn't available for this invoice yet. Please reply in the chat and we'll help you pay.",
   failed: "The payment page could not be opened. Please try again in a moment.",
+  unpaid: "That payment was not completed and nothing has been charged. You can try again below.",
 };
 
 export default async function InvoicePage({ params, searchParams }: Props) {
@@ -52,8 +53,8 @@ export default async function InvoicePage({ params, searchParams }: Props) {
 
   const paid = invoice.payments.reduce((sum, p) => sum + p.amount, 0);
   const owed = invoice.amount - paid;
-  const provider = paymentProvider();
-  const test = provider.name === "demo";
+  const provider = await paymentProviderFor(invoice.workspaceId);
+  const test = provider.test;
   const error = typeof query.error === "string" ? NOTICE[query.error] : undefined;
   const { order } = invoice;
 
@@ -107,6 +108,11 @@ export default async function InvoicePage({ params, searchParams }: Props) {
               <button type="submit" className="w-full rounded-lg bg-violet px-4 py-3 font-medium text-surface hover:opacity-90">
                 Pay {inr(owed)}{test ? " (test)" : ""}
               </button>
+              {provider.name === "razorpay" ? (
+                <p className="mt-2 text-center text-xs text-ink-muted">
+                  UPI, cards, netbanking and wallets, on Razorpay&apos;s secure page.
+                </p>
+              ) : null}
             </form>
           ) : (
             <p className="rounded-md bg-chip px-3 py-3 text-center text-sm">{NOTICE.unavailable}</p>

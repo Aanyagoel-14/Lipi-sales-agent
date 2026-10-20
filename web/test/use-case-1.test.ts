@@ -201,6 +201,8 @@ describe("PRD §6 Use Case 1 — autonomous conversational commerce", () => {
     /* ----------------------------------- execution: the checkout generated */
     const provider: PaymentProvider = {
       name: "stripe",
+      test: false,
+      shareable: false,
       configured: () => true,
       async createCheckoutLink(request) {
         expect(request.amount).toBe(order.value);

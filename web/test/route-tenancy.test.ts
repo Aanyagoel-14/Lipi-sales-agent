@@ -65,6 +65,7 @@ const EXEMPT: Record<string, string> = {
   // that owns the invoice it names. A token that does not verify is a 404.
   "/i/[token]/pay": "the customer's signed invoice link; the invoice it names decides the tenant",
   "/i/[token]/pdf": "the customer's signed invoice link; likewise",
+  "/i/[token]/return": "the customer's signed invoice link; likewise, and the gateway is asked rather than the query string believed",
 
   // A generated site is served to strangers, and the calculator on it has to
   // work for them. The slug names the site; nothing is written.
@@ -97,6 +98,8 @@ const VERIFIES_A_SECRET = [
   "verifyMetaSignature",
   "verifyXSignature",
   "verifyShopifyWebhook",
+  // Razorpay's is per connection: the secret the operator set on the webhook.
+  "verifyRazorpaySignature",
   "verifyWebhook",
 ];
 
