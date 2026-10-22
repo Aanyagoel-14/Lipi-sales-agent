@@ -138,7 +138,7 @@ async function versions() {
 }
 
 /**
- * The five auth configs, in the form each toolkit actually accepts (read from
+ * The auth configs, in the form each toolkit actually accepts (read from
  * `GET /toolkits/{slug}` on 2026-09-19).
  *
  * Telegram is API_KEY: the bot token is supplied per connection, so the config
@@ -159,6 +159,9 @@ const AUTH_CONFIGS = [
   { toolkit: "whatsapp", env: "COMPOSIO_AUTH_CONFIG_WHATSAPP", body: { type: "use_custom_auth", authScheme: "API_KEY", credentials: {}, name: "lipi-whatsapp-token" } },
   { toolkit: "instagram", env: "COMPOSIO_AUTH_CONFIG_INSTAGRAM", body: { type: "use_composio_managed_auth", name: "lipi-instagram-DEV-ONLY" } },
   { toolkit: "facebook", env: "COMPOSIO_AUTH_CONFIG_FACEBOOK", body: { type: "use_composio_managed_auth", name: "lipi-facebook-DEV-ONLY" } },
+  // Stripe is a payment gateway, not a channel, but it is connected the same
+  // way: the secret key typed into Lipi's own form, per workspace.
+  { toolkit: "stripe", env: "COMPOSIO_AUTH_CONFIG_STRIPE", body: { type: "use_custom_auth", authScheme: "API_KEY", credentials: {}, name: "lipi-stripe" } },
 ] as const;
 
 type AuthConfig = { id?: string; name?: string; toolkit?: { slug?: string }; auth_scheme?: string; is_composio_managed?: boolean };

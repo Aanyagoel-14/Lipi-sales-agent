@@ -528,7 +528,7 @@ describe("Stripe_Invoice", () => {
     if (outcome.status === "refused") throw new Error(outcome.reason);
     expect(outcome.data.checkoutUrl).toBeNull();
     expect(outcome.data.paymentProvider).toBe("none");
-    expect(outcome.data.checkoutUnavailableReason).toContain("STRIPE_SECRET_KEY");
+    expect(outcome.data.checkoutUnavailableReason).toContain("connect Stripe");
 
     const invoice = await prisma.invoice.findFirstOrThrow({ where: { workspaceId } });
     expect(invoice.amount).toBe(order.value);
@@ -544,6 +544,8 @@ describe("Stripe_Invoice", () => {
 
     const provider: PaymentProvider = {
       name: "stripe",
+      test: false,
+      shareable: false,
       configured: () => true,
       async createCheckoutLink(request) {
         return {

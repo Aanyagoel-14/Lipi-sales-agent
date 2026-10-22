@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import PDFDocument from "pdfkit";
 import { toRupees } from "../lib/money";
-import { paymentProvider, publicInvoiceUrl } from "../lib/payments";
+import { paymentProviderFor, publicInvoiceUrl } from "../lib/payments";
 import { prisma } from "../lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -222,7 +222,7 @@ export async function renderInvoicePdf(workspaceId: string, number: string): Pro
 
   // The way to pay, on the document itself: a PDF forwarded to whoever holds
   // the company card is still a PDF they can pay from.
-  if (owed > 0 && paymentProvider().configured()) {
+  if (owed > 0 && (await paymentProviderFor(workspaceId)).configured()) {
     const link = publicInvoiceUrl(invoice.number);
     doc.font("Helvetica-Bold").fontSize(10).fillColor("#000")
       .text("Pay online: ", 50, y + 60, { continued: true })
