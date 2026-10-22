@@ -60,9 +60,9 @@ describe("the registry", () => {
     expect(fields).toEqual({ telegram: ["generic_api_key"], whatsapp: ["bearer_token", "generic_id"] });
   });
 
-  it("hands the SDK one version per toolkit", () => {
+  it("hands the SDK one version per toolkit, the payment gateway's included", () => {
     expect(Object.keys(toolkitVersions()).sort())
-      .toEqual(["facebook", "gmail", "instagram", "telegram", "twitter", "whatsapp"]);
+      .toEqual(["facebook", "gmail", "instagram", "stripe", "telegram", "twitter", "whatsapp"]);
   });
 
   it("has no spec for webchat", () => {

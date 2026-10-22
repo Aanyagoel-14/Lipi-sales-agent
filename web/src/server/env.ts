@@ -41,6 +41,11 @@ const schema = z.object({
   COMPOSIO_AUTH_CONFIG_TELEGRAM: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_X: z.string().optional(),
   COMPOSIO_AUTH_CONFIG_GMAIL: z.string().optional(),
+  // Stripe is connected the same way (the secret key goes to Composio, which
+  // then makes every payment link and runs the payment triggers), but it is
+  // a gateway, not a channel: see `server/payments/stripe.ts`. Absent means
+  // the Payments card says the deployment does not offer it.
+  COMPOSIO_AUTH_CONFIG_STRIPE: z.string().optional(),
   // Lipi's own Meta app: one App Secret and one verify token for the whole
   // deployment, set once in the Meta app against `/webhooks/meta`. Meta
   // signs every inbound body with the *subscribing* app's secret, so these
@@ -79,21 +84,23 @@ const schema = z.object({
   // shape of a payload the twin trusts without anything here changing.
   SHOPIFY_API_VERSION: z.string().default("2025-01"),
 
-  // -------------------------------------------------------------- Stripe --
-  // Checkout links. Optional, and absent means the `Stripe_Invoice` skill
-  // still issues a real invoice with a real downloadable PDF — it just
-  // reports that no payment link could be created and why. It never invents
-  // a URL; see `server/lib/payments.ts` for why that distinction is the whole
-  // point of the seam.
-  STRIPE_SECRET_KEY: z.string().optional(),
-  // What checkout links are denominated in. Invoices are stored in the minor
+  // ------------------------------------------------------------ payments --
+  // A workspace that has connected its own Stripe account collects through
+  // it (`paymentProviderFor`); a workspace that has not falls back to what
+  // is set here. Without either, the `Stripe_Invoice` skill still issues a
+  // real invoice with a real downloadable PDF — it just reports that no
+  // payment link could be created and why. It never invents a URL; see
+  // `server/lib/payments.ts` for why that distinction is the whole point of
+  // the seam.
+  //
+  // What payment links are denominated in. Invoices are stored in the minor
   // units of whatever the deployment sells in; this is the ISO code that goes
-  // on the payment page.
+  // to the gateway.
   STRIPE_CURRENCY: z.string().length(3).default("INR"),
   // `demo` turns on Lipi's own test checkout: the invoice page's Pay button
   // settles the invoice at once, with no money moving. For demonstrating the
-  // order flow before a real provider is connected; the page says TEST on it.
-  // Ignored when STRIPE_SECRET_KEY is set — a real provider always wins.
+  // order flow before a gateway is connected; the page says TEST on it.
+  // Ignored for a workspace with Stripe connected — a real gateway always wins.
   PAYMENT_PROVIDER: z.enum(["demo"]).optional(),
 
   // ------------------------------------------------------------- hosting --

@@ -59,6 +59,8 @@ const methodLabel = {
   card: "Card",
   upi: "UPI",
   cash: "Cash",
+  wallet: "Wallet",
+  other: "Other",
 } as const;
 
 export async function resolvePayments(workspaceId: string) {
