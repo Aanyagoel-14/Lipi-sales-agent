@@ -206,6 +206,13 @@ function outcome(result: IngestResult, invoice: SellResult["invoice"]) {
     );
   }
 
+  if (result.orderAsked) {
+    lines.push(
+      `THEY ASKED WHERE THEIR ORDER IS. It is ${result.orderAsked.id}, at stage "${result.orderAsked.stage}". ` +
+        "The plain reply below says what that means for them; say the same thing, and nothing about it that is not written there.",
+    );
+  }
+
   if (invoice) {
     lines.push(
       `Invoice ${invoice.number} has been raised for INR ${invoice.amountInr.toLocaleString("en-IN")}, ` +
@@ -351,6 +358,9 @@ export function repairHoldTalk(reply: string, signOff: string | null): string | 
 
 const WANTS_INVOICE = /\b(invoice|bill|receipt|proforma)\b/i;
 
+/** Stages an order can still be paid from, as `services/checkout.ts` has them. */
+const PAYABLE = ["Inquiry", "Quoted", "Confirmed"];
+
 /**
  * The gateway's link for an invoice, when the workspace's gateway issues
  * the kind that goes in a chat message. Made now, in the reply, because that
@@ -442,7 +452,12 @@ async function sellOnce(input: {
   // customer means.
   const awaitsTerms = result.extracted.intent === "purchase_order";
   let invoiceOrderId = awaitsTerms ? null : result.order?.id ?? null;
-  if (!result.order && WANTS_INVOICE.test(input.text)) {
+  // "Any update on my order?" about one still waiting for payment gets its
+  // link back under the answer: the update they want is a way to pay.
+  const unpaidAsked = result.orderAsked && PAYABLE.includes(result.orderAsked.stage) ? result.orderAsked.id : null;
+  if (!result.order && unpaidAsked) {
+    invoiceOrderId = unpaidAsked;
+  } else if (!result.order && WANTS_INVOICE.test(input.text)) {
     const last = await prisma.order.findFirst({
       where: { workspaceId: input.workspaceId, customerId: result.customer.id },
       orderBy: { createdAt: "desc" },

@@ -56,8 +56,8 @@ beforeEach(async () => {
     successful: true, error: null,
     data: { id: `price_${links + 1}`, object: "price", unit_amount: args.unit_amount, currency: args.currency },
   }));
-  fakeComposio.proxy.respond("/v1/account", { status: 200, data: { id: "acct_1Acme", object: "account", business_profile: { name: "Acme Apparel" } } });
-  fakeComposio.proxy.respond("/v1/payment_links", ({ query }) => {
+  fakeComposio.proxy.respond("/account", { status: 200, data: { id: "acct_1Acme", object: "account", business_profile: { name: "Acme Apparel" } } });
+  fakeComposio.proxy.respond("/payment_links", ({ query }) => {
     links += 1;
     return {
       status: 200,
@@ -190,7 +190,7 @@ describe("connecting Stripe", () => {
   });
 
   it("is still connected without a name when the account call fails", async () => {
-    fakeComposio.proxy.respond("/v1/account", { status: 403, data: { error: { message: "restricted key" } } });
+    fakeComposio.proxy.respond("/account", { status: 403, data: { error: { message: "restricted key" } } });
     const app = await signedIn();
     const res = await connect(app).expect(201);
     expect(res.body.gateway).toMatchObject({ status: "connected", accountId: null, displayName: "Stripe account, test mode" });
@@ -277,7 +277,7 @@ describe("a quote, with Stripe connected", () => {
     expect(priced?.arguments).toMatchObject({ currency: "inr", unit_amount: AMOUNT, metadata: { invoice: number, workspace: workspaceId } });
     expect(String((priced?.arguments.product_data as { name: string }).name)).toContain("Polo Classic");
 
-    const [created] = proxied("/v1/payment_links", "POST");
+    const [created] = proxied("/payment_links", "POST");
     expect(created?.connectedAccountId).toBe((await connection())!.composioAccountId);
     expect(created?.query).toMatchObject({
       "line_items[0][price]": "price_1",
@@ -306,7 +306,7 @@ describe("a quote, with Stripe connected", () => {
     const res = await agent().post(`/i/${token}/pay`).expect(303);
 
     expect(res.headers.location).toBe("https://buy.stripe.com/test_1");
-    expect(proxied("/v1/payment_links", "POST")).toHaveLength(1);
+    expect(proxied("/payment_links", "POST")).toHaveLength(1);
   });
 
   it("re-issues under a new reference once the old link is closed", async () => {
@@ -317,14 +317,14 @@ describe("a quote, with Stripe connected", () => {
     const res = await agent().post(`/i/${token}/pay`).expect(303);
 
     expect(res.headers.location).toBe("https://buy.stripe.com/test_2");
-    const [, second] = proxied("/v1/payment_links", "POST");
+    const [, second] = proxied("/payment_links", "POST");
     expect(second?.query?.["metadata[reference]"]).toBe(`${number}~2`);
     expect(await link(number)).toMatchObject({ id: "plink_2", reference: `${number}~2`, closedAt: null });
   });
 
   it("still quotes, with the invoice page to pay from, when Stripe will not answer", async () => {
     await connected();
-    fakeComposio.proxy.respond("/v1/payment_links", { status: 500, data: { error: { message: "Stripe is down" } } });
+    fakeComposio.proxy.respond("/payment_links", { status: 500, data: { error: { message: "Stripe is down" } } });
 
     const { result, number } = await quote();
 
@@ -339,7 +339,7 @@ describe("a quote, with Stripe connected", () => {
   it("is quoted without a Stripe link when the gateway is not connected", async () => {
     const { result } = await quote();
     expect(result.invoice?.payUrl).toBeNull();
-    expect(proxied("/v1/payment_links", "POST")).toHaveLength(0);
+    expect(proxied("/payment_links", "POST")).toHaveLength(0);
   });
 });
 
@@ -348,13 +348,13 @@ describe("the customer comes back from Stripe", () => {
     await connected();
     const before = await variant();
     const { token, number, orderId } = await quote();
-    fakeComposio.proxy.respond("/v1/checkout/sessions/cs_test_1", { status: 200, data: session({ payment_intent: "pi_9", payment_method_types: ["upi"] }) });
+    fakeComposio.proxy.respond("/checkout/sessions/cs_test_1", { status: 200, data: session({ payment_intent: "pi_9", payment_method_types: ["upi"] }) });
     fakeComposio.calls.execute.length = 0;
 
     const res = await agent().get(`/i/${token}/return?session_id=cs_test_1`).expect(303);
 
     expect(res.headers.location).toBe(`/i/${token}`);
-    expect(proxied("/v1/checkout/sessions/cs_test_1", "GET")).toHaveLength(1);
+    expect(proxied("/checkout/sessions/cs_test_1", "GET")).toHaveLength(1);
     expect(await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).toMatchObject({ stage: "Paid", blocked: null });
     expect(await payments(number)).toMatchObject([{ method: "upi", reference: "pi_9", loggedBy: "stripe", amount: AMOUNT }]);
     expect((await variant()).reserved).toBe(before.reserved + 2);
@@ -366,7 +366,7 @@ describe("the customer comes back from Stripe", () => {
   it("believes the gateway, not the query string", async () => {
     await connected();
     const { token, number, orderId } = await quote();
-    fakeComposio.proxy.respond("/v1/checkout/sessions/cs_test_1", { status: 200, data: session({ payment_status: "unpaid", payment_intent: null }) });
+    fakeComposio.proxy.respond("/checkout/sessions/cs_test_1", { status: 200, data: session({ payment_status: "unpaid", payment_intent: null }) });
 
     const res = await agent().get(`/i/${token}/return?session_id=cs_test_1`).expect(303);
 
@@ -378,7 +378,7 @@ describe("the customer comes back from Stripe", () => {
   it("ignores a session that was opened from somebody else's link", async () => {
     await connected();
     const { token, number } = await quote();
-    fakeComposio.proxy.respond("/v1/checkout/sessions/cs_test_other", { status: 200, data: session({ id: "cs_test_other", payment_link: "plink_someone_else" }) });
+    fakeComposio.proxy.respond("/checkout/sessions/cs_test_other", { status: 200, data: session({ id: "cs_test_other", payment_link: "plink_someone_else" }) });
 
     const res = await agent().get(`/i/${token}/return?session_id=cs_test_other`).expect(303);
 
@@ -389,11 +389,11 @@ describe("the customer comes back from Stripe", () => {
   it("asks about the link's sessions when the customer came back without one", async () => {
     await connected();
     const { token, number } = await quote();
-    fakeComposio.proxy.respond("/v1/checkout/sessions", { status: 200, data: { object: "list", data: [session({ payment_intent: "pi_list" })] } });
+    fakeComposio.proxy.respond("/checkout/sessions", { status: 200, data: { object: "list", data: [session({ payment_intent: "pi_list" })] } });
 
     await agent().get(`/i/${token}/return`).expect(303);
 
-    expect(proxied("/v1/checkout/sessions", "GET")[0]?.query).toMatchObject({ payment_link: "plink_1" });
+    expect(proxied("/checkout/sessions", "GET")[0]?.query).toMatchObject({ payment_link: "plink_1" });
     expect(await payments(number)).toMatchObject([{ reference: "pi_list" }]);
   });
 });
@@ -502,14 +502,14 @@ describe("cancelling an order", () => {
 
     await app.post(`/v1/orders/${orderId}/stage`).send({ stage: "Cancelled" }).expect(200);
 
-    expect(proxied("/v1/payment_links/plink_1", "POST")[0]?.query).toEqual({ active: "false" });
+    expect(proxied("/payment_links/plink_1", "POST")[0]?.query).toEqual({ active: "false" });
     expect(await link(number)).toMatchObject({ closedAs: "cancelled" });
   });
 
   it("cancels the order even when Stripe will not", async () => {
     const app = await connected();
     const { number, orderId } = await quote();
-    fakeComposio.proxy.respond("/v1/payment_links/plink_1", { status: 500, data: { error: { message: "nope" } } });
+    fakeComposio.proxy.respond("/payment_links/plink_1", { status: 500, data: { error: { message: "nope" } } });
 
     await app.post(`/v1/orders/${orderId}/stage`).send({ stage: "Cancelled" }).expect(200);
 

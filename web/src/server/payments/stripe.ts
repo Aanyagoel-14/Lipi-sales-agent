@@ -98,12 +98,12 @@ async function probe(workspaceId: string, connectedAccountId: string): Promise<{
 
 /**
  * Who the account is, for the card. The toolkit has no account tool, so this
- * is a proxied `GET /v1/account`; it is allowed to fail, because a name is a
+ * is a proxied `GET /account`; it is allowed to fail, because a name is a
  * nicety and the probe above has already proved the key.
  */
 async function identity(connectedAccountId: string): Promise<{ accountId: string | null; name: string | null }> {
   try {
-    const result = await composio().proxy({ connectedAccountId, method: "GET", endpoint: "/v1/account" });
+    const result = await composio().proxy({ connectedAccountId, method: "GET", endpoint: "/account" });
     const account = result.status < 300 ? entity(result.data) : undefined;
     const profile = record(account?.business_profile);
     const dashboard = record(record(account?.settings)?.dashboard);
@@ -328,6 +328,12 @@ const stillOpen = (link: PaymentLink | null, test: boolean) =>
  * and a non-2xx is turned into the message Stripe gave, which is the one
  * worth showing.
  */
+/**
+ * Composio's Stripe proxy is rooted at `https://api.stripe.com/v1`, so an
+ * endpoint is given without the version: `/v1/payment_links` reaches Stripe
+ * as `/v1/v1/payment_links` and is refused as an unrecognised URL — which is
+ * exactly what the first live quote hit.
+ */
 async function stripeCall(connectedAccountId: string, method: "GET" | "POST", endpoint: string, query: ProxyQuery = {}) {
   const result = await composio().proxy({ connectedAccountId, method, endpoint, query });
   const body = entity(result.data);
@@ -392,7 +398,7 @@ export function stripeProvider(connection: PaymentConnection): PaymentProvider {
         const priceId = str(entity(priced.data)?.id);
         if (!priced.successful || !priceId) throw new Error(priced.error ?? "Stripe returned no price");
 
-        const link = await stripeCall(connectedAccountId, "POST", "/v1/payment_links", {
+        const link = await stripeCall(connectedAccountId, "POST", "/payment_links", {
           "line_items[0][price]": priceId,
           "line_items[0][quantity]": 1,
           "after_completion[type]": "redirect",
@@ -439,12 +445,12 @@ export function stripeProvider(connection: PaymentConnection): PaymentProvider {
       const belongs = (session: Record<string, unknown> | undefined) =>
         session && (str(session.payment_link) === providerRef || !str(session.payment_link));
       if (hint?.session && /^cs_[A-Za-z0-9_]+$/.test(hint.session)) {
-        const session = await stripeCall(connectedAccountId, "GET", `/v1/checkout/sessions/${hint.session}`);
+        const session = await stripeCall(connectedAccountId, "GET", `/checkout/sessions/${hint.session}`);
         if (!belongs(session)) return null;
         const payments = sessionStatus(session);
         return { status: payments.length ? "paid" : "open", payments };
       }
-      const list = await stripeCall(connectedAccountId, "GET", "/v1/checkout/sessions", { payment_link: providerRef, limit: 10 });
+      const list = await stripeCall(connectedAccountId, "GET", "/checkout/sessions", { payment_link: providerRef, limit: 10 });
       const sessions = (Array.isArray(list.data) ? list.data : []).map((s) => record(s));
       const paid = sessions.map((s) => sessionStatus(s)).find((p) => p.length);
       return { status: paid ? "paid" : "open", payments: paid ?? [] };
@@ -460,7 +466,7 @@ export async function stripeProviderFor(workspaceId: string): Promise<PaymentPro
 
 /** A payment link that must stop taking money. Stripe keeps it, inactive. */
 async function deactivate(connectedAccountId: string, linkId: string) {
-  await stripeCall(connectedAccountId, "POST", `/v1/payment_links/${linkId}`, { active: "false" });
+  await stripeCall(connectedAccountId, "POST", `/payment_links/${linkId}`, { active: "false" });
 }
 
 // -------------------------------------------------------------- settlement --
