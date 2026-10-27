@@ -81,6 +81,9 @@ const PROVIDER_SCREEN: Partial<Record<string, string>> = {
   facebook: "Connect opens Facebook to approve access to your Page, then brings you back here with the result.",
 };
 
+/** Channels the product has not opened yet: shown, marked, and not connectable from here. */
+const COMING_SOON = new Set(["facebook", "x"]);
+
 /**
  * Connecting a channel.
  *
@@ -209,12 +212,20 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
           const candidates = (choice ? row.config?.[choice.list] as Identity[] | undefined : undefined) ?? [];
           const mustPick = row.status === "connected" && candidates.length > 1;
           const working = busy === row.channel;
+          const comingSoon = COMING_SOON.has(row.channel);
 
           return (
             <li key={row.channel} id={`channel-${row.channel}`} className="rounded-2xl border border-line bg-surface">
               <div className="flex flex-wrap items-center gap-3 p-5">
                 <div className="min-w-0">
-                  <p className="text-[0.9375rem] font-medium">{row.label}</p>
+                  <p className="flex items-center gap-2 text-[0.9375rem] font-medium">
+                    {row.label}
+                    {comingSoon ? (
+                      <span className="rounded-full border border-line px-2 py-0.5 text-[0.6875rem] font-normal text-ink-subtle">
+                        Coming soon
+                      </span>
+                    ) : null}
+                  </p>
                   <p className="mt-0.5 text-[0.8125rem] text-ink-muted">
                     {row.status === "connected" && row.displayName
                       ? `Connected as ${row.displayName}`
@@ -233,7 +244,7 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
                     </span>
                   ) : null}
 
-                  {row.connectKind === "none" || !row.available ? null : row.status === "connected" ? (
+                  {row.connectKind === "none" || !row.available || comingSoon ? null : row.status === "connected" ? (
                     <>
                       <Button size="sm" variant="ghost" chevron={false} disabled={working}
                         onClick={() => check(row.channel)}>
