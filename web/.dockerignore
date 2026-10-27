@@ -1,0 +1,12 @@
+node_modules
+.next
+.next.nosync
+src/generated
+.env
+.env.*
+!.env.example
+npm-debug.log*
+*.md
+test
+coverage
+.vercel
