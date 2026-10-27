@@ -41,14 +41,12 @@ enum Sensitivity {
 
 /**
  * The Order & Supply Twin's state machine (PRD §5).
- *
  * The PRD writes it as Inquiry -> Quote -> Confirmed -> Paid -> Packed ->
  * Shipped. `Quoted` is this codebase's spelling of the PRD's "Quote" and
  * predates it; renaming a stored enum member to change a participle is not
  * worth a migration. `Delivered` and `Returned` are beyond the PRD's chain and
  * were already here — an order that has shipped still has to arrive, and some
  * of them come back.
- *
  * `Inquiry` is an order that exists without a price: somebody asked, nothing
  * has been quoted, nothing is reserved. `Confirmed` is the customer having
  * agreed, before money moves, and is where a four-hour reservation hold stops
@@ -91,6 +89,17 @@ enum PaymentMethod {
   card
   upi
   cash
+  /// A gateway's wallet or pay-later rail (Paytm, PhonePe wallet, LazyPay).
+  wallet
+  /// A gateway method none of the above names honestly. Never chosen by hand.
+  other
+}
+
+/// A payment gateway a workspace collects through. One value today; the
+/// connection and link tables are keyed on it so a second does not need a
+/// second table.
+enum PaymentGateway {
+  stripe
 }
 
 model Customer {
@@ -135,8 +144,8 @@ model Customer {
   /// `riskScore` and `predictedNext` already speak to that — this is
   /// specifically "how close is this conversation to becoming an order",
   /// which is what a growth or sales operator triaging a lead list needs.
-  leadScore Int       @default(0)
-  leadStage LeadStage @default(visitor)
+  leadScore      Int       @default(0)
+  leadStage      LeadStage @default(visitor)
   /// When the twin last asked this person for a contact detail, so it does
   /// not ask again on every message (`services/leads.ts`).
   contactAskedAt DateTime?
@@ -340,13 +349,13 @@ model Conversation {
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  id      String   @id
-  channel Channel
-  subject String
-  unread  Boolean
-  lastAt  DateTime
-  intent  String
-  signals Json
+  id               String   @id
+  channel          Channel
+  subject          String
+  unread           Boolean
+  lastAt           DateTime
+  intent           String
+  signals          Json
   /// The provider's own thread handle, where the channel threads (Gmail's
   /// thread id), so a reply lands in the customer's thread rather than
   /// starting a new one. Null for every chat channel.
@@ -365,7 +374,6 @@ model Conversation {
 
 /**
  * What became of an agent message after it was written.
- *
  * The distinction that matters is `sent` versus everything else: a message is
  * only ever `sent` once a provider has accepted it. Before the Composio track
  * the inbox showed every drafted reply as though it had gone out, which is the
@@ -384,11 +392,11 @@ enum DeliveryStatus {
 }
 
 model Message {
-  id     String   @id @default(cuid())
-  from   String
-  text   String
-  sentAt DateTime
-  quote  Json?
+  id             String         @id @default(cuid())
+  from           String
+  text           String
+  sentAt         DateTime
+  quote          Json?
   /// Whether this message actually reached the customer. Only agent messages
   /// are ever delivered, so a customer message stays `not_applicable` --
   /// as do agent messages written before delivery was tracked.
@@ -420,8 +428,8 @@ model AgentRun {
 
   /// The configured agent this run belongs to, when one does. Null for the
   /// built-in loop above.
-  agentId String?
-  agentRef Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  agentId  String?
+  agentRef Agent?  @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   /// The registry slug of the skill that produced this run, when a skill did.
   /// Null for the built-in loop. This is what makes "which tool did the model
@@ -497,7 +505,8 @@ model Invoice {
   orderId    String?
   order      Order?   @relation(fields: [orderId], references: [id])
 
-  payments Payment[]
+  payments    Payment[]
+  paymentLink PaymentLink?
 
   @@index([dueOn])
   @@index([workspaceId])
@@ -523,6 +532,76 @@ model Payment {
   @@index([invoiceNumber, receivedAt])
   @@index([workspaceId])
   @@map("payments")
+}
+
+/**
+ * A workspace's own payment gateway account, connected the way a channel is:
+ * the key goes to Composio and never lands here, a real read call proves it
+ * before the row says `connected`, and Composio runs every call after that.
+ * No credential is kept here at all: Composio's Stripe triggers are
+ * webhooks Composio registers on the account itself and delivers signed to
+ * `/webhooks/composio`, so a payment arrives the way a Gmail message does.
+ * What is kept is what the card needs — the mode the key is in, the Stripe
+ * account id and name — and the trigger ids, so disconnect can take them
+ * down.
+ */
+model PaymentConnection {
+  id                   String           @id @default(cuid())
+  provider             PaymentGateway
+  status               ConnectionStatus @default(disconnected)
+  /// `test` or `live`, from the key's prefix and confirmed by the account.
+  mode                 String?
+  /// The gateway's own id for the account (Stripe `acct_…`). Not a secret.
+  accountId            String?
+  displayName          String?
+  composioAccountId    String?          @unique
+  composioAuthConfigId String?
+  /// Trigger instances Composio runs for this account; deleted on disconnect.
+  composioTriggerIds   String[]         @default([])
+  connectedAt          DateTime?
+  lastEventAt          DateTime?
+  lastError            String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider])
+  @@map("payment_connections")
+}
+
+/**
+ * The gateway's link for an invoice: where the Pay button sends the customer
+ * and what a webhook names when they have paid.
+ * One per invoice. The gateway's own id is the primary key because that is
+ * what comes back on the webhook; the invoice number is what Lipi settles.
+ * A link is re-issued (the row replaced) only once the gateway has closed
+ * the old one, so a customer clicking Pay twice gets the same page.
+ */
+model PaymentLink {
+  /// The gateway's id for the link (Stripe `plink_…`).
+  id        String         @id
+  provider  PaymentGateway
+  /// The gateway's reference for it: the invoice number, suffixed on re-issue.
+  reference String
+  url       String
+  /// Issued under a test key. No money moves through it, and the page says so.
+  test      Boolean
+  expiresAt DateTime?
+  /// When the gateway told us the link is finished, and how: paid, expired, cancelled.
+  closedAt  DateTime?
+  closedAs  String?
+  createdAt DateTime       @default(now())
+
+  invoiceNumber String  @unique
+  invoice       Invoice @relation(fields: [invoiceNumber], references: [number], onDelete: Cascade)
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("payment_links")
 }
 
 model WaitlistEntry {
@@ -612,7 +691,7 @@ model Workspace {
   /// Empty by default: a key-authenticated cross-origin call is a different
   /// trust question from the anonymous widget, which stays `*`. See
   /// `server/lib/cors.ts`.
-  allowedOrigins  String[]       @default([])
+  allowedOrigins String[] @default([])
 
   /// What this workspace may spend on language models, and the unit each
   /// ceiling is counted in. Both daily ceilings reset at UTC midnight and are
@@ -625,8 +704,8 @@ model Workspace {
   /// billable attempts without ever moving the token total. Zero on either is
   /// a kill switch — every model-backed path degrades to its deterministic
   /// one, which is what an absent key already does.
-  dailyModelCalls  Int @default(2000)
-  dailyModelTokens Int @default(1000000)
+  dailyModelCalls    Int @default(2000)
+  dailyModelTokens   Int @default(1000000)
   /// And within the day, what one customer's thread may take of it, so a
   /// single scripted visitor cannot spend the whole workspace's budget.
   customerModelCalls Int @default(60)
@@ -638,19 +717,21 @@ model Workspace {
   connections         ChannelConnection[]
   inventoryConnectors InventoryConnector[]
 
-  customers         Customer[]
-  suppliers         Supplier[]
-  products          Product[]
-  orders            Order[]
-  conversations     Conversation[]
-  agentRuns         AgentRun[]
-  approvals         Approval[]
-  twinEvents        TwinEvent[]
-  invoices          Invoice[]
-  payments          Payment[]
-  visitorSessions   VisitorSession[]
-  growthSuggestions GrowthSuggestion[]
-  apiKeys           ApiKey[]
+  customers          Customer[]
+  suppliers          Supplier[]
+  products           Product[]
+  orders             Order[]
+  conversations      Conversation[]
+  agentRuns          AgentRun[]
+  approvals          Approval[]
+  twinEvents         TwinEvent[]
+  invoices           Invoice[]
+  payments           Payment[]
+  paymentConnections PaymentConnection[]
+  paymentLinks       PaymentLink[]
+  visitorSessions    VisitorSession[]
+  growthSuggestions  GrowthSuggestion[]
+  apiKeys            ApiKey[]
 
   webhookSubscriptions WebhookSubscription[]
   webhookDeliveries    WebhookDelivery[]
@@ -754,28 +835,27 @@ enum ConnectionStatus {
 
 /**
  * A channel the workspace has actually connected.
- *
  * Since the Composio track the sending credential is not here: Composio holds
  * it against `composioAccountId` and Lipi executes tools against that account.
  * What remains is what inbound needs -- the provider's own identifier to route
  * on, and the secrets that prove a webhook really came from the provider.
  */
 model ChannelConnection {
-  id                  String           @id @default(cuid())
-  channel             Channel
-  status              ConnectionStatus @default(disconnected)
+  id                   String           @id @default(cuid())
+  channel              Channel
+  status               ConnectionStatus @default(disconnected)
   /// Provider identity: phone number id, bot username, mailbox address.
-  externalId          String?
-  displayName         String?
+  externalId           String?
+  displayName          String?
   /// Non-secret settings, safe to show back to the operator.
-  config              Json             @default("{}")
+  config               Json             @default("{}")
   /// The Composio connected account that holds this channel's credentials,
   /// and the auth config it was created under. Globally unique: one account
   /// belongs to one connection.
-  composioAccountId    String?   @unique
+  composioAccountId    String?          @unique
   composioAuthConfigId String?
   /// Trigger instances Lipi created for this account; deleted on disconnect.
-  composioTriggerIds   String[]  @default([])
+  composioTriggerIds   String[]         @default([])
   connectedAt          DateTime?
   /// Proves an inbound webhook came from the provider. Telegram only: the
   /// `secret_token` Lipi generates for `setWebhook` and Telegram echoes in
@@ -785,11 +865,11 @@ model ChannelConnection {
   /// own app-level META_APP_SECRET and their GET challenge is answered
   /// against the deployment's META_VERIFY_TOKEN, so no per-tenant provider
   /// secret is stored for them at all.
-  webhookSecret       String?
-  lastEventAt         DateTime?
-  lastError           String?
-  createdAt           DateTime         @default(now())
-  updatedAt           DateTime         @updatedAt
+  webhookSecret        String?
+  lastEventAt          DateTime?
+  lastError            String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -978,7 +1058,7 @@ model InventoryConnector {
   accessToken  String?
   /// The scopes the provider actually granted, so a feature that needs one
   /// can say which re-consent it needs rather than failing on a 403.
-  scopes       String[]  @default([])
+  scopes       String[] @default([])
   /// Anti-CSRF nonce for an install in flight. Written when the operator is
   /// sent to the provider's consent screen, required to match on the way
   /// back, and cleared the moment it is spent.
@@ -1091,14 +1171,12 @@ enum ApiScope {
 
 /**
  * A server-to-server credential for `/v1`.
- *
  * The secret is minted once and stored only as a SHA-256 hash, the same shape
  * `InventoryConnector.secretHash` already uses — the difference is that a key
  * is looked up *by* its hash, so presenting one costs a single indexed read
  * and a wrong one reveals nothing by timing. `prefix` is the first few
  * characters of the secret: enough for an operator to tell two keys apart in
  * the dashboard or in a log line, useless to anyone who finds it.
- *
  * A key belongs to exactly one workspace and cannot be pointed at another,
  * which is what makes it safe to accept in place of a session.
  */
@@ -1111,7 +1189,7 @@ model ApiKey {
   hash   String     @unique
   scopes ApiScope[] @default([read])
 
-  createdAt DateTime @default(now())
+  createdAt  DateTime  @default(now())
   /// Coalesced, written behind the response — never inside a request's own transaction.
   lastUsedAt DateTime?
   /// Optional. A key with no expiry lives until it is revoked.
@@ -1127,30 +1205,28 @@ model ApiKey {
 
 /**
  * Where a workspace wants its twin events delivered.
- *
  * The event log is already the record of every mutation, so outbound
  * integration is a *reader* of it rather than a second stream — nothing here
  * writes a `TwinEvent`, and nothing here may update one (invariant 6). What a
  * subscription owns is its own position in that log and its own delivery
  * attempts, both of which live outside the event.
- *
  * `secret` is the signing secret, encrypted at rest through `lib/crypto` like
  * a channel credential. It is shown once at creation; no endpoint returns it
  * again, because a signature the subscriber can verify is only worth anything
  * while both sides are the only two who know the key.
  */
 model WebhookSubscription {
-  id     String  @id @default(cuid())
-  url    String
+  id         String   @id @default(cuid())
+  url        String
   /// Exact `TwinEvent.type` values this endpoint wants. Empty means every
   /// type, which is also the default: an integrator who has not said
   /// otherwise is better served by too much than by silence.
   eventTypes String[] @default([])
   /// AES-256-GCM ciphertext of the HMAC signing secret. Never returned.
-  secret String
+  secret     String
   /// Paused rather than deleted. A subscription that is off stops receiving
   /// but keeps its cursor, so resuming does not replay a month of events.
-  active Boolean @default(true)
+  active     Boolean  @default(true)
 
   /// Position in the append-only log: the `occurredAt` of the newest event
   /// already queued, with `cursorId` as the tiebreak that makes the order
@@ -1183,13 +1259,11 @@ enum WebhookDeliveryStatus {
 
 /**
  * One event owed to one subscription.
- *
  * Delivery is at-least-once: the row is queued before it is attempted, and an
  * attempt that fails ambiguously (a timeout, a 500 after the handler ran) is
  * retried. `eventId` is the `TwinEvent` id and travels in the body, so the
  * subscriber de-duplicates on it exactly as `ProcessedMessage` lets us
  * de-duplicate an inbound provider retry.
- *
  * `@@unique([subscriptionId, eventId])` is what makes the queue idempotent:
  * a second enqueue pass over the same events cannot owe an endpoint the same
  * event twice, whatever the cursor did.
@@ -1238,7 +1312,6 @@ enum ModelPurpose {
 
 /**
  * One call to OpenRouter, whatever became of it.
- *
  * Written by `lib/openrouter.ts` itself rather than by its callers, so a
  * fourth model-backed path cannot be added without being metered: the row is
  * appended on the way out of `chatCompletion()`, on the success path and on
@@ -1246,7 +1319,6 @@ enum ModelPurpose {
  * latency and may still have cost tokens, and a budget that only counted the
  * calls that worked would be blind to exactly the workspace that is being
  * ground through its ceiling.
- *
  * No money column. OpenRouter prices in fractional US dollars, and converting
  * that to a rupee figure needs an FX rate nobody here has — so spend is
  * metered in the units the response actually reports, calls and tokens, and
@@ -1295,7 +1367,6 @@ model ModelCall {
 
 /**
  * Which pre-built agent a workspace started from, if any.
- *
  * The four the PRD names (§2 Step 01). `custom` is what an agent assembled
  * from skills by hand records, so "started from a template" and "was built
  * from scratch" are distinguishable afterwards — a template can change, and
@@ -1323,26 +1394,22 @@ enum AgentStatus {
 /**
  * A deployable agent: the unit the no-code builder creates and the SDK
  * registers.
- *
  * Before this existed a workspace had exactly one implicit agent, and which
  * "agent" had acted was a string literal chosen by a branch inside `ingest()`
  * ("Sales", "Inventory", "Procurement", "Support"). That is fine for a fixed
  * product and impossible for a builder, because there is nothing to configure,
  * nothing to deploy, and nothing for a guardrail to be attached to.
- *
  * What an agent owns, and why each lives here rather than on the workspace:
- *
- *  - `skills`     what it may do. This is the allowed-tool list, and it is
- *                 checked on every execution (`server/agents/execute.ts`).
- *                 A model that asks for a skill this agent does not hold is
- *                 refused before the arguments are even parsed.
- *  - `guardrails` the ceilings it may not cross and the words that always
- *                 fetch a human. Per agent, because an SDR negotiating
- *                 discounts and a reception agent booking appointments do not
- *                 want the same limits.
- *  - `channels`   where it answers. A workspace can connect WhatsApp without
- *                 every agent it owns being published there.
- *
+ * - `skills`     what it may do. This is the allowed-tool list, and it is
+ * checked on every execution (`server/agents/execute.ts`).
+ * A model that asks for a skill this agent does not hold is
+ * refused before the arguments are even parsed.
+ * - `guardrails` the ceilings it may not cross and the words that always
+ * fetch a human. Per agent, because an SDR negotiating
+ * discounts and a reception agent booking appointments do not
+ * want the same limits.
+ * - `channels`   where it answers. A workspace can connect WhatsApp without
+ * every agent it owns being published there.
  * `TwinVoice` and `KnowledgeEntry` stay on the workspace: how the business
  * sounds and what it may claim are properties of the business, not of one
  * agent, and duplicating them per agent is how two agents end up quoting
@@ -1392,12 +1459,10 @@ model Agent {
 
 /**
  * One skill, enabled on one agent, with its own configuration.
- *
  * `skill` is a slug from the registry in `server/agents/registry.ts`, not a
  * foreign key: skills are code, they ship with a release, and a database row
  * per skill would let a tenant name one that has no implementation. A slug
  * that the registry does not know is refused at deploy.
- *
  * `enabled` rather than deletion, so turning a skill off for an afternoon
  * does not lose the configuration it was turned off with.
  */
@@ -1416,7 +1481,6 @@ model AgentSkill {
 
 /**
  * Where a calendar entry came from.
- *
  * `negotiated` is distinct from `manual` because it is the one the PA twin
  * created itself, and an operator reviewing what their assistant did to their
  * week is entitled to see which entries it put there.
@@ -1431,7 +1495,6 @@ enum CalendarSource {
 
 /**
  * How a scheduling conversation is going.
- *
  * The PRD's Personal PA Twin stores "active scheduling negotiations" (§5),
  * which is only meaningful if a negotiation is a thing that persists between
  * turns — a proposal sent on Monday and answered on Tuesday is one
@@ -1446,14 +1509,12 @@ enum NegotiationState {
 
 /**
  * The Personal PA Twin (PRD §5).
- *
  * Owner focus blocks, max daily meeting hours, buffer rules and a fatigue
  * index — the constraints a scheduling decision is made against. They live on
  * a row rather than in a prompt for the same reason every other number in this
  * codebase does: a model asked to "keep a reasonable buffer" will eventually
  * keep none, and the owner finds out by walking into a meeting they were
  * already late for.
- *
  * One profile per named owner per workspace, because a business has several
  * people whose calendars mean different things, and merging them would make
  * "is this slot free" unanswerable.
@@ -1497,7 +1558,6 @@ model PaProfile {
 
 /**
  * One entry on a PA twin's calendar.
- *
  * Instants are stored UTC and compared UTC. `externalId` is the provider's
  * own id where the entry came from one, so a re-sync updates rather than
  * duplicates — the same idempotency rule the channel adapters keep on
@@ -1506,7 +1566,7 @@ model PaProfile {
 model CalendarEvent {
   workspaceId String
 
-  id        String @id @default(cuid())
+  id        String    @id @default(cuid())
   profileId String
   profile   PaProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
@@ -1531,7 +1591,6 @@ model CalendarEvent {
 
 /**
  * A multi-turn scheduling negotiation, as a row.
- *
  * "Find 45 minutes with Dr. Chen next week, avoid mornings, keep 15-minute
  * buffers" is not one request and one answer — it is a proposal, possibly a
  * counter, and a confirmation, spread over hours and arriving on whichever
@@ -1543,7 +1602,7 @@ model SchedulingNegotiation {
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  id        String @id @default(cuid())
+  id        String    @id @default(cuid())
   profileId String
   profile   PaProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
@@ -1584,7 +1643,6 @@ model SchedulingNegotiation {
 
 /**
  * Where a generated site has got to.
- *
  * `generated` has a structure and no deployment; `deployed` has both. There is
  * no `deploying` — a deployment either produced a URL or it did not, and a
  * state that means "we are not sure" is a state somebody has to poll.
@@ -1597,11 +1655,9 @@ enum SiteStatus {
 
 /**
  * A site generated from a business profile (PRD §3).
- *
  * The three phases of §3 map onto three columns rather than three tables:
  * `structure` is Phase 1's output, the bindings inside it are Phase 2, and
  * `deployment` is Phase 3's.
- *
  * **The structure holds no business data.** A catalogue block names the
  * catalogue; it does not carry products. A quote block holds the formula's
  * source; it does not carry prices. Everything is resolved against live rows
@@ -1633,7 +1689,7 @@ model GeneratedSite {
   /// renderer reads it on every quote and a column beats a JSON path.
   quoteFormula String?
 
-  status SiteStatus @default(generated)
+  status  SiteStatus @default(generated)
   /// Where it went live, when it did. Null until a provider says otherwise.
   liveUrl String?
 
@@ -1643,7 +1699,6 @@ model GeneratedSite {
   @@index([workspaceId, createdAt])
   @@map("generated_sites")
 }
-
 
 /**
  * Where a purchase order has got to. Deliberately short: this system raises
@@ -1658,15 +1713,12 @@ enum PurchaseOrderStatus {
 
 /**
  * A restock, raised automatically (PRD §5, Order & Supply Twin).
- *
  * "Auto-dispatches POs when reserved inventory drops below threshold." Until
  * now crossing the reorder point raised an `AgentRun` whose `action` read
  * "Draft restock of …" — a sentence in a log, which nobody can act on, count
  * or reconcile against what actually arrived.
- *
  * Quantity is the supplier's MOQ or the shortfall, whichever is larger,
  * because ordering below a minimum is an order the supplier will refuse.
- *
  * `draft`, never `sent`: dispatching money to a supplier is a commitment, and
  * there is no supplier integration here to dispatch it through. What is
  * automatic is the *raising* — the PO exists, with its quantity and its
@@ -1686,9 +1738,9 @@ model PurchaseOrder {
   variantId  String
   variant    Variant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
 
-  status PurchaseOrderStatus @default(draft)
+  status     PurchaseOrderStatus @default(draft)
   /// Why it was raised, in the operator's own terms.
-  reason String
+  reason     String
   /// `createdAt` plus the supplier's average lead time.
   expectedOn DateTime
 

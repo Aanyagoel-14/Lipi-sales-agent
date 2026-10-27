@@ -234,6 +234,16 @@ const PINS = {
   gmail: "20260915_00",
 } as const;
 
+/**
+ * Toolkits that are not channels but go through the same Composio client,
+ * and so need a pin for the same reason. Stripe's was read from
+ * `GET /toolkits/stripe` on 2026-10-22, and the tools and triggers
+ * `server/payments/stripe.ts` uses were checked against it.
+ */
+export const GATEWAY_PINS = {
+  stripe: "20261014_00",
+} as const;
+
 const str = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
 const record = (value: unknown): Json | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Json) : undefined;
@@ -1129,9 +1139,11 @@ const byMetaObject = new Map<string, ChannelSpec>(
 export const specForMetaObject = (object: unknown): ChannelSpec | null =>
   (typeof object === "string" ? byMetaObject.get(object) : undefined) ?? null;
 
-/** `{ whatsapp: "20260902_00", … }` — what the SDK is constructed with. */
-export const toolkitVersions = (): Record<string, string> =>
-  Object.fromEntries(channelSpecs.map((spec) => [spec.toolkit, spec.toolkitVersion]));
+/** `{ whatsapp: "20260902_00", …, stripe: … }` — what the SDK is constructed with. */
+export const toolkitVersions = (): Record<string, string> => ({
+  ...Object.fromEntries(channelSpecs.map((spec) => [spec.toolkit, spec.toolkitVersion])),
+  ...GATEWAY_PINS,
+});
 
 /** The auth config this environment has for a channel, or undefined when it is not set up. */
 export const authConfigIdFor = (spec: ChannelSpec): string | undefined => env[spec.authConfigEnv] || undefined;

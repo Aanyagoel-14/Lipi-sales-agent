@@ -72,6 +72,12 @@ export type IngestResult = {
    */
   contactAsk: ContactField | null;
   knowledgeUsed: { title: string; kind: string } | null;
+  /**
+   * The order a status question was answered from ("any update on my
+   * order?"), so `sell()` can put its invoice link back under the reply
+   * when it is still waiting for payment. Null on every other message.
+   */
+  orderAsked: { id: string; stage: string } | null;
   agentRuns: { agent: string; action: string; status: "needs_approval" | "done" }[];
   events: TwinEffect[];
   /**
@@ -128,7 +134,9 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     where: { handle: input.handle, workspaceId: workspace.id },
     select: { id: true },
   });
-  const extracted = await extract(
+  // `let`, because a bare "yes" is read again once the twin knows what it
+  // was said yes to — see the offer step inside the transaction.
+  let extracted = await extract(
     input.text,
     vocab,
     { workspaceId: workspace.id, customerId: existingCustomer?.id },
@@ -202,6 +210,33 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       record("customer_twin.updated", "customer", `${customer.id} size_profile=[${sizeProfile.join(", ")}] segment=${segment}`);
     }
 
+    /* ----------------------------------------------- a yes to an offer */
+    // Extraction reads one message on its own, and "Yes, please send." on
+    // its own says nothing. What it answers is the twin's own last offer —
+    // "22 left in L / Olive. Shall I send you the invoice and a payment
+    // link?" — which was recorded when it was made. A yes with an open
+    // offer behind it is a purchase of exactly what was offered: the fact
+    // is decided here, from the trail, not guessed from the word.
+    let offerMatch: Match | null = null;
+    let accepted: Offer | null = null;
+    if (isAffirmation(input.text)) {
+      const offer = await openOffer(tx, workspace.id, customer.id, now);
+      const product = offer
+        ? await tx.product.findFirst({ where: { id: offer.productId, workspaceId: workspace.id }, include: { variants: true } })
+        : null;
+      const variant = product?.variants.find((v) => v.id === offer!.variantId);
+      if (offer && product && variant) {
+        accepted = offer;
+        offerMatch = {
+          product, variant, precise: true,
+          totalStock: product.variants.reduce((a, v) => a + (v.stock - v.reserved), 0),
+          variantCount: product.variants.length,
+          sku: variant.sku,
+        };
+        extracted = { ...extracted, intent: "buy", quantity: extracted.quantity ?? offer.qty };
+      }
+    }
+
     /* -------------------------------------------- the customer twin rules */
     // PRD §5: "flags credit risk if past-due invoices > 0" and "routes VIP
     // inquiries instantly". Both are read here, once, against the twin as it
@@ -242,7 +277,13 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     );
 
     /* ----------------------------------------------------- product match */
-    const match = await matchVariant(tx, extracted, workspace.id, input.text);
+    // A yes names nothing, so the offer it answers supplies the product; a
+    // yes that restates the variant ("yes, the olive L") is believed over it.
+    const spoken = await matchVariant(tx, extracted, workspace.id, input.text);
+    const match = spoken?.precise ? spoken : offerMatch ?? spoken;
+    if (accepted && match) {
+      record("offer.accepted", "order", `customer=${customer.id} product=${match.product.id} variant=${match.variant.id} qty=${extracted.quantity ?? accepted.qty}`);
+    }
     if (match) {
       record(
         "product_twin.matched",
@@ -267,6 +308,19 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
 
     const wants = extracted.quantity ?? 1;
     const knowledge = findKnowledge(input.text, extracted.intent, workspace.knowledge);
+
+    // "Any update on this order?" names no product, and the word "order"
+    // reads to the extractor as a purchase — but it names the one thing the
+    // customer is waiting on. Answered from the order itself, when they
+    // have one, whatever the intent was read as; a return or a complaint
+    // keeps its own handling.
+    const asked = !match && ASKS_STATUS.test(input.text) && !["return", "complaint", "purchase_order"].includes(extracted.intent)
+      ? await tx.order.findFirst({
+        where: { workspaceId: workspace.id, customerId: customer.id },
+        orderBy: { createdAt: "desc" },
+        include: { product: { select: { name: true } } },
+      })
+      : null;
 
     if (extracted.intent === "buy" && match && match.precise) {
       const available = match.variant.stock - match.variant.reserved;
@@ -307,6 +361,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
 
         // Nothing is held before payment, so nothing is offered as held: the
         // honest offer is the quantity there is, or another variant.
+        if (available > 0) record(...effectArgs(offerEffect(customer.id, match, available)));
         parts = available > 0
           ? { core: `I have ${available} of those, not ${wants}.`, detail: `More is ${match.product.leadTimeDays} days away.`, question: `Would ${available} do for now?` }
           : { core: "That variant is out of stock.", detail: `More is ${match.product.leadTimeDays} days away.`, question: "Would another size or colour do?" };
@@ -413,10 +468,18 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
             };
       } else {
         runs.push({ agent: "Inventory", action: `Checked ${match.sku}, ${available} available`, touchesMoney: false, ms: 320 });
+        // "Shall I send you the invoice?" is an offer of what they asked
+        // about, in the quantity they asked about or as many as there are;
+        // a yes to it is the sale.
+        if (available > 0) record(...effectArgs(offerEffect(customer.id, match, Math.min(wants, available))));
         parts = available > 0
           ? { core: `${available} left in ${match.variant.optionA} / ${match.variant.optionB}.`, detail: knowledge?.body, question: "Shall I send you the invoice and a payment link?" }
           : { core: `None left in ${match.variant.optionA} / ${match.variant.optionB}.`, detail: `More is ${match.product.leadTimeDays} days away.`, question: "Would another size or colour do?" };
       }
+    } else if (asked) {
+      runs.push({ agent: "Support", action: `Reported the status of order ${asked.id} (${asked.stage})`, touchesMoney: false, ms: 240 });
+      record("order_twin.status_asked", "order", `${asked.id} stage=${asked.stage.toLowerCase()}`);
+      parts = statusParts(asked);
     } else if (extracted.intent === "buy" && match) {
       // Product named but not the variant. Reserving a guess would be worse
       // than asking, because the twin would promise the wrong thing.
@@ -551,6 +614,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
       contact: { captured: contact.captured, duplicateEmail: contact.duplicateEmailOf !== null },
       contactAsk,
       knowledgeUsed: knowledge ? { title: knowledge.title, kind: knowledge.kind } : null,
+      orderAsked: asked ? { id: asked.id, stage: asked.stage } : null,
       creditHold: credit.hold,
       vip,
       reservedUntil: reservedUntil?.toISOString() ?? null,
@@ -634,6 +698,100 @@ async function dispatchRestock(
     touchesMoney: true,
     ms: 2100,
   });
+}
+
+type Match = NonNullable<Awaited<ReturnType<typeof matchVariant>>>;
+
+/**
+ * An offer the twin made: a product, a variant and a quantity, put to the
+ * customer as a question ("Shall I send you the invoice?", "Would 5 do for
+ * now?"). Recorded on the trail so the yes that follows can be read.
+ */
+type Offer = { productId: string; variantId: string; qty: number; at: Date };
+
+const OFFER_PAYLOAD = /^customer=(\S+) product=(\S+) variant=(\S+) qty=(\d+)$/;
+
+/** How long a yes can follow the question it answers. */
+const OFFER_WINDOW_MS = 48 * 60 * 60_000;
+
+const offerEffect = (customerId: string, match: Match, qty: number): TwinEffect => ({
+  type: "offer.made", twin: "order",
+  payload: `customer=${customerId} product=${match.product.id} variant=${match.variant.id} qty=${qty}`,
+});
+
+/**
+ * The customer's latest offer that nothing has answered: made within the
+ * window, and with no order of theirs raised since — an order after the
+ * offer is the offer taken, whether by a yes or by a fuller message.
+ */
+async function openOffer(tx: Tx, workspaceId: string, customerId: string, now: Date): Promise<Offer | null> {
+  const event = await tx.twinEvent.findFirst({
+    where: {
+      workspaceId, type: "offer.made",
+      payload: { startsWith: `customer=${customerId} ` },
+      occurredAt: { gte: new Date(now.getTime() - OFFER_WINDOW_MS) },
+    },
+    orderBy: { occurredAt: "desc" },
+  });
+  const parsed = event ? OFFER_PAYLOAD.exec(event.payload) : null;
+  if (!event || !parsed) return null;
+
+  const since = await tx.order.findFirst({
+    where: { workspaceId, customerId, createdAt: { gte: event.occurredAt } },
+    select: { id: true },
+  });
+  if (since) return null;
+
+  return { productId: parsed[2]!, variantId: parsed[3]!, qty: Number(parsed[4]), at: event.occurredAt };
+}
+
+/**
+ * Saying yes, in the ways people say it in a chat, and nothing else: a
+ * short message that opens with assent and carries no "no" in it. "Yes,
+ * please send", "ok go ahead", "sure, send the link" are all yes; "yes but
+ * not today" and "no thanks" are not. Anything longer is a message of its
+ * own and is read as one.
+ */
+const AFFIRMS = /^\W*(?:yes|yeah|yep|yup|ya|sure|ok(?:ay)?|alright|absolutely|of course|definitely|certainly|please do|go ahead|do it|do that|sounds good|great|perfect|fine|that works|confirm(?:ed)?|done|haan|ji|send(?: it| them| me| that| the (?:invoice|link|payment link))?|please send(?: it| the (?:invoice|link|payment link))?)\b/i;
+const DECLINES = /\b(?:no|nope|not|don'?t|cancel|later|wait|hold|never ?mind|but)\b/i;
+
+export function isAffirmation(text: string): boolean {
+  const t = text.trim();
+  return t.split(/\s+/).length <= 8 && AFFIRMS.test(t) && !DECLINES.test(t);
+}
+
+/** Asking where an order has got to. */
+const ASKS_STATUS = /\b(?:any )?(?:update|status|track(?:ing)?|where(?:'s| is)(?: my| the)? order|when (?:will|does|is) (?:it|my order|the order)|eta|dispatched|shipped yet|delivered yet)\b/i;
+
+/**
+ * Where an order has got to, in a sentence the customer can act on. The
+ * stages are the Orders page's, in the customer's words: paid is "being
+ * packed", a blocked paid order is "a stock issue we are sorting out".
+ */
+function statusParts(order: { id: string; qty: number; variant: string; value: number; stage: string; blocked: string | null; product: { name: string } }): ReplyParts {
+  const what = `Your order ${order.id} — ${order.qty} × ${order.product.name} (${order.variant}) —`;
+  const total = `₹${toRupees(order.value).toLocaleString("en-IN")} total.`;
+  switch (order.stage) {
+    case "Inquiry":
+    case "Quoted":
+      return { core: `${what} is waiting for payment.`, detail: total, question: "Pay through the link below and it's yours." };
+    case "Confirmed":
+      return { core: `${what} is confirmed and set aside for you.`, detail: total, question: "We're getting it ready now." };
+    case "Paid":
+      return order.blocked
+        ? { core: `${what} is paid.`, detail: "We're sorting out a stock issue on it and will update you within a working day." }
+        : { core: `${what} is paid and being packed.`, question: "We'll message you the moment it ships." };
+    case "Packed":
+      return { core: `${what} is packed and ships shortly.`, question: "We'll message you when it's on its way." };
+    case "Shipped":
+      return { core: `${what} has shipped.`, detail: "It's on its way to you." };
+    case "Delivered":
+      return { core: `${what} was delivered.`, question: "Anything else I can help with?" };
+    case "Returned":
+      return { core: `${what} was returned.`, question: "Anything else I can help with?" };
+    default:
+      return { core: `${what} was cancelled.`, question: "Shall I raise it again?" };
+  }
 }
 
 function signalsFor(e: ExtractionResult, axes: [string, string]) {

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { env } from "../../env";
-import { paymentProvider } from "../../lib/payments";
+import { paymentProviderFor } from "../../lib/payments";
 import { issueInvoice } from "../../services/invoicing";
 import type { SkillSpec } from "../types";
 
@@ -43,7 +43,7 @@ export const stripeInvoice: SkillSpec<{ orderId: string }> = {
     const { invoice, created } = await issueInvoice(ctx.tx, ctx.workspaceId, order.id, ctx.now);
 
     const description = `${order.qty} × ${order.product.name} (${order.variant})`;
-    const checkout = await paymentProvider().createCheckoutLink({
+    const checkout = await (await paymentProviderFor(ctx.workspaceId)).createCheckoutLink({
       workspaceId: ctx.workspaceId,
       amount: invoice.amount,
       currency: env.STRIPE_CURRENCY,
