@@ -457,7 +457,9 @@ async function sellOnce(input: {
   const unpaidAsked = result.orderAsked && PAYABLE.includes(result.orderAsked.stage) ? result.orderAsked.id : null;
   if (!result.order && unpaidAsked) {
     invoiceOrderId = unpaidAsked;
-  } else if (!result.order && WANTS_INVOICE.test(input.text)) {
+  } else if (!result.order && WANTS_INVOICE.test(input.text) && !(result.matched && WANTS_INVOICE.test(result.matched.product))) {
+    // The word has to be theirs, not the product's: asking whether the
+    // Thermal Receipt Roll is in stock is not asking for a receipt.
     const last = await prisma.order.findFirst({
       where: { workspaceId: input.workspaceId, customerId: result.customer.id },
       orderBy: { createdAt: "desc" },

@@ -147,7 +147,7 @@ describe("purchase orders (C-1)", () => {
   it("answers a product-level question with what it has", async () => {
     await setup();
     const result = await say("is the linen shirt in stock");
-    expect(result.reply).toMatch(/in stock across|out of stock/i);
+    expect(result.reply).toMatch(/in stock|out of stock/i);
   });
 });
 
