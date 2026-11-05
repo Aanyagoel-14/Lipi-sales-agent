@@ -358,6 +358,27 @@ describe("the callback", () => {
 
   // Connected from the setup wizard, the dashboard would only redirect them
   // back to it, at the Catalogue step, with the result dropped.
+  // The callback is a navigation and carries no x-workspace-id; the cookie
+  // the app writes on choosing a workspace is what says which one it was.
+  it("finishes a connection started in the user's second workspace", async () => {
+    const app = await signedIn();
+    const owner = await prisma.membership.findFirstOrThrow({ where: { workspaceId } });
+    const second = await createWorkspace({ userId: owner.userId, name: "Second Shop", withCatalogue: false });
+
+    await app.post("/v1/channels/email/connect").set("x-workspace-id", second.id).expect(201);
+    const row = await prisma.channelConnection.findFirstOrThrow({ where: { workspaceId: second.id, channel: "email" } });
+    fakeComposio.accounts.set(row.composioAccountId!, {
+      id: row.composioAccountId!, status: "ACTIVE", statusReason: null, userId: second.id, toolkit: "gmail",
+    });
+
+    app.cookie("lipi_workspace_id", second.id);
+    const res = await app.get(`/v1/channels/callback?connected_account_id=${row.composioAccountId}`).expect(303);
+
+    expect(res.headers.location).toBe("/dashboard/channels?channel=email");
+    expect(await prisma.channelConnection.findFirst({ where: { workspaceId: second.id, channel: "email" } }))
+      .toMatchObject({ status: "connected" });
+  });
+
   it("returns to the wizard when setup is not finished", async () => {
     const { app, accountId } = await start("email");
     await prisma.workspace.update({ where: { id: workspaceId }, data: { onboardedAt: null } });

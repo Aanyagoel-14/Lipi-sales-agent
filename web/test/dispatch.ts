@@ -216,5 +216,7 @@ export function agent() {
     patch: make("PATCH"),
     delete: make("DELETE"),
     options: make("OPTIONS"),
+    /** Sets a cookie the way the app's own client code would (`document.cookie`). */
+    cookie: (name: string, value: string) => { jar.set(name, value); },
   };
 }

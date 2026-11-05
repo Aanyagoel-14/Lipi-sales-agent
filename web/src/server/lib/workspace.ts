@@ -1,4 +1,5 @@
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
+import { WORKSPACE_ID_COOKIE } from "@/lib/session";
 import type { ApiScope } from "@/generated/prisma/client";
 import { prisma } from "./prisma";
 import { HttpError, noteWorkspace, requestInFlight } from "./http";
@@ -56,17 +57,29 @@ export async function resolveWorkspaceId(options: ResolveOptions = {}): Promise<
   return workspaceId;
 }
 
-function resolveCredential(
+async function resolveCredential(
   presented: string | null,
   requested: string | null,
   options: ResolveOptions,
 ): Promise<string> {
-  if (!presented) return resolveFromSession(requested);
+  if (!presented) return resolveFromSession(requested ?? (await chosenInBrowser()));
 
   if (options.sessionOnly) {
     throw new HttpError(403, "An API key cannot manage API keys. Sign in instead.");
   }
   return resolveFromApiKey(presented, requested);
+}
+
+/**
+ * The workspace the browser last chose, from the cookie the app writes when
+ * one is picked. Only for a request that cannot carry the header — a
+ * top-level navigation, such as the return from a provider's consent screen,
+ * which otherwise landed in the user's *first* workspace and could not find
+ * the connection started in another. It chooses; membership still decides.
+ */
+async function chosenInBrowser(): Promise<string | null> {
+  const value = (await cookies()).get(WORKSPACE_ID_COOKIE)?.value;
+  return value ? decodeURIComponent(value) : null;
 }
 
 /**
