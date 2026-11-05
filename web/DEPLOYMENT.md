@@ -38,7 +38,7 @@ secrets in your host — never commit `.env`):
 | `INTERNAL_URL` | no | Where this app reaches itself, when `http://127.0.0.1:$PORT` is not that address. Server components fetch their own route handlers; a host that cannot serve itself on loopback needs this named. Vercel is detected without it. |
 | `OPENROUTER_API_KEY` | no | Enables LLM-based intent extraction and the operator's twin-chat feature. Without it, intent extraction falls back to deterministic rules (still fully functional, just less flexible on ambiguous phrasing) and twin-chat is unavailable. |
 | `OPENROUTER_MODEL` | no | Defaults to a fast model; used for per-message intent extraction. |
-| `OPENROUTER_CHAT_MODEL` | no | Used only for the operator's own twin-chat, can be a stronger/slower model. |
+| `OPENROUTER_CHAT_MODEL` | no | Voices every customer reply and the operator's twin chat; falls back to `OPENROUTER_MODEL` when unavailable. Avoid `:free` ids — they are withdrawn without notice. |
 | `NODE_ENV` | no | Set to `production` in production. |
 | `COMPOSIO_API_KEY` | no | Composio holds every channel credential and runs every send. Without it no channel can be connected and only webchat works. |
 | `COMPOSIO_AUTH_CONFIG_*` | no | One auth config id per channel (`WHATSAPP`, `INSTAGRAM`, `FACEBOOK`, `TELEGRAM`, `X`, `GMAIL`). A channel with no id is listed as unavailable. |

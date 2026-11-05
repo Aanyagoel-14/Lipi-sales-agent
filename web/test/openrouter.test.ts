@@ -142,10 +142,19 @@ describe("falling back when the model is unavailable", () => {
     const { user } = await createUser();
     workspaceId = (await createWorkspace({ userId: user.id, withCatalogue: false })).id;
     env.OPENROUTER_API_KEY = "test-key";
+    // A chain of two, whatever the configured defaults are: they may name
+    // the same model, and then there is nothing to fall back to.
+    env.OPENROUTER_CHAT_MODEL = "vendor/chat-model";
     asked = [];
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
-  afterEach(() => { env.OPENROUTER_API_KEY = undefined; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  const configuredChatModel = env.OPENROUTER_CHAT_MODEL;
+  afterEach(() => {
+    env.OPENROUTER_API_KEY = undefined;
+    env.OPENROUTER_CHAT_MODEL = configuredChatModel;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   const ask = (model?: string) =>
     chatCompletion({ meter: { workspaceId, purpose: "sell" }, model, messages: [{ role: "user", content: "hi" }] });
@@ -165,6 +174,19 @@ describe("falling back when the model is unavailable", () => {
     stub(() => new Response("busy", { status: 503 }));
     expect(await ask()).toBe("hello");
     expect(asked).toHaveLength(2);
+  });
+
+  // 2026-10-22 onwards: the free Nemotron tier was withdrawn and OpenRouter
+  // answered every voicing call with a 404 naming the model. A 404 is about
+  // the model, not the request, so the next one can answer; treating it as
+  // final sent every customer the composed reply for two weeks.
+  it("falls back when the chat model no longer exists", async () => {
+    stub(() => new Response(JSON.stringify({
+      error: { message: "This model is unavailable for free. The paid version is available now", code: 404 },
+    }), { status: 404 }));
+
+    expect(await ask()).toBe("hello");
+    expect(asked).toEqual([env.OPENROUTER_CHAT_MODEL, env.OPENROUTER_MODEL]);
   });
 
   it("never substitutes a model the caller pinned", async () => {

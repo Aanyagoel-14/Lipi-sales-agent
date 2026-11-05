@@ -213,10 +213,16 @@ export async function chatCompletion(options: CompletionOptions & { meter: Model
  * request's, so a different model is worth one more call. A timeout is not
  * retried — the caller has already waited the full budget once — and neither
  * is a 402 or a 4xx, which the next model would refuse just the same.
+ *
+ * Except a 404, which is about the model rather than the request: OpenRouter
+ * answers it when a model id is withdrawn ("This model is unavailable for
+ * free"), and the next model in the chain is a different id.
  */
 function isTransient(error: unknown): boolean {
   if (error instanceof ModelCallFailed) return error.upstream;
-  if (error instanceof ProviderRefused) return error.status === 408 || error.status === 429 || error.status >= 500;
+  if (error instanceof ProviderRefused) {
+    return error.status === 404 || error.status === 408 || error.status === 429 || error.status >= 500;
+  }
   return false;
 }
 

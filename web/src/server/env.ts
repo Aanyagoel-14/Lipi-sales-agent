@@ -16,7 +16,12 @@ const schema = z.object({
   // They are also allowed to differ in cost. Chat is a handful of calls a day
   // from one operator; extraction runs on every inbound customer message and
   // decides whether stock gets reserved, so it is the one worth paying for.
-  OPENROUTER_CHAT_MODEL: z.string().default("nvidia/nemotron-3-super-120b-a12b:free"),
+  //
+  // It also voices every customer reply (`sell()`), with OPENROUTER_MODEL as
+  // the fallback. The default was Nemotron's free tier until OpenRouter
+  // withdrew it on 2026-10-22 and every call came back 404; a free tier can
+  // vanish without notice, so the default is a model that is paid for.
+  OPENROUTER_CHAT_MODEL: z.string().default("deepseek/deepseek-v4-flash"),
   // Encrypts channel credentials at rest. Rotating it invalidates them.
   APP_SECRET: z.string().min(16, "APP_SECRET must be at least 16 characters"),
   // The app's own public origin. Webhook URLs handed to providers and push
