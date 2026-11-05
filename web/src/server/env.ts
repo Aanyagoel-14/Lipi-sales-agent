@@ -27,7 +27,10 @@ const schema = z.object({
   // The app's own public origin. Webhook URLs handed to providers and push
   // URLs handed to ERPs are built from it, so it has to be publicly reachable
   // and has to match where the app is actually served.
-  PUBLIC_URL: z.string().default("http://localhost:3000"),
+  //
+  // Stored without a trailing slash: every URL built from it appends a path,
+  // and "https://example.com/" + "/webhooks/…" is a URL Telegram rejects.
+  PUBLIC_URL: z.string().default("http://localhost:3000").transform((url) => url.replace(/\/+$/, "")),
   // How many proxies this deployment sits behind, counted from the app: the
   // client address is read that many entries from the end of
   // X-Forwarded-For, because the entries before it are the caller's to
@@ -122,6 +125,20 @@ const schema = z.object({
   // custom domain and no certificate. See `server/sites/hosting.ts`.
   VERCEL_TOKEN: z.string().optional(),
   CLOUDFLARE_API_TOKEN: z.string().optional(),
+}).superRefine((value, ctx) => {
+  // In production PUBLIC_URL is what customers are sent (invoice links), what
+  // Telegram and Shopify deliver to, and where the widget loads from. Left at
+  // its localhost default, all of that silently points at the customer's own
+  // machine. Not checked while `next build` runs: the image is built with
+  // placeholders, and the real value arrives when the container starts.
+  const building = process.env.NEXT_PHASE === "phase-production-build";
+  if (value.NODE_ENV === "production" && !building && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:|\/|$)/i.test(value.PUBLIC_URL)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["PUBLIC_URL"],
+      message: `PUBLIC_URL is ${value.PUBLIC_URL} in production; set it to this deployment's public https origin`,
+    });
+  }
 }).superRefine((value, ctx) => {
   // Half a Shopify app is worse than none: an install that starts and cannot
   // finish, or a webhook that can never be verified.
