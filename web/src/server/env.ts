@@ -35,6 +35,11 @@ const schema = z.object({
   // client address is read that many entries from the end of
   // X-Forwarded-For, because the entries before it are the caller's to
   // write. 1 for Cloud Run on its own; 2 behind a load balancer.
+  // When an inbound channel message is processed: `after_response` (answer the
+  // provider first, then work) or `before_response`. Unset, it is decided by
+  // host: before the response on Cloud Run (K_SERVICE is set), whose default
+  // CPU throttling starves work done after it; after the response elsewhere.
+  INBOUND_PROCESSING: z.enum(["after_response", "before_response"]).optional(),
   // Authorises the scheduled tick (`POST /v1/cron/tick`) that releases lapsed
   // stock holds and sends due webhooks for every workspace. Unset, the tick
   // refuses and those wait for someone to open the Orders page.
