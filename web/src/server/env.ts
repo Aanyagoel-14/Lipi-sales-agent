@@ -35,6 +35,10 @@ const schema = z.object({
   // client address is read that many entries from the end of
   // X-Forwarded-For, because the entries before it are the caller's to
   // write. 1 for Cloud Run on its own; 2 behind a load balancer.
+  // Authorises the scheduled tick (`POST /v1/cron/tick`) that releases lapsed
+  // stock holds and sends due webhooks for every workspace. Unset, the tick
+  // refuses and those wait for someone to open the Orders page.
+  CRON_SECRET: z.string().min(16).optional(),
   TRUSTED_PROXY_HOPS: z.coerce.number().int().min(1).max(5).default(1),
 
   // ------------------------------------------------------------ Composio --

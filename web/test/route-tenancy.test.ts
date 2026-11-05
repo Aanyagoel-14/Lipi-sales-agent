@@ -71,6 +71,10 @@ const EXEMPT: Record<string, string> = {
   // work for them. The slug names the site; nothing is written.
   "/v1/builder/sites/[slug]/quote": "public site calculator; the slug names the site and nothing is written",
 
+  // The scheduled tick works through every tenant, so no session or key can
+  // name one; it answers to the deployment's CRON_SECRET instead.
+  "/v1/cron/tick": "deployment cron; authorised by CRON_SECRET and runs each workspace's own sweep",
+
   // Aliases that re-export a canonical handler. The check applies there.
   "/api/v1/conversations/ingest": "re-exports /v1/conversations/ingest",
   "/api/v1/agents/builder/deploy": "re-exports /v1/agents/builder/deploy",

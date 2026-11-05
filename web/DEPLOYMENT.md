@@ -36,6 +36,7 @@ secrets in your host — never commit `.env`):
 | `APP_SECRET` | yes | ≥16 random chars. Encrypts every stored channel/connector secret. **Generate once, store safely, never rotate casually** — rotating it invalidates every stored credential and every connected channel/connector must be reconnected. |
 | `PUBLIC_URL` | yes | This deployment's own public HTTPS origin, e.g. `https://app.example.com`. Used to build the webhook URLs handed to Telegram/Meta, invoice links and the push URLs handed to inventory connectors — outbound only. The app does not call itself through it. With `NODE_ENV=production` a localhost value is refused on every request (the build itself is not checked). |
 | `INTERNAL_URL` | no | Where this app reaches itself, when `http://127.0.0.1:$PORT` is not that address. Server components fetch their own route handlers; a host that cannot serve itself on loopback needs this named. Vercel is detected without it. |
+| `CRON_SECRET` | yes, in production | ≥16 random chars. Authorises `POST /v1/cron/tick`, which releases lapsed stock holds and sends due outbound webhooks for every workspace. See §9. |
 | `TRUSTED_PROXY_HOPS` | no | Default `1`. How many proxies sit in front of the app; the client IP used for rate limits is read that many entries from the end of `X-Forwarded-For`. `1` for Cloud Run alone, `2` with a load balancer in front. |
 | `OPENROUTER_API_KEY` | no | Enables LLM-based intent extraction and the operator's twin-chat feature. Without it, intent extraction falls back to deterministic rules (still fully functional, just less flexible on ambiguous phrasing) and twin-chat is unavailable. |
 | `OPENROUTER_MODEL` | no | Defaults to a fast model; used for per-message intent extraction. |
@@ -247,3 +248,26 @@ inventory sync endpoint is not yet rate-limited, and there has been no
 additional API hardening pass beyond what the security audit covered.
 Treat this as a functional but not yet fully hardened production
 deployment.
+
+## 9. The scheduled tick
+
+Two jobs have to run on a clock, not when someone happens to open a page:
+releasing a purchase order's stock hold once it lapses, and sending (and
+retrying) outbound webhooks. Both run, for every workspace, on one call:
+
+```bash
+curl -X POST https://<PUBLIC_URL>/v1/cron/tick -H "Authorization: Bearer $CRON_SECRET"
+```
+
+On Google Cloud, a Cloud Scheduler job every 5 minutes:
+
+```bash
+gcloud scheduler jobs create http lipi-tick \
+  --schedule="*/5 * * * *" --http-method=POST \
+  --uri="https://<PUBLIC_URL>/v1/cron/tick" \
+  --headers="Authorization=Bearer <CRON_SECRET>"
+```
+
+It answers `{ workspaces, released, delivered, failed }`. Without `CRON_SECRET`
+it refuses with a 503, and holds are released only when the Orders page loads.
+
