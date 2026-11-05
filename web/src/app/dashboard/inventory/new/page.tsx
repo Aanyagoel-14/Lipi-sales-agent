@@ -16,6 +16,7 @@ export default async function NewProductPage() {
     <>
       <PageHead
         title="Add a product"
+        back={{ href: "/dashboard/inventory", label: "Inventory" }}
         blurb="Every intersection of the two axes becomes a sellable variant with its own stock. That is what the agents check before promising anything."
       />
       <ProductForm template={template} />
