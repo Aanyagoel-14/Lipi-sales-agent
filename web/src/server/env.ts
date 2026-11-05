@@ -105,7 +105,9 @@ const schema = z.object({
   // `demo` turns on Lipi's own test checkout: the invoice page's Pay button
   // settles the invoice at once, with no money moving. For demonstrating the
   // order flow before a gateway is connected; the page says TEST on it.
-  // Ignored for a workspace with Stripe connected — a real gateway always wins.
+  // Ignored for a workspace with Stripe connected — a real gateway always wins,
+  // and ignored entirely when NODE_ENV=production: the demo Pay button marks
+  // an invoice paid for anyone holding its link.
   PAYMENT_PROVIDER: z.enum(["demo"]).optional(),
 
   // ------------------------------------------------------------- hosting --
