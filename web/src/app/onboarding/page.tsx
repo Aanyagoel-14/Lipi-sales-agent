@@ -26,7 +26,7 @@ export default async function OnboardingPage() {
         </div>
       </header>
       <main className="flex-1">
-        <Wizard resuming={Boolean(inProgress)} />
+        <Wizard existing={inProgress ? { name: inProgress.name, vertical: inProgress.vertical } : null} />
       </main>
     </>
   );

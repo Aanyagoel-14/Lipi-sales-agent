@@ -45,6 +45,10 @@ export type Vocabulary = {
   optionsA: string[];
   optionsB: string[];
   axes: [string, string];
+  /** The workspace's own product names, lower-cased. A name can carry a word
+   *  the rules otherwise read as intent: "Thermal Receipt Roll" is not a
+   *  request for a receipt. */
+  productNames: string[];
 };
 
 /** What the workspace actually sells, as opposed to what its trade usually sells. */
@@ -53,6 +57,7 @@ export type LiveCatalogue = {
   optionsA: string[];
   optionsB: string[];
   axes?: [string, string];
+  products?: string[];
 };
 
 /**
@@ -79,6 +84,7 @@ export function vocabularyFor(vertical: Vertical, live?: LiveCatalogue): Vocabul
     optionsA: [...new Set([...(live?.optionsA ?? []), ...catalogue.products.flatMap((p) => p.optionsA)])],
     optionsB: [...new Set([...(live?.optionsB ?? []), ...catalogue.products.flatMap((p) => p.optionsB)])],
     axes: live?.axes ?? ((catalogue.products[0]?.axes ?? ["Option A", "Option B"]) as [string, string]),
+    productNames: (live?.products ?? []).map((name) => name.toLowerCase()),
   };
 }
 
@@ -332,6 +338,7 @@ export function extractWithRules(text: string, vocab: Vocabulary, now = new Date
   const categoryKey = Object.keys(vocab.categories)
     .sort((a, b) => b.length - a.length)
     .find((k) => new RegExp(`\\b${escape(k)}\\b`).test(t));
+  const namesProduct = vocab.productNames.some((name) => t.includes(name));
 
   const intent: Extracted["intent"] =
     /\b(return|exchange|swap|refund)\b/.test(t) ? "return"
@@ -340,7 +347,7 @@ export function extractWithRules(text: string, vocab: Vocabulary, now = new Date
     : /\b(broken|damaged|faulty|complain|terrible|awful)\b/.test(t) ? "complaint"
     // "Send me the invoice" names no product: it is about a sale already
     // made. With a product it is a purchase that wants its paperwork.
-    : ASKS_INVOICE.test(t) && !categoryKey ? "support"
+    : ASKS_INVOICE.test(t) && !categoryKey && !namesProduct ? "support"
     : ASKS_STOCK.test(t) ? "inventory_request"
     // "give me two polos" is as much a purchase as "I need two polos". A
     // buy phrase the rules do not know reads as `other`, and the twin answers

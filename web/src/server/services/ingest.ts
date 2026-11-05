@@ -125,6 +125,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     optionsA: [...new Set(live.flatMap((p) => p.variants.map((v) => v.optionA)))],
     optionsB: [...new Set(live.flatMap((p) => p.variants.map((v) => v.optionB)))],
     axes: (live[0]?.axes as [string, string]) ?? undefined,
+    products: live.map((p) => p.name),
   });
   // Resolved before the transaction, and only so the budget below has a thread
   // to count against: the transaction reads the customer again and that read
@@ -279,7 +280,18 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     /* ----------------------------------------------------- product match */
     // A yes names nothing, so the offer it answers supplies the product; a
     // yes that restates the variant ("yes, the olive L") is believed over it.
-    const spoken = await matchVariant(tx, extracted, workspace.id, input.text);
+    let spoken = await matchVariant(tx, extracted, workspace.id, input.text);
+    // "What size options do you have?" names nothing, because the customer
+    // named it one message ago. A shopkeeper answers about that product, not
+    // "let me look into that"; the product is read back off their own last
+    // messages, the same way it was matched when they said it.
+    if (!spoken && !accepted && (extracted.intent === "inventory_request" || ASKS_OPTIONS.test(input.text))) {
+      spoken = await lastProductAsked(tx, workspace.id, customer.id, extracted, conversationSince(now));
+      if (spoken) {
+        extracted = { ...extracted, intent: "inventory_request" };
+        record("product_twin.carried", "product", `${spoken.product.id} from=earlier_message`);
+      }
+    }
     const match = spoken?.precise ? spoken : offerMatch ?? spoken;
     if (accepted && match) {
       record("offer.accepted", "order", `customer=${customer.id} product=${match.product.id} variant=${match.variant.id} qty=${extracted.quantity ?? accepted.qty}`);
@@ -314,7 +326,7 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     // customer is waiting on. Answered from the order itself, when they
     // have one, whatever the intent was read as; a return or a complaint
     // keeps its own handling.
-    const asked = !match && ASKS_STATUS.test(input.text) && !["return", "complaint", "purchase_order"].includes(extracted.intent)
+    const asked = !match && (ASKS_STATUS.test(input.text) || ASKS_TO_PAY.test(input.text)) && !["return", "complaint", "purchase_order"].includes(extracted.intent)
       ? await tx.order.findFirst({
         where: { workspaceId: workspace.id, customerId: customer.id },
         orderBy: { createdAt: "desc" },
@@ -325,7 +337,26 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     if (extracted.intent === "buy" && match && match.precise) {
       const available = match.variant.stock - match.variant.reserved;
 
-      if (available >= wants) {
+      // The same order again, unpaid, is the same order: a customer who heard
+      // nothing back sends it twice, and two quotes for one purchase is two
+      // invoices for them to choose between. The open one is sent again.
+      const repeated = await tx.order.findFirst({
+        where: {
+          workspaceId: workspace.id, customerId: customer.id, variantId: match.variant.id, qty: wants,
+          stage: "Quoted", createdAt: { gte: new Date(now.getTime() - REPEAT_QUOTE_WINDOW_MS) },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (repeated) {
+        order = { id: repeated.id, valueInr: toRupees(repeated.value) };
+        record("order_twin.requoted", "order", `${repeated.id} status=quoted awaiting=payment`);
+        runs.push({ agent: "Sales", action: `Sent the open quote ${repeated.id} again`, touchesMoney: false, ms: 240 });
+        parts = {
+          core: `${wants} × ${match.product.name}, ${match.variant.optionA} / ${match.variant.optionB} is in stock.`,
+          detail: `₹${toRupees(match.product.price).toLocaleString("en-IN")} each, ₹${order.valueInr.toLocaleString("en-IN")} total. It's yours once paid.`,
+        };
+      } else if (available >= wants) {
         // Quoted, not reserved. The customer is sent their invoice and a way
         // to pay, and stock is committed when the payment lands
         // (`services/checkout.ts`) — not on a message most senders never
@@ -455,9 +486,14 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
 
       if (!match.precise) {
         runs.push({ agent: "Inventory", action: `Checked ${match.product.name}, ${match.totalStock} across ${match.variantCount} variants`, touchesMoney: false, ms: 320 });
+        // The choice is put in front of them, not described: "across 2
+        // variants, which do you need?" asks a customer to guess what exists.
+        const choices = inStockChoices(match);
         parts = match.totalStock > 0
           ? {
-              core: `Yes, ${match.totalStock} of the ${match.product.name} in stock across ${match.variantCount} variants.`,
+              core: choices
+                ? `Yes, the ${match.product.name} is in stock in ${choices}.`
+                : `Yes, ${match.totalStock} of the ${match.product.name} in stock across ${match.variantCount} variants.`,
               detail: knowledge?.body,
               question: `Which ${axisNames} do you need?`,
             }
@@ -495,6 +531,9 @@ export async function ingest(input: IngestInput, options: { dryRun?: boolean } =
     } else if (extracted.intent === "quote_request") {
       runs.push({ agent: "Sales", action: "Drafted a volume quote", touchesMoney: true, ms: 2400 });
       parts = { core: "I can quote that.", detail: knowledge?.body, question: "How many units are you thinking?" };
+    } else if (GREETS.test(input.text)) {
+      runs.push({ agent: "Support", action: "Greeted the customer", touchesMoney: false, ms: 120 });
+      parts = { core: "What can I help you find today?" };
     } else if (knowledge) {
       // No product matched, but the workspace has taught the twin this answer.
       runs.push({ agent: "Support", action: `Answered from knowledge: ${knowledge.title}`, touchesMoney: false, ms: 300 });
@@ -761,6 +800,57 @@ export function isAffirmation(text: string): boolean {
 }
 
 /** Asking where an order has got to. */
+/** Asking for the way to pay an order already quoted. */
+const ASKS_TO_PAY = /\b(?:pay(?:ment)?[ -]?link|link to pay|(?:how|where) (?:do|can|should) i pay|pay now|want to pay)\b/i;
+
+/** Asking what there is to choose from, without naming what. */
+const ASKS_OPTIONS = /\b(?:options?|sizes?|variants?|colou?rs?|what (?:all|else) do you have|which ones?)\b/i;
+
+/** A greeting and nothing else. */
+const GREETS = /^\W*(?:hi+|hello+|hey+|hiya|namaste|good (?:morning|afternoon|evening))\W*$/i;
+
+/** How long an unpaid quote is the one a repeated order means. */
+const REPEAT_QUOTE_WINDOW_MS = 60 * 60_000;
+
+/** How far back a follow-up can lean on the product named before it. */
+const FOLLOW_UP_WINDOW_MS = 2 * 60 * 60_000;
+const conversationSince = (now: Date) => new Date(now.getTime() - FOLLOW_UP_WINDOW_MS);
+
+/** At most this many options are listed; a longer list reads as a catalogue dump. */
+const MAX_CHOICES = 6;
+
+/**
+ * What there is to choose between, with how many of each: "A5 / 192 Pages
+ * (31)", or null when there are too many to list in a chat.
+ */
+function inStockChoices(match: Match): string | null {
+  const choices = match.product.variants
+    .map((v) => ({ v, available: v.stock - v.reserved }))
+    .filter(({ available }) => available > 0);
+  if (!choices.length || choices.length > MAX_CHOICES) return null;
+  return choices.map(({ v, available }) => `${v.optionA} / ${v.optionB} (${available})`).join(", ");
+}
+
+/**
+ * The product the customer's own recent messages named, newest first.
+ * Matched by name or category only: an option on its own, said in an earlier
+ * message, is not a product, and the options of this message stay this
+ * message's.
+ */
+async function lastProductAsked(tx: Tx, workspaceId: string, customerId: string, e: ExtractionResult, since: Date) {
+  const earlier = await tx.message.findMany({
+    where: { from: "customer", sentAt: { gte: since }, conversation: { workspaceId, customerId } },
+    orderBy: { sentAt: "desc" },
+    take: 5,
+    select: { text: true },
+  });
+  for (const { text } of earlier) {
+    const found = await matchVariant(tx, { ...e, category: null }, workspaceId, text);
+    if (found) return found;
+  }
+  return null;
+}
+
 const ASKS_STATUS = /\b(?:any )?(?:update|status|track(?:ing)?|where(?:'s| is)(?: my| the)? order|when (?:will|does|is) (?:it|my order|the order)|eta|dispatched|shipped yet|delivered yet)\b/i;
 
 /**
@@ -861,7 +951,15 @@ async function matchVariant(tx: Tx, e: ExtractionResult, workspaceId: string, te
   if (!best) return null;
 
   // Precise means the customer named the variant, not merely the product.
-  const precise = best.optionScore >= 2;
+  // A product with one variant has nothing left to name: asking "which size
+  // and page count?" of a customer who has the only one is a question with
+  // one answer. Unless they named an option that is not it.
+  const only = best.product.variants.length === 1 ? best.variant : null;
+  const contradicted = only !== null && (
+    (e.optionA !== null && e.optionA.toLowerCase() !== only.optionA.toLowerCase())
+    || (e.optionB !== null && e.optionB.toLowerCase() !== only.optionB.toLowerCase())
+  );
+  const precise = best.optionScore >= 2 || (only !== null && best.score >= 4 && !contradicted);
   if (!precise && !nameHitAny && !e.category) return null;
 
   const totalStock = best.product.variants.reduce((a, v) => a + (v.stock - v.reserved), 0);

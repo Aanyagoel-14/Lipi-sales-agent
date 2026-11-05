@@ -208,6 +208,7 @@ export type Grounding = {
 // business behind it.
 const catalogueSelect = {
   id: true, name: true, category: true, price: true, leadTimeDays: true, crossSell: true, axes: true,
+  description: true,
   variants: {
     select: { optionA: true, optionB: true, stock: true, reserved: true },
     orderBy: [{ optionA: "asc" }, { optionB: "asc" }],
@@ -283,6 +284,10 @@ function productLines(product: CatalogueProduct): string[] {
     `- ${product.name} (${product.category}) — ${inr(product.price)} each, ${total} available, ` +
       `${product.leadTimeDays} day lead time if ordered in.`,
   ];
+  // The seller's own words about it, which is what a customer asking "what
+  // is it like?" is owed. It carries no numbers the reply may use: those
+  // are the lines above.
+  if (product.description) lines.push(`  About it: ${product.description}`);
   if (inStock.length) {
     lines.push(`  In stock: ${inStock.slice(0, CAPS.variants).map((v) => `${v.label} (${v.available})`).join(", ")}`);
   }

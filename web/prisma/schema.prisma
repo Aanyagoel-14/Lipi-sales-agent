@@ -242,6 +242,9 @@ model Product {
   /// Vertical-specific attributes (fabric and season for apparel, OEM ref and
   /// warranty for parts). Kept as JSON so a new vertical needs no migration.
   attributes   Json     @default("{}")
+  /// A sentence or two about the product, in the seller's words, from the
+  /// catalogue import. Customer-safe: it is given to the salesperson model.
+  description  String?
   price        Int
   marginPct    Int
   leadTimeDays Int

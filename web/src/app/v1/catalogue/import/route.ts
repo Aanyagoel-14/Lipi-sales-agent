@@ -1,3 +1,4 @@
+import { env } from "@/server/env";
 import { body, HttpError, json, route } from "@/server/lib/http";
 import { toPaise } from "@/server/lib/money";
 import { prisma } from "@/server/lib/prisma";
@@ -14,6 +15,14 @@ import { importSchema, productId, supplierId } from "../schemas";
 export const POST = route(async (req) => {
   const workspaceId = await resolveWorkspaceId();
   const data = await body(req, importSchema, "Check the catalogue file");
+
+  // Prices are stored in this deployment's one currency, and the template says
+  // which. A file that states another has prices in it that would be read as
+  // the wrong money, so it is refused rather than converted.
+  const foreign = data.rows.find((r) => r.currency && r.currency !== env.STRIPE_CURRENCY.toUpperCase());
+  if (foreign) {
+    throw new HttpError(422, `${foreign.product} is priced in ${foreign.currency}; this catalogue is priced in ${env.STRIPE_CURRENCY.toUpperCase()}`);
+  }
 
   const groups = new Map<string, typeof data.rows>();
   for (const row of data.rows) {
@@ -57,6 +66,9 @@ export const POST = route(async (req) => {
         data: {
           id: productId(), workspaceId, name: first.product, category: first.category,
           axes: [first.axisAName, first.axisBName], attributes: {},
+          // One per product, but written on every variant row: the first row
+          // that says anything is the one kept.
+          description: rows.find((r) => r.description)?.description ?? null,
           price: toPaise(first.priceInr), marginPct: first.marginPct,
           leadTimeDays: first.leadTimeDays, supplierId: supplier.id, crossSell: [],
           // L-1(d) fix: stored once here rather than rebuilt on read.

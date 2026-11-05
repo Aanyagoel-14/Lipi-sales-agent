@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { CATALOGUE_COLUMNS, CATALOGUE_CSV_EXAMPLE, parseCatalogueCsv } from "@/lib/catalogue-import";
+import { CATALOGUE_COLUMNS, parseCatalogueCsv } from "@/lib/catalogue-import";
 import { apiFetch } from "@/lib/client";
 
 export function DataOnboarding({
@@ -86,7 +86,24 @@ export function DataOnboarding({
     }
   }
 
-  const templateHref = `data:text/csv;charset=utf-8,${encodeURIComponent(CATALOGUE_CSV_EXAMPLE)}`;
+  // The server writes the template, because the currency column on it is the
+  // server's to state. Fetched rather than linked: the session cookie lives
+  // on the API's origin, which a plain download link may not be.
+  async function downloadTemplate() {
+    setError(null);
+    try {
+      const res = await apiFetch("catalogue/import/template");
+      if (!res.ok) throw new Error("Could not download the template");
+      const url = URL.createObjectURL(await res.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "lipi-catalogue-template.csv";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
 
   return (
     <div className={compact ? "space-y-4" : "grid gap-4 xl:grid-cols-[1.4fr_1fr]"}>
@@ -111,10 +128,10 @@ export function DataOnboarding({
           <Button variant="secondary" chevron={false} onClick={() => input.current?.click()} disabled={busy}>
             Choose CSV
           </Button>
-          <a href={templateHref} download="lipi-catalogue-template.csv"
+          <button type="button" onClick={() => void downloadTemplate()}
             className="inline-flex min-h-11 items-center rounded-full px-4 text-[0.8125rem] text-ink-muted underline underline-offset-4 hover:text-ink">
             Download template
-          </a>
+          </button>
         </div>
 
         {fileName ? <p className="mt-3 text-[0.75rem] text-ink-subtle">{fileName}</p> : null}
@@ -152,8 +169,11 @@ export function DataOnboarding({
 
       {!compact ? (
         <section className="rounded-2xl border border-line bg-surface p-5 xl:col-span-2">
-          <p className="text-[0.8125rem] font-medium">Required CSV columns</p>
+          <p className="text-[0.8125rem] font-medium">CSV columns</p>
           <p className="mt-2 break-words font-mono text-[0.6875rem] text-ink-muted">{CATALOGUE_COLUMNS.join(" · ")}</p>
+          <p className="mt-2 text-[0.75rem] text-ink-subtle">
+            Currency comes filled in on the template. Description is optional, one per product.
+          </p>
         </section>
       ) : null}
     </div>

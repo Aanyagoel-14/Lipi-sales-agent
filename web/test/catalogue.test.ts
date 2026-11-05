@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
+import { parseCatalogueCsv } from "@/lib/catalogue-import";
 import { prisma } from "@/server/lib/prisma";
+import { buildGrounding } from "@/server/services/briefing";
 
 let workspaceId: string;
 
@@ -91,6 +93,65 @@ describe("importing real catalogue data", () => {
     const row = { product: "Canvas Tote", category: "Bags", axisAName: "Size", axisAValue: "One size", axisBName: "Colour", axisBValue: "Black", priceInr: 800, stock: 12, marginPct: 30, leadTimeDays: 4 };
     await a.post("/v1/catalogue/import").send({ rows: [row, row] }).expect(422);
     expect(await prisma.product.count({ where: { workspaceId, name: "Canvas Tote" } })).toBe(0);
+  });
+});
+
+describe("the downloadable template", () => {
+  it("is written by the server with the currency filled in", async () => {
+    const a = await signedIn();
+    const res = await a.get("/v1/catalogue/import/template").expect(200);
+
+    expect(res.headers["content-type"]).toMatch(/text\/csv/);
+    const [header, ...rows] = res.text.split("\n");
+    expect(header).toBe("product,category,size,colour,price_inr,currency,stock,margin_pct,lead_time_days,description");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.split(",")[5]).toBe("INR");
+  });
+
+  it("imports exactly as downloaded", async () => {
+    const a = await signedIn();
+    // Renamed only because the test workspace already sells a Polo Classic.
+    const csv = (await a.get("/v1/catalogue/import/template").expect(200)).text.replaceAll("Polo Classic", "Pique Polo");
+    await a.post("/v1/catalogue/import").send({ rows: parseCatalogueCsv(csv) }).expect(201);
+
+    const imported = await prisma.product.findFirstOrThrow({ where: { workspaceId, name: "Pique Polo" }, include: { variants: true } });
+    expect(imported.axes).toEqual(["Size", "Colour"]);
+    expect(imported.variants.map((v) => `${v.optionA}/${v.optionB}`).sort()).toEqual(["L/Olive", "XL/Olive"]);
+    expect(imported.description).toBe("Pique cotton polo with a two-button placket.");
+  });
+});
+
+describe("importing a currency and a description", () => {
+  const tote = (over: Record<string, unknown> = {}) => ({
+    product: "Canvas Tote", category: "Bags", axisAName: "Size", axisAValue: "One size", axisBName: "Colour",
+    axisBValue: "Black", priceInr: 800, stock: 12, marginPct: 30, leadTimeDays: 4, ...over,
+  });
+
+  it("refuses a file priced in another currency, and writes nothing", async () => {
+    const a = await signedIn();
+    const res = await a.post("/v1/catalogue/import").send({ rows: [tote({ currency: "usd" })] }).expect(422);
+
+    expect(res.body.error).toMatch(/USD.*INR/);
+    expect(await prisma.product.count({ where: { workspaceId, name: "Canvas Tote" } })).toBe(0);
+  });
+
+  it("keeps the first description a product's rows give", async () => {
+    const a = await signedIn();
+    await a.post("/v1/catalogue/import").send({ rows: [
+      tote({ axisBValue: "Natural", currency: "INR" }),
+      tote({ description: "Heavy cotton canvas, fits a laptop." }),
+    ] }).expect(201);
+
+    const imported = await prisma.product.findFirstOrThrow({ where: { workspaceId, name: "Canvas Tote" } });
+    expect(imported.description).toBe("Heavy cotton canvas, fits a laptop.");
+  });
+
+  it("puts the description in front of the salesperson", async () => {
+    const a = await signedIn();
+    await a.post("/v1/catalogue/import").send({ rows: [tote({ description: "Heavy cotton canvas, fits a laptop." })] }).expect(201);
+
+    const grounding = await buildGrounding(workspaceId, { text: "tell me about the canvas tote", intent: "support", matched: null });
+    expect(grounding.text).toContain("About it: Heavy cotton canvas, fits a laptop.");
   });
 });
 
