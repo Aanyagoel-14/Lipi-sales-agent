@@ -43,9 +43,10 @@ secrets in your host — never commit `.env`):
 | `NODE_ENV` | no | Set to `production` in production. |
 | `COMPOSIO_API_KEY` | no | Composio holds every channel credential and runs every send. Without it no channel can be connected and only webchat works. |
 | `COMPOSIO_AUTH_CONFIG_*` | no | One auth config id per channel (`WHATSAPP`, `INSTAGRAM`, `FACEBOOK`, `TELEGRAM`, `X`, `GMAIL`). A channel with no id is listed as unavailable. |
-| `COMPOSIO_WEBHOOK_SECRET` | no | Signs Composio's own deliveries to `/webhooks/composio`. Printed once by `npm run composio:subscribe`. |
+| `COMPOSIO_WEBHOOK_SECRET` | **when Gmail or Stripe is offered** | Signs Composio's own deliveries to `/webhooks/composio` (Gmail inbound, Stripe "paid" events). Printed once by `npm run composio:subscribe`. Without it Gmail is shown as unavailable and refused at connect, and a Stripe payment is only recorded when the customer returns to the invoice page. |
 | `META_APP_SECRET` | **when a Meta channel is offered** | Lipi's Meta app secret. Every inbound WhatsApp / Instagram / Messenger body is verified against it. |
 | `META_VERIFY_TOKEN` | **when a Meta channel is offered** | Any long random string. Meta echoes it once, when the callback URL is registered. |
+| `INSTAGRAM_APP_SECRET` | **when Instagram is offered** | The Meta app's *Instagram* app secret (Instagram → API setup with Instagram login), not the App Secret: Meta signs Instagram webhooks with it. Without it Instagram is shown as unavailable and refused at connect. |
 | `X_API_SECRET` | **when X is offered** | Lipi's X app consumer secret (API secret key). Verifies every inbound DM body and answers X's hourly challenge. |
 | `X_WEBHOOK_ID` | **when X is offered** | The id `POST /2/webhooks` returned for `PUBLIC_URL/webhooks/x`. Each tenant's activity is subscribed to it. |
 

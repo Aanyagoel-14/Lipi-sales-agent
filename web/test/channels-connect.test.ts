@@ -29,6 +29,8 @@ const original = {
   instagram: env.COMPOSIO_AUTH_CONFIG_INSTAGRAM,
   facebook: env.COMPOSIO_AUTH_CONFIG_FACEBOOK,
   gmail: env.COMPOSIO_AUTH_CONFIG_GMAIL,
+  instagramSecret: env.INSTAGRAM_APP_SECRET,
+  webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
 };
 
 beforeAll(() => {
@@ -39,6 +41,8 @@ beforeAll(() => {
   env.COMPOSIO_AUTH_CONFIG_INSTAGRAM = AUTH.instagram;
   env.COMPOSIO_AUTH_CONFIG_FACEBOOK = AUTH.facebook;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = AUTH.gmail;
+  env.INSTAGRAM_APP_SECRET = "ig_app_secret_test";
+  env.COMPOSIO_WEBHOOK_SECRET = "whsec_test";
 });
 
 afterAll(() => {
@@ -49,6 +53,8 @@ afterAll(() => {
   env.COMPOSIO_AUTH_CONFIG_INSTAGRAM = original.instagram;
   env.COMPOSIO_AUTH_CONFIG_FACEBOOK = original.facebook;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = original.gmail;
+  env.INSTAGRAM_APP_SECRET = original.instagramSecret;
+  env.COMPOSIO_WEBHOOK_SECRET = original.webhookSecret;
 });
 
 /**
@@ -118,6 +124,42 @@ const connection = (channel: string) =>
   prisma.channelConnection.findUnique({
     where: { workspaceId_channel: { workspaceId, channel: channel as never } },
   });
+
+describe("a channel whose inbound cannot be verified", () => {
+  // Connected anyway, the card says Live and the inbox stays empty: Instagram
+  // deliveries are signed with the Instagram app secret, Gmail's arrive as
+  // Composio triggers signed with the webhook secret.
+  it("is unavailable, and says which secret is missing", async () => {
+    const saved = env.INSTAGRAM_APP_SECRET;
+    env.INSTAGRAM_APP_SECRET = undefined;
+    try {
+      const app = await signedIn();
+      const { body } = await app.get("/v1/channels/catalog").expect(200);
+      const instagram = (body.channels as { channel: string; available: boolean; unavailableReason?: string }[])
+        .find((c) => c.channel === "instagram");
+      expect(instagram).toMatchObject({ available: false });
+      expect(instagram?.unavailableReason).toContain("INSTAGRAM_APP_SECRET");
+
+      const refused = await app.post("/v1/channels/instagram/connect").expect(400);
+      expect(refused.body.error).toContain("INSTAGRAM_APP_SECRET");
+      expect(fakeComposio.calls.link).toHaveLength(0);
+    } finally {
+      env.INSTAGRAM_APP_SECRET = saved;
+    }
+  });
+
+  it("refuses Gmail without the Composio webhook secret", async () => {
+    const saved = env.COMPOSIO_WEBHOOK_SECRET;
+    env.COMPOSIO_WEBHOOK_SECRET = undefined;
+    try {
+      const app = await signedIn();
+      const refused = await app.post("/v1/channels/email/connect").expect(400);
+      expect(refused.body.error).toContain("COMPOSIO_WEBHOOK_SECRET");
+    } finally {
+      env.COMPOSIO_WEBHOOK_SECRET = saved;
+    }
+  });
+});
 
 describe("starting a connection", () => {
   it("issues a Connect Link and leaves the row pending", async () => {

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Channel } from "@/generated/prisma/client";
 import { finishConnection } from "@/server/channels/connect";
-import { authConfigIdFor, specFor, type ChannelSpec } from "@/server/channels/registry";
+import { authConfigIdFor, inboundSecretsMissing, specFor, type ChannelSpec } from "@/server/channels/registry";
 import { composio } from "@/server/lib/composio";
 import { body, HttpError, json, requestOrigin, route } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
@@ -49,6 +49,11 @@ export const POST = route<{ channel: string }>(async (req, params) => {
   if (!authConfigId) {
     throw new HttpError(400,
       `${spec.label} is not set up in this deployment (${spec.authConfigEnv} is empty)`);
+  }
+  const missing = inboundSecretsMissing(spec);
+  if (missing.length) {
+    throw new HttpError(400,
+      `${spec.label} cannot receive messages in this deployment (${missing.join(", ")} is empty)`);
   }
 
   // Read the body before anything is torn down: a mistyped token must not

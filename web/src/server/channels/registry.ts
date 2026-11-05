@@ -1148,6 +1148,31 @@ export const toolkitVersions = (): Record<string, string> => ({
 /** The auth config this environment has for a channel, or undefined when it is not set up. */
 export const authConfigIdFor = (spec: ChannelSpec): string | undefined => env[spec.authConfigEnv] || undefined;
 
+/**
+ * The deployment secrets without which this channel's inbound can never be
+ * verified. Connecting it anyway gives the operator a card that says "Live"
+ * and an inbox that stays empty: Instagram deliveries are signed with the
+ * app's Instagram secret, not the Meta App Secret, and every Composio trigger
+ * delivery is signed with the project's webhook secret. Said up front, as the
+ * reason the channel is unavailable, rather than discovered from silence.
+ */
+export function inboundSecretsMissing(spec: ChannelSpec): string[] {
+  if (spec.inbound.kind === "composio_trigger" && !env.COMPOSIO_WEBHOOK_SECRET) return ["COMPOSIO_WEBHOOK_SECRET"];
+  if (spec.inbound.kind === "meta" && spec.inbound.object === "instagram" && !env.INSTAGRAM_APP_SECRET) return ["INSTAGRAM_APP_SECRET"];
+  return [];
+}
+
+const cannotReceive = (spec: ChannelSpec, missing: string[]) =>
+  `${spec.label} cannot receive messages in this environment (${missing.join(", ")} is empty)`;
+
+/** Why this channel cannot be connected here, or null when it can. */
+export function unavailableReason(spec: ChannelSpec): string | null {
+  if (!env.COMPOSIO_API_KEY) return "Composio is not configured in this environment (COMPOSIO_API_KEY is empty)";
+  if (!authConfigIdFor(spec)) return `${spec.label} is not set up in this environment (${spec.authConfigEnv} is empty)`;
+  const missing = inboundSecretsMissing(spec);
+  return missing.length ? cannotReceive(spec, missing) : null;
+}
+
 export type CatalogEntry = {
   channel: Channel;
   label: string;
@@ -1166,7 +1191,7 @@ export type CatalogEntry = {
 /** What the Channels UI renders: the specs, minus anything that is a secret or a function. */
 export function catalog(): CatalogEntry[] {
   return channelSpecs.map((spec) => {
-    const configured = Boolean(env.COMPOSIO_API_KEY) && Boolean(authConfigIdFor(spec));
+    const reason = unavailableReason(spec);
     return {
       channel: spec.channel,
       label: spec.label,
@@ -1182,14 +1207,8 @@ export function catalog(): CatalogEntry[] {
         ...(spec.inbound.kind === "none" ? { reason: spec.inbound.reason } : {}),
       },
       ...(spec.choice ? { choice: spec.choice } : {}),
-      available: configured,
-      ...(configured
-        ? {}
-        : {
-          unavailableReason: env.COMPOSIO_API_KEY
-            ? `${spec.label} is not set up in this environment (${spec.authConfigEnv} is empty)`
-            : "Composio is not configured in this environment (COMPOSIO_API_KEY is empty)",
-        }),
+      available: reason === null,
+      ...(reason === null ? {} : { unavailableReason: reason }),
     };
   });
 }
