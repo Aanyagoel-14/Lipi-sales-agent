@@ -22,8 +22,12 @@ const option =
 const on = "border-violet bg-violet-soft/40";
 const off = "border-line bg-surface hover:border-line-strong";
 
-export function Wizard({ resuming }: { resuming: boolean }) {
+/** The workspace an abandoned setup already created, to resume from. */
+export type ExistingWorkspace = { name: string; vertical: string };
+
+export function Wizard({ existing }: { existing: ExistingWorkspace | null }) {
   const router = useRouter();
+  const resuming = existing !== null;
 
   // Resuming means the workspace already exists, so setup picks up at the
   // first step that configures it rather than asking for the name again.
@@ -36,11 +40,16 @@ export function Wizard({ resuming }: { resuming: boolean }) {
   const [dataProducts, setDataProducts] = useState(0);
   const [dataSource, setDataSource] = useState<"empty" | "csv" | "sample">("empty");
 
+  // A resumed setup starts from the workspace it already made, so stepping
+  // back to the first two steps shows what is true rather than blanks.
   const [draft, setDraft] = useState<WorkspaceDraft>({
-    name: "", vertical: "apparel", channels: ["whatsapp"],
+    name: existing?.name ?? "", vertical: (existing?.vertical as Vertical | undefined) ?? "apparel", channels: ["whatsapp"],
     approvalPolicy: "money_only", seedCatalogue: false,
   });
   const [voice, setVoice] = useState<Voice>(DEFAULT_VOICE);
+  // The name as the server has it, so stepping back and changing it is a
+  // rename rather than an edit that the next "Continue" quietly drops.
+  const [savedName, setSavedName] = useState(existing?.name ?? "");
 
   const set = <K extends keyof WorkspaceDraft>(key: K, value: WorkspaceDraft[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
@@ -58,6 +67,7 @@ export function Wizard({ resuming }: { resuming: boolean }) {
       document.cookie = `${WORKSPACE_ID_COOKIE}=${workspace.id}; ${year}`;
       document.cookie = `${WORKSPACE_COOKIE}=${encodeURIComponent(workspace.name)}; ${year}`;
       setBuilt(provisioned);
+      setSavedName(workspace.name);
       setCreated(true);
       setVoice((v) => ({ ...v, signOff: `— ${workspace.name}` }));
       return true;
@@ -69,7 +79,28 @@ export function Wizard({ resuming }: { resuming: boolean }) {
     }
   }
 
+  /** Once the workspace exists, a changed name on step one is saved as a rename. */
+  async function renameWorkspace() {
+    const name = draft.name.trim();
+    if (!created || name === savedName) return true;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await apiFetch("workspaces/current", { method: "PATCH", body: JSON.stringify({ name }) });
+      if (!res.ok) throw new Error("Could not rename the workspace");
+      document.cookie = `${WORKSPACE_COOKIE}=${encodeURIComponent(name)}; path=/; max-age=31536000; samesite=lax`;
+      setSavedName(name);
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function next() {
+    if (step === 0 && !(await renameWorkspace())) return;
     if (step === CREATE_AFTER && !(await ensureWorkspace())) return;
     if (step === 4) await apiFetch("twin/voice", { method: "PUT", body: JSON.stringify(voice) }).catch(() => {});
     setStep((s) => s + 1);
@@ -127,12 +158,15 @@ export function Wizard({ resuming }: { resuming: boolean }) {
           <section>
             <h1 className="max-w-[18ch] text-[1.875rem] tracking-tight">What do you sell?</h1>
             <p className="mt-2.5 max-w-md text-[0.9375rem] text-ink-muted">
-              This builds the product twin. The fields on each card are what it will actually create.
+              {created
+                ? "This built your product twin when the workspace was created, so it stays as chosen. Selling something else means a new workspace."
+                : "This builds the product twin. The fields on each card are what it will actually create."}
             </p>
             <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-2">
               {verticals.map((v) => (
-                <button key={v.id} type="button" onClick={() => set("vertical", v.id as Vertical)}
-                  aria-pressed={draft.vertical === v.id} className={`${option} ${draft.vertical === v.id ? on : off}`}>
+                <button key={v.id} type="button" onClick={() => set("vertical", v.id as Vertical)} disabled={created}
+                  aria-pressed={draft.vertical === v.id}
+                  className={`${option} ${draft.vertical === v.id ? on : off} disabled:cursor-default ${created && draft.vertical !== v.id ? "opacity-50" : ""}`}>
                   <span className="text-[0.9375rem] font-medium">{v.label}</span>
                   <span className="mt-1 block text-[0.8125rem] text-ink-muted">{v.blurb}</span>
                   <span className="mt-3 flex flex-wrap gap-1">
@@ -182,13 +216,13 @@ export function Wizard({ resuming }: { resuming: boolean }) {
         ) : null}
 
         <div className="mt-10 flex flex-wrap items-center gap-3">
-          {step > 0 && !(resuming && step === CREATE_AFTER + 1) ? (
+          {step > 0 ? (
             <Button variant="secondary" chevron={false} onClick={() => setStep((s) => s - 1)} disabled={busy}>Back</Button>
           ) : null}
 
           {step < LAST ? (
             <Button onClick={next} disabled={Boolean(blocker) || busy}>
-              {busy ? "Working…" : step === CREATE_AFTER ? "Create workspace" : "Continue"}
+              {busy ? "Working…" : step === CREATE_AFTER && !created ? "Create workspace" : "Continue"}
             </Button>
           ) : (
             <Button onClick={finish} disabled={busy}>{busy ? "Finishing…" : "Open the dashboard"}</Button>

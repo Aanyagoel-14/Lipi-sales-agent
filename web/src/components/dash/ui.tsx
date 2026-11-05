@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { ReactNode } from "react";
 
 export function Panel({
@@ -29,10 +30,22 @@ export function Panel({
   );
 }
 
-export function PageHead({ title, blurb, action }: { title: string; blurb?: string; action?: ReactNode }) {
+/**
+ * `back` is for a page the sidebar does not list: reached from another page,
+ * it needs its own way back there.
+ */
+export function PageHead({ title, blurb, action, back }: {
+  title: string; blurb?: string; action?: ReactNode; back?: { href: string; label: string };
+}) {
   return (
     <div className="mb-7 flex flex-wrap items-end gap-4">
       <div className="min-w-0">
+        {back ? (
+          <Link href={back.href}
+            className="mb-2 inline-flex min-h-11 items-center gap-1.5 text-[0.8125rem] text-ink-muted transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet">
+            <span aria-hidden>←</span> {back.label}
+          </Link>
+        ) : null}
         <h1 className="text-[1.5rem] tracking-tight">{title}</h1>
         {blurb ? <p className="mt-1 text-[0.875rem] text-ink-muted">{blurb}</p> : null}
       </div>
