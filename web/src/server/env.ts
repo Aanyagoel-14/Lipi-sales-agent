@@ -28,6 +28,11 @@ const schema = z.object({
   // URLs handed to ERPs are built from it, so it has to be publicly reachable
   // and has to match where the app is actually served.
   PUBLIC_URL: z.string().default("http://localhost:3000"),
+  // How many proxies this deployment sits behind, counted from the app: the
+  // client address is read that many entries from the end of
+  // X-Forwarded-For, because the entries before it are the caller's to
+  // write. 1 for Cloud Run on its own; 2 behind a load balancer.
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(1).max(5).default(1),
 
   // ------------------------------------------------------------ Composio --
   // Composio holds every provider credential and runs every outbound send

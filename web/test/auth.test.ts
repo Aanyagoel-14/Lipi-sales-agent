@@ -122,6 +122,26 @@ describe("the password endpoints have a budget", () => {
     expect(refused.body.error).toContain("Too many attempts");
   });
 
+  // The front door appends the address it saw; whatever comes before it is the
+  // caller's own to write. Rotating that part used to be a fresh budget each time.
+  it("counts the address the proxy saw, not one the caller wrote in front of it", async () => {
+    await createUser();
+
+    for (let attempt = 1; attempt <= AUTH_IP_LIMIT; attempt++) {
+      await agent()
+        .post("/v1/auth/login")
+        .set("x-forwarded-for", `10.0.0.${attempt}, 203.0.113.8`)
+        .send({ email: `nobody${attempt}@test.local`, password: "wrong-password" })
+        .expect(401);
+    }
+
+    await agent()
+      .post("/v1/auth/login")
+      .set("x-forwarded-for", "10.9.9.9, 203.0.113.8")
+      .send({ email: "owner@test.local", password: "testing12345" })
+      .expect(429);
+  });
+
   // An attacker with a thousand addresses defeats the address budget, which is
   // why there is a second one on the account being attacked.
   it("refuses a distributed attempt on one account", async () => {
