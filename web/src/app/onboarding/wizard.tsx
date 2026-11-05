@@ -25,13 +25,22 @@ const off = "border-line bg-surface hover:border-line-strong";
 /** The workspace an abandoned setup already created, to resume from. */
 export type ExistingWorkspace = { name: string; vertical: string };
 
-export function Wizard({ existing }: { existing: ExistingWorkspace | null }) {
+/** Where a channel connection started in setup comes back to. */
+const CHANNELS_STEP = stepTitles.indexOf("Channels");
+
+export function Wizard({ existing, returnedFromChannel = false }: {
+  existing: ExistingWorkspace | null;
+  /** The browser is back from a provider's consent screen, started on the Channels step. */
+  returnedFromChannel?: boolean;
+}) {
   const router = useRouter();
   const resuming = existing !== null;
 
   // Resuming means the workspace already exists, so setup picks up at the
   // first step that configures it rather than asking for the name again.
-  const [step, setStep] = useState(resuming ? CREATE_AFTER + 1 : 0);
+  // Back from a provider's consent screen, it is the Channels step that has
+  // the result to show, not the first step after the workspace.
+  const [step, setStep] = useState(!resuming ? 0 : returnedFromChannel ? CHANNELS_STEP : CREATE_AFTER + 1);
   const [created, setCreated] = useState(resuming);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,10 +108,26 @@ export function Wizard({ existing }: { existing: ExistingWorkspace | null }) {
     }
   }
 
+  /** The voice is the operator's choice; failing to keep it is said, not swallowed. */
+  async function saveVoice() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await apiFetch("twin/voice", { method: "PUT", body: JSON.stringify(voice) });
+      if (!res.ok) throw new Error("Could not save the voice. Try again, or skip it for now.");
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function next() {
     if (step === 0 && !(await renameWorkspace())) return;
     if (step === CREATE_AFTER && !(await ensureWorkspace())) return;
-    if (step === 4) await apiFetch("twin/voice", { method: "PUT", body: JSON.stringify(voice) }).catch(() => {});
+    if (step === stepTitles.indexOf("Voice") && !(await saveVoice())) return;
     setStep((s) => s + 1);
   }
 
@@ -111,10 +136,13 @@ export function Wizard({ existing }: { existing: ExistingWorkspace | null }) {
     setError(null);
     try {
       if (!(await ensureWorkspace())) return;
-      await apiFetch("workspaces/current", {
+      // An operator who chose to approve everything must not be left on the
+      // default, where replies go out unreviewed.
+      const policy = await apiFetch("workspaces/current", {
         method: "PATCH",
         body: JSON.stringify({ approvalPolicy: draft.approvalPolicy }),
       });
+      if (!policy.ok) throw new Error("Could not save the approval setting");
       const res = await apiFetch("workspaces/complete", { method: "POST" });
       if (!res.ok) throw new Error("Could not finish setup");
       router.push("/dashboard");

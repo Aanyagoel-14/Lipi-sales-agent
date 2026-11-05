@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase, signedIn } from "./helpers";
 import { fakeComposio } from "./fakes/composio";
+import { env } from "@/server/env";
 import { invoiceNumberFrom, invoiceToken } from "@/server/lib/crypto";
 import { demoPaymentProvider, noPaymentProvider, setPaymentProvider } from "@/server/lib/payments";
 import { prisma } from "@/server/lib/prisma";
@@ -202,5 +203,24 @@ describe("an order confirmed by hand", () => {
     await app.post(`/v1/orders/${result.order!.id}/stage`).send({ stage: "Cancelled" }).expect(200);
 
     expect((await variant()).reserved).toBe(5);
+  });
+});
+
+describe("the demo checkout", () => {
+  const configured = { provider: env.PAYMENT_PROVIDER, nodeEnv: env.NODE_ENV };
+  afterEach(() => { env.PAYMENT_PROVIDER = configured.provider; env.NODE_ENV = configured.nodeEnv; });
+
+  it("works where it is meant to: a deployment being tried out", () => {
+    env.PAYMENT_PROVIDER = "demo";
+    env.NODE_ENV = "development";
+    expect(demoPaymentProvider.configured()).toBe(true);
+  });
+
+  // Its Pay button marks an invoice paid for whoever holds the link. Left
+  // set on a live deployment, that is stock handed over for nothing.
+  it("refuses to run in production", () => {
+    env.PAYMENT_PROVIDER = "demo";
+    env.NODE_ENV = "production";
+    expect(demoPaymentProvider.configured()).toBe(false);
   });
 });

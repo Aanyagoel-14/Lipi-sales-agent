@@ -29,6 +29,8 @@ const original = {
   instagram: env.COMPOSIO_AUTH_CONFIG_INSTAGRAM,
   facebook: env.COMPOSIO_AUTH_CONFIG_FACEBOOK,
   gmail: env.COMPOSIO_AUTH_CONFIG_GMAIL,
+  instagramSecret: env.INSTAGRAM_APP_SECRET,
+  webhookSecret: env.COMPOSIO_WEBHOOK_SECRET,
 };
 
 beforeAll(() => {
@@ -39,6 +41,8 @@ beforeAll(() => {
   env.COMPOSIO_AUTH_CONFIG_INSTAGRAM = AUTH.instagram;
   env.COMPOSIO_AUTH_CONFIG_FACEBOOK = AUTH.facebook;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = AUTH.gmail;
+  env.INSTAGRAM_APP_SECRET = "ig_app_secret_test";
+  env.COMPOSIO_WEBHOOK_SECRET = "whsec_test";
 });
 
 afterAll(() => {
@@ -49,6 +53,8 @@ afterAll(() => {
   env.COMPOSIO_AUTH_CONFIG_INSTAGRAM = original.instagram;
   env.COMPOSIO_AUTH_CONFIG_FACEBOOK = original.facebook;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = original.gmail;
+  env.INSTAGRAM_APP_SECRET = original.instagramSecret;
+  env.COMPOSIO_WEBHOOK_SECRET = original.webhookSecret;
 });
 
 /**
@@ -119,6 +125,42 @@ const connection = (channel: string) =>
     where: { workspaceId_channel: { workspaceId, channel: channel as never } },
   });
 
+describe("a channel whose inbound cannot be verified", () => {
+  // Connected anyway, the card says Live and the inbox stays empty: Instagram
+  // deliveries are signed with the Instagram app secret, Gmail's arrive as
+  // Composio triggers signed with the webhook secret.
+  it("is unavailable, and says which secret is missing", async () => {
+    const saved = env.INSTAGRAM_APP_SECRET;
+    env.INSTAGRAM_APP_SECRET = undefined;
+    try {
+      const app = await signedIn();
+      const { body } = await app.get("/v1/channels/catalog").expect(200);
+      const instagram = (body.channels as { channel: string; available: boolean; unavailableReason?: string }[])
+        .find((c) => c.channel === "instagram");
+      expect(instagram).toMatchObject({ available: false });
+      expect(instagram?.unavailableReason).toContain("INSTAGRAM_APP_SECRET");
+
+      const refused = await app.post("/v1/channels/instagram/connect").expect(400);
+      expect(refused.body.error).toContain("INSTAGRAM_APP_SECRET");
+      expect(fakeComposio.calls.link).toHaveLength(0);
+    } finally {
+      env.INSTAGRAM_APP_SECRET = saved;
+    }
+  });
+
+  it("refuses Gmail without the Composio webhook secret", async () => {
+    const saved = env.COMPOSIO_WEBHOOK_SECRET;
+    env.COMPOSIO_WEBHOOK_SECRET = undefined;
+    try {
+      const app = await signedIn();
+      const refused = await app.post("/v1/channels/email/connect").expect(400);
+      expect(refused.body.error).toContain("COMPOSIO_WEBHOOK_SECRET");
+    } finally {
+      env.COMPOSIO_WEBHOOK_SECRET = saved;
+    }
+  });
+});
+
 describe("starting a connection", () => {
   it("issues a Connect Link and leaves the row pending", async () => {
     const app = await signedIn();
@@ -136,6 +178,20 @@ describe("starting a connection", () => {
     const row = await connection("email");
     expect(row).toMatchObject({ status: "pending", composioAuthConfigId: AUTH.gmail, connectedAt: null });
     expect(row?.composioAccountId).toBeTruthy();
+  });
+
+  // Production: `next start --hostname 0.0.0.0` behind Cloud Run builds
+  // `req.url` from the bind address, so the origin it reports is
+  // https://0.0.0.0:8080. That went to Composio as the callback, the browser
+  // was sent somewhere unreachable after consent, and no channel finished.
+  it("sends the operator back to the host they used, not the address the server is bound to", async () => {
+    const app = await signedIn();
+    await app.post("/v1/channels/instagram/connect")
+      .set("Host", "sellora.lipiai.test")
+      .set("X-Forwarded-Proto", "https")
+      .expect(201);
+
+    expect(fakeComposio.calls.link[0]?.callbackUrl).toBe("https://sellora.lipiai.test/v1/channels/callback");
   });
 
   it("never returns the connected account id in full", async () => {
@@ -288,13 +344,50 @@ describe("the callback", () => {
       id: accountId, status: "ACTIVE", statusReason: null, userId: "ws_someone_else", toolkit: "gmail",
     });
 
-    await app.get(`/v1/channels/callback?connected_account_id=${accountId}`).expect(404);
+    // A browser navigation, so the refusal is a page that says so, not JSON.
+    const res = await app.get(`/v1/channels/callback?connected_account_id=${accountId}`).expect(303);
+    expect(res.headers.location).toMatch(/^\/dashboard\/channels\?channel=email&error=That\+connection\+belongs\+to\+another\+workspace/);
     expect(await connection("email")).toMatchObject({ status: "pending" });
   });
 
-  it("404s on an account this workspace never started", async () => {
+  it("sends an account this workspace never started back with the reason", async () => {
     const app = await signedIn();
-    await app.get("/v1/channels/callback?connected_account_id=ca_nothing").expect(404);
+    const res = await app.get("/v1/channels/callback?connected_account_id=ca_nothing").expect(303);
+    expect(res.headers.location).toMatch(/^\/dashboard\/channels\?error=No\+connection\+in\+progress/);
+  });
+
+  // Connected from the setup wizard, the dashboard would only redirect them
+  // back to it, at the Catalogue step, with the result dropped.
+  // The callback is a navigation and carries no x-workspace-id; the cookie
+  // the app writes on choosing a workspace is what says which one it was.
+  it("finishes a connection started in the user's second workspace", async () => {
+    const app = await signedIn();
+    const owner = await prisma.membership.findFirstOrThrow({ where: { workspaceId } });
+    const second = await createWorkspace({ userId: owner.userId, name: "Second Shop", withCatalogue: false });
+
+    await app.post("/v1/channels/email/connect").set("x-workspace-id", second.id).expect(201);
+    const row = await prisma.channelConnection.findFirstOrThrow({ where: { workspaceId: second.id, channel: "email" } });
+    fakeComposio.accounts.set(row.composioAccountId!, {
+      id: row.composioAccountId!, status: "ACTIVE", statusReason: null, userId: second.id, toolkit: "gmail",
+    });
+
+    app.cookie("lipi_workspace_id", second.id);
+    const res = await app.get(`/v1/channels/callback?connected_account_id=${row.composioAccountId}`).expect(303);
+
+    expect(res.headers.location).toBe("/dashboard/channels?channel=email");
+    expect(await prisma.channelConnection.findFirst({ where: { workspaceId: second.id, channel: "email" } }))
+      .toMatchObject({ status: "connected" });
+  });
+
+  it("returns to the wizard when setup is not finished", async () => {
+    const { app, accountId } = await start("email");
+    await prisma.workspace.update({ where: { id: workspaceId }, data: { onboardedAt: null } });
+    fakeComposio.accounts.set(accountId, {
+      id: accountId, status: "ACTIVE", statusReason: null, userId: workspaceId, toolkit: "gmail",
+    });
+
+    const res = await app.get(`/v1/channels/callback?connected_account_id=${accountId}`).expect(303);
+    expect(res.headers.location).toBe("/onboarding?channel=email");
   });
 
   it("leaves the row in error when a post-connect hook throws", async () => {
@@ -695,7 +788,8 @@ describe("tenancy", () => {
     await createWorkspace({ userId: user.id, name: "Outsider", withCatalogue: false });
     const outsider = await signedIn("outsider@test.local");
 
-    await outsider.get(`/v1/channels/callback?connected_account_id=${mine.composioAccountId}`).expect(404);
+    const res = await outsider.get(`/v1/channels/callback?connected_account_id=${mine.composioAccountId}`).expect(303);
+    expect(res.headers.location).toMatch(/error=No\+connection\+in\+progress/);
     await outsider.delete("/v1/channels/telegram").expect(404);
 
     expect(await connection("telegram")).toMatchObject({ status: "connected" });
@@ -704,7 +798,8 @@ describe("tenancy", () => {
   it("keeps the whole flow behind the session", async () => {
     await agent().get("/v1/channels").expect(401);
     await agent().post("/v1/channels/email/connect").expect(401);
-    await agent().get("/v1/channels/callback?connected_account_id=ca_1").expect(401);
+    const back = await agent().get("/v1/channels/callback?connected_account_id=ca_1").expect(303);
+    expect(back.headers.location).toBe("/login");
     await agent().get("/v1/channels/catalog").expect(401);
   });
 });

@@ -213,6 +213,19 @@ describe("routing one URL to many tenants", () => {
     expect(await conversationsIn(beta)).toHaveLength(0);
   });
 
+  // Cloud Run throttles CPU once a response is sent, so there the work is
+  // done before it: by the time the provider has its 200, the conversation
+  // exists — no settling, nothing left running behind the response.
+  it("finishes the work before answering on Cloud Run", async () => {
+    process.env.K_SERVICE = "lipi-web";
+    try {
+      await deliver(whatsappBody(A.phone, "do you have 2 olive L polos")).expect(200);
+      expect(await conversationsIn(alpha)).toHaveLength(1);
+    } finally {
+      delete process.env.K_SERVICE;
+    }
+  });
+
   // Instagram Login signs with the app's Instagram secret, not the App Secret.
   it("accepts an Instagram DM signed with the Instagram app secret", async () => {
     const body = messagingBody("instagram", B.ig, "is the linen shirt in stock");

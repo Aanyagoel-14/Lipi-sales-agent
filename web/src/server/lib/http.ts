@@ -113,3 +113,28 @@ export async function body<T>(req: Request, schema: z.ZodType<T>, message: strin
 }
 
 export const searchParams = (req: Request) => new URL(req.url).searchParams;
+
+/** A bare host, with an optional port: nothing that could carry a path or a scheme. */
+const HOST = /^[a-z0-9.-]+(?::\d{1,5})?$/i;
+
+/**
+ * The origin the browser actually addressed, for a URL that has to bring it
+ * back here.
+ *
+ * Not `new URL(req.url).origin`. Behind a proxy, `next start --hostname
+ * 0.0.0.0` builds `req.url` from the address it is bound to, so production
+ * reported https://0.0.0.0:8080 — and an OAuth callback built from that sent
+ * every operator somewhere unreachable after consent. The proxy keeps the
+ * browser's `Host` (or names it in `X-Forwarded-Host`) and says whether the
+ * browser spoke TLS in `X-Forwarded-Proto`; the URL is the fallback for a
+ * request that carries neither.
+ */
+export function requestOrigin(req: Request): string {
+  const fallback = new URL(req.url);
+  const first = (name: string) => req.headers.get(name)?.split(",")[0]?.trim() || null;
+
+  const host = [first("x-forwarded-host"), first("host")].find((h) => h && HOST.test(h)) ?? fallback.host;
+  const forwarded = first("x-forwarded-proto");
+  const proto = forwarded === "https" || forwarded === "http" ? forwarded : fallback.protocol.replace(/:$/, "");
+  return `${proto}://${host}`;
+}

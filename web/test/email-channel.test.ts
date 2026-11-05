@@ -23,14 +23,18 @@ const ACCOUNT_A = "ca_gmail_a";
 const ACCOUNT_B = "ca_gmail_b";
 const TRIGGER = "GMAIL_NEW_GMAIL_MESSAGE";
 
-const original = { key: env.COMPOSIO_API_KEY, gmail: env.COMPOSIO_AUTH_CONFIG_GMAIL };
+const original = { key: env.COMPOSIO_API_KEY, gmail: env.COMPOSIO_AUTH_CONFIG_GMAIL, webhookSecret: env.COMPOSIO_WEBHOOK_SECRET };
 beforeAll(() => {
   env.COMPOSIO_API_KEY = "ck_test";
   env.COMPOSIO_AUTH_CONFIG_GMAIL = AUTH_GMAIL;
+  // Gmail inbound arrives as signed Composio triggers; without the secret it
+  // is refused at connect.
+  env.COMPOSIO_WEBHOOK_SECRET ??= "whsec_test";
 });
 afterAll(() => {
   env.COMPOSIO_API_KEY = original.key;
   env.COMPOSIO_AUTH_CONFIG_GMAIL = original.gmail;
+  env.COMPOSIO_WEBHOOK_SECRET = original.webhookSecret;
 });
 
 let alpha: string;

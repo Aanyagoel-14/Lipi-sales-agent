@@ -16,13 +16,35 @@ const schema = z.object({
   // They are also allowed to differ in cost. Chat is a handful of calls a day
   // from one operator; extraction runs on every inbound customer message and
   // decides whether stock gets reserved, so it is the one worth paying for.
-  OPENROUTER_CHAT_MODEL: z.string().default("nvidia/nemotron-3-super-120b-a12b:free"),
+  //
+  // It also voices every customer reply (`sell()`), with OPENROUTER_MODEL as
+  // the fallback. The default was Nemotron's free tier until OpenRouter
+  // withdrew it on 2026-10-22 and every call came back 404; a free tier can
+  // vanish without notice, so the default is a model that is paid for.
+  OPENROUTER_CHAT_MODEL: z.string().default("deepseek/deepseek-v4-flash"),
   // Encrypts channel credentials at rest. Rotating it invalidates them.
   APP_SECRET: z.string().min(16, "APP_SECRET must be at least 16 characters"),
   // The app's own public origin. Webhook URLs handed to providers and push
   // URLs handed to ERPs are built from it, so it has to be publicly reachable
   // and has to match where the app is actually served.
-  PUBLIC_URL: z.string().default("http://localhost:3000"),
+  //
+  // Stored without a trailing slash: every URL built from it appends a path,
+  // and "https://example.com/" + "/webhooks/…" is a URL Telegram rejects.
+  PUBLIC_URL: z.string().default("http://localhost:3000").transform((url) => url.replace(/\/+$/, "")),
+  // How many proxies this deployment sits behind, counted from the app: the
+  // client address is read that many entries from the end of
+  // X-Forwarded-For, because the entries before it are the caller's to
+  // write. 1 for Cloud Run on its own; 2 behind a load balancer.
+  // When an inbound channel message is processed: `after_response` (answer the
+  // provider first, then work) or `before_response`. Unset, it is decided by
+  // host: before the response on Cloud Run (K_SERVICE is set), whose default
+  // CPU throttling starves work done after it; after the response elsewhere.
+  INBOUND_PROCESSING: z.enum(["after_response", "before_response"]).optional(),
+  // Authorises the scheduled tick (`POST /v1/cron/tick`) that releases lapsed
+  // stock holds and sends due webhooks for every workspace. Unset, the tick
+  // refuses and those wait for someone to open the Orders page.
+  CRON_SECRET: z.string().min(16).optional(),
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(1).max(5).default(1),
 
   // ------------------------------------------------------------ Composio --
   // Composio holds every provider credential and runs every outbound send
@@ -100,7 +122,9 @@ const schema = z.object({
   // `demo` turns on Lipi's own test checkout: the invoice page's Pay button
   // settles the invoice at once, with no money moving. For demonstrating the
   // order flow before a gateway is connected; the page says TEST on it.
-  // Ignored for a workspace with Stripe connected — a real gateway always wins.
+  // Ignored for a workspace with Stripe connected — a real gateway always wins,
+  // and ignored entirely when NODE_ENV=production: the demo Pay button marks
+  // an invoice paid for anyone holding its link.
   PAYMENT_PROVIDER: z.enum(["demo"]).optional(),
 
   // ------------------------------------------------------------- hosting --
@@ -110,6 +134,20 @@ const schema = z.object({
   // custom domain and no certificate. See `server/sites/hosting.ts`.
   VERCEL_TOKEN: z.string().optional(),
   CLOUDFLARE_API_TOKEN: z.string().optional(),
+}).superRefine((value, ctx) => {
+  // In production PUBLIC_URL is what customers are sent (invoice links), what
+  // Telegram and Shopify deliver to, and where the widget loads from. Left at
+  // its localhost default, all of that silently points at the customer's own
+  // machine. Not checked while `next build` runs: the image is built with
+  // placeholders, and the real value arrives when the container starts.
+  const building = process.env.NEXT_PHASE === "phase-production-build";
+  if (value.NODE_ENV === "production" && !building && /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:|\/|$)/i.test(value.PUBLIC_URL)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["PUBLIC_URL"],
+      message: `PUBLIC_URL is ${value.PUBLIC_URL} in production; set it to this deployment's public https origin`,
+    });
+  }
 }).superRefine((value, ctx) => {
   // Half a Shopify app is worse than none: an install that starts and cannot
   // finish, or a webhook that can never be verified.

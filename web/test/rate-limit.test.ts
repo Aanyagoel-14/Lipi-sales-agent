@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, createUser, createWorkspace, resetDatabase } from "./helpers";
+import { env } from "@/server/env";
 import { prisma } from "@/server/lib/prisma";
 import { _resetRateLimitsForTests, checkRateLimit, clientIp } from "@/server/lib/rate-limit";
 
@@ -83,12 +84,24 @@ describe("the fixed window", () => {
 describe("which caller a request is charged to", () => {
   const req = (headers: Record<string, string>) => new Request("http://localhost/v1/webchat/ws/message", { headers });
 
-  it("prefers the first entry of x-forwarded-for, which is the client", () => {
-    expect(clientIp(req({ "x-forwarded-for": "203.0.113.7, 70.41.3.18, 150.172.238.178" }))).toBe("203.0.113.7");
+  // The leftmost entries are the caller's to write; the last one is what our
+  // own front door appended. Reading the first let anyone pick their bucket.
+  it("reads the entry the trusted proxy appended, not the caller's", () => {
+    expect(clientIp(req({ "x-forwarded-for": "6.6.6.6, 70.41.3.18, 203.0.113.7" }))).toBe("203.0.113.7");
+  });
+
+  it("counts back past each trusted proxy", () => {
+    const hops = env.TRUSTED_PROXY_HOPS;
+    env.TRUSTED_PROXY_HOPS = 2;
+    try {
+      expect(clientIp(req({ "x-forwarded-for": "6.6.6.6, 203.0.113.7, 35.191.0.1" }))).toBe("203.0.113.7");
+    } finally {
+      env.TRUSTED_PROXY_HOPS = hops;
+    }
   });
 
   it("trims the whitespace a proxy leaves after the comma", () => {
-    expect(clientIp(req({ "x-forwarded-for": " 203.0.113.7 , 70.41.3.18" }))).toBe("203.0.113.7");
+    expect(clientIp(req({ "x-forwarded-for": " 70.41.3.18 , 203.0.113.7 " }))).toBe("203.0.113.7");
   });
 
   // A proxy that sets the header but has nothing to put in it would otherwise

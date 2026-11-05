@@ -110,7 +110,14 @@ export function ChannelsStep({ onConnected }: { onConnected?: () => void }) {
       .then((d: { channels: ChannelRow[] }) => setRows(d.channels))
       .catch(() => setRows([]));
 
-  useEffect(() => { void load(); }, []);
+  // A connection that could not finish comes back with its reason, which is
+  // shown once the cards it is about have loaded.
+  useEffect(() => {
+    void load().then(() => {
+      const returned = new URLSearchParams(window.location.search).get("error");
+      if (returned) setError(returned);
+    });
+  }, []);
 
   // The callback route returns the browser to `?channel=…`. Bring that card
   // into view, once, so a connection that failed is not missed below the fold.

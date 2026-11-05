@@ -1,3 +1,5 @@
+import { env } from "../env";
+
 /**
  * Fixed-window rate limiting for unauthenticated public endpoints.
  *
@@ -71,10 +73,23 @@ export function checkRateLimit(key: string, limit: number, windowMs: number): Ra
   return { allowed: true };
 }
 
-/** Best-effort source IP from the headers a reverse proxy (or Next itself) sets. */
+/**
+ * Best-effort source IP from the headers a reverse proxy (or Next itself) sets.
+ *
+ * Read from the right. A client can send its own `X-Forwarded-For`, and each
+ * proxy appends the address it saw, so the leftmost entry is whatever the
+ * caller typed: reading it let anyone rotate a fake value per request and
+ * never meet a limit. The entry `TRUSTED_PROXY_HOPS` from the end is the one
+ * our own front door wrote — 1 on Cloud Run, which appends the client address
+ * itself; 2 with a load balancer in front of it.
+ */
 export function clientIp(req: Request): string {
   const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0]!.trim();
+  if (forwarded) {
+    const hops = forwarded.split(",").map((h) => h.trim()).filter(Boolean);
+    const at = Math.max(0, hops.length - env.TRUSTED_PROXY_HOPS);
+    if (hops[at]) return hops[at];
+  }
   return req.headers.get("x-real-ip") ?? "unknown";
 }
 

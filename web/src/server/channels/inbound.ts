@@ -1,5 +1,6 @@
 import { after } from "next/server";
 import type { Channel } from "@/generated/prisma/client";
+import { env } from "@/server/env";
 import { prisma } from "@/server/lib/prisma";
 import { checkRateLimit } from "@/server/lib/rate-limit";
 import { sell } from "@/server/services/selling";
@@ -50,10 +51,11 @@ export const rateLimitKey = (connectionId: string) => `webhook:${connectionId}`;
  * Claims each message, answers the provider, and runs the loop behind the
  * response.
  *
- * The 200 is sent before the work because providers retry a slow reply, and a
- * retry would run the loop twice for one customer message. `after` is what
- * keeps the work alive once the response has gone — on a serverless host the
- * invocation would otherwise be free to end at `return`.
+ * Where the host allows it, the 200 is sent before the work: providers retry
+ * a slow reply, and `after` keeps the work alive once the response has gone.
+ * On Cloud Run the work is done first instead (`processBeforeResponding`);
+ * the idempotency claims below are what make a retry of a slow answer
+ * harmless either way.
  *
  * The only rows this writes itself are the idempotency claims and the
  * connection's `lastEventAt`. Everything else a message causes happens inside
@@ -101,7 +103,7 @@ export async function receive(
 
   if (!fresh.length) return new Response(null, { status: 200 });
 
-  after(async () => {
+  const work = async () => {
     await prisma.channelConnection.update({
       where: { id: connection.id },
       data: { lastEventAt: new Date(), lastError: null },
@@ -143,7 +145,27 @@ export async function receive(
         console.error(`[inbound:${connection.channel}] ${(error as Error).message}`);
       }
     }
-  });
+  };
+
+  // After the response where the host keeps running it, before it where the
+  // host does not. Cloud Run, by default, throttles an instance's CPU to
+  // almost nothing once its response is sent: work in `after()` crawled until
+  // the next request arrived, replies landed minutes late in bursts, and some
+  // never landed at all when the instance was scaled away. Answering a few
+  // seconds later is safe — every message above is already claimed, so a
+  // provider that retries a slow delivery finds nothing new to run.
+  if (processBeforeResponding()) await work();
+  else after(work);
 
   return new Response(null, { status: 200 });
+}
+
+/**
+ * `INBOUND_PROCESSING` decides; unset, Cloud Run (which sets `K_SERVICE` on
+ * every instance) means before the response, anywhere else after it. Set
+ * `after_response` on Cloud Run only with CPU always allocated.
+ */
+export function processBeforeResponding(): boolean {
+  if (env.INBOUND_PROCESSING) return env.INBOUND_PROCESSING === "before_response";
+  return Boolean(process.env.K_SERVICE);
 }

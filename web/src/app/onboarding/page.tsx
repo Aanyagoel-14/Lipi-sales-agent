@@ -6,7 +6,8 @@ import { Wizard } from "./wizard";
 
 export const metadata = { title: "Set up your workspace · Lipi AI" };
 
-export default async function OnboardingPage() {
+export default async function OnboardingPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const query = await searchParams;
   const { user, workspaces } = await getSession();
   if (!user) redirect("/login");
   // Only a *finished* workspace skips the wizard; an abandoned one resumes.
@@ -26,7 +27,10 @@ export default async function OnboardingPage() {
         </div>
       </header>
       <main className="flex-1">
-        <Wizard existing={inProgress ? { name: inProgress.name, vertical: inProgress.vertical } : null} />
+        <Wizard
+          existing={inProgress ? { name: inProgress.name, vertical: inProgress.vertical } : null}
+          returnedFromChannel={Boolean(query.channel || query.error)}
+        />
       </main>
     </>
   );

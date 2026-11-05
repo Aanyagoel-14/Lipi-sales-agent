@@ -34,17 +34,21 @@ secrets in your host — never commit `.env`):
 |---|---|---|
 | `DATABASE_URL` | yes | `postgresql://user:pass@host:5432/dbname` |
 | `APP_SECRET` | yes | ≥16 random chars. Encrypts every stored channel/connector secret. **Generate once, store safely, never rotate casually** — rotating it invalidates every stored credential and every connected channel/connector must be reconnected. |
-| `PUBLIC_URL` | yes | This deployment's own public HTTPS origin, e.g. `https://app.example.com`. Used to build the webhook URLs handed to Telegram/Meta and the push URLs handed to inventory connectors — outbound only. The app does not call itself through it. |
+| `PUBLIC_URL` | yes | This deployment's own public HTTPS origin, e.g. `https://app.example.com`. Used to build the webhook URLs handed to Telegram/Meta, invoice links and the push URLs handed to inventory connectors — outbound only. The app does not call itself through it. With `NODE_ENV=production` a localhost value is refused on every request (the build itself is not checked). |
 | `INTERNAL_URL` | no | Where this app reaches itself, when `http://127.0.0.1:$PORT` is not that address. Server components fetch their own route handlers; a host that cannot serve itself on loopback needs this named. Vercel is detected without it. |
+| `CRON_SECRET` | yes, in production | ≥16 random chars. Authorises `POST /v1/cron/tick`, which releases lapsed stock holds and sends due outbound webhooks for every workspace. See §9. |
+| `INBOUND_PROCESSING` | no | `before_response` or `after_response`. Unset: before the response on Cloud Run (detected by `K_SERVICE`), whose default CPU throttling starves work done after it; after the response elsewhere. Use `after_response` on Cloud Run only with "CPU always allocated". |
+| `TRUSTED_PROXY_HOPS` | no | Default `1`. How many proxies sit in front of the app; the client IP used for rate limits is read that many entries from the end of `X-Forwarded-For`. `1` for Cloud Run alone, `2` with a load balancer in front. |
 | `OPENROUTER_API_KEY` | no | Enables LLM-based intent extraction and the operator's twin-chat feature. Without it, intent extraction falls back to deterministic rules (still fully functional, just less flexible on ambiguous phrasing) and twin-chat is unavailable. |
 | `OPENROUTER_MODEL` | no | Defaults to a fast model; used for per-message intent extraction. |
-| `OPENROUTER_CHAT_MODEL` | no | Used only for the operator's own twin-chat, can be a stronger/slower model. |
+| `OPENROUTER_CHAT_MODEL` | no | Voices every customer reply and the operator's twin chat; falls back to `OPENROUTER_MODEL` when unavailable. Avoid `:free` ids — they are withdrawn without notice. |
 | `NODE_ENV` | no | Set to `production` in production. |
 | `COMPOSIO_API_KEY` | no | Composio holds every channel credential and runs every send. Without it no channel can be connected and only webchat works. |
 | `COMPOSIO_AUTH_CONFIG_*` | no | One auth config id per channel (`WHATSAPP`, `INSTAGRAM`, `FACEBOOK`, `TELEGRAM`, `X`, `GMAIL`). A channel with no id is listed as unavailable. |
-| `COMPOSIO_WEBHOOK_SECRET` | no | Signs Composio's own deliveries to `/webhooks/composio`. Printed once by `npm run composio:subscribe`. |
+| `COMPOSIO_WEBHOOK_SECRET` | **when Gmail or Stripe is offered** | Signs Composio's own deliveries to `/webhooks/composio` (Gmail inbound, Stripe "paid" events). Printed once by `npm run composio:subscribe`. Without it Gmail is shown as unavailable and refused at connect, and a Stripe payment is only recorded when the customer returns to the invoice page. |
 | `META_APP_SECRET` | **when a Meta channel is offered** | Lipi's Meta app secret. Every inbound WhatsApp / Instagram / Messenger body is verified against it. |
 | `META_VERIFY_TOKEN` | **when a Meta channel is offered** | Any long random string. Meta echoes it once, when the callback URL is registered. |
+| `INSTAGRAM_APP_SECRET` | **when Instagram is offered** | The Meta app's *Instagram* app secret (Instagram → API setup with Instagram login), not the App Secret: Meta signs Instagram webhooks with it. Without it Instagram is shown as unavailable and refused at connect. |
 | `X_API_SECRET` | **when X is offered** | Lipi's X app consumer secret (API secret key). Verifies every inbound DM body and answers X's hourly challenge. |
 | `X_WEBHOOK_ID` | **when X is offered** | The id `POST /2/webhooks` returned for `PUBLIC_URL/webhooks/x`. Each tenant's activity is subscribed to it. |
 
@@ -245,3 +249,26 @@ inventory sync endpoint is not yet rate-limited, and there has been no
 additional API hardening pass beyond what the security audit covered.
 Treat this as a functional but not yet fully hardened production
 deployment.
+
+## 9. The scheduled tick
+
+Two jobs have to run on a clock, not when someone happens to open a page:
+releasing a purchase order's stock hold once it lapses, and sending (and
+retrying) outbound webhooks. Both run, for every workspace, on one call:
+
+```bash
+curl -X POST https://<PUBLIC_URL>/v1/cron/tick -H "Authorization: Bearer $CRON_SECRET"
+```
+
+On Google Cloud, a Cloud Scheduler job every 5 minutes:
+
+```bash
+gcloud scheduler jobs create http lipi-tick \
+  --schedule="*/5 * * * *" --http-method=POST \
+  --uri="https://<PUBLIC_URL>/v1/cron/tick" \
+  --headers="Authorization=Bearer <CRON_SECRET>"
+```
+
+It answers `{ workspaces, released, delivered, failed }`. Without `CRON_SECRET`
+it refuses with a 503, and holds are released only when the Orders page loads.
+

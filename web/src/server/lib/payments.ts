@@ -119,12 +119,17 @@ export const noPaymentProvider: PaymentProvider = {
  * webhook would — so the order, the stock and the confirmation message all
  * behave exactly as they will with real money. Nothing is charged, and the
  * page says TEST.
+ *
+ * Never in production. Its Pay button marks the invoice paid for whoever
+ * holds the link, so on a live deployment it is a way to take stock for
+ * nothing; a workspace there pays through its own connected gateway or is
+ * told no payment link could be made.
  */
 export const demoPaymentProvider: PaymentProvider = {
   name: "demo",
   test: true,
   shareable: false,
-  configured: () => env.PAYMENT_PROVIDER === "demo",
+  configured: () => env.PAYMENT_PROVIDER === "demo" && env.NODE_ENV !== "production",
 
   async createCheckoutLink(request) {
     return {
