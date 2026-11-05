@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { toRupees } from "@/server/lib/money";
 import type { ResolvedBlock } from "@/server/sites/generate";
+import { ContactForm } from "./contact-form";
 import { QuoteCalculator } from "./quote-calculator";
 
 /**
@@ -9,8 +10,9 @@ import { QuoteCalculator } from "./quote-calculator";
  * Server components, so the catalogue a visitor sees is fetched on the server
  * from live rows and arrives in the HTML — nothing about the business's stock
  * or prices is a client fetch, and nothing about its pricing maths is shipped
- * to the browser at all. The one client component is the quote calculator,
- * which collects numbers and asks the server what they cost.
+ * to the browser at all. The client components are the quote calculator,
+ * which collects numbers and asks the server what they cost, and the contact
+ * form, which saves through the widget's own endpoints.
  *
  * Styling is the theme tokens from `sites/theme.ts` and nothing else, so
  * `theme_mode` changes the site's appearance without changing its markup.
@@ -184,46 +186,6 @@ function Catalogue({ products }: { products: CatalogueProduct[] }) {
         </li>
       ))}
     </ul>
-  );
-}
-
-/**
- * The contact block.
- *
- * It posts to the widget's own public contact endpoint, so a lead captured
- * from a generated site lands on the same customer twin, with the same
- * `form` provenance, as one captured in the chat panel. A second capture path
- * would be a second place for a lead to go missing.
- */
-function ContactForm({ workspaceId }: { workspaceId: string }) {
-  return (
-    <form
-      action={`/v1/webchat/${workspaceId}/contact`}
-      method="post"
-      className="grid max-w-md gap-3"
-    >
-      <label className="grid gap-1 text-[0.8125rem]">
-        <span className="text-[var(--site-ink-muted)]">Your name</span>
-        <input
-          name="name"
-          className="min-h-11 rounded-xl border border-[var(--site-border)] bg-[var(--site-surface)] px-3 text-[var(--site-ink)]"
-        />
-      </label>
-      <label className="grid gap-1 text-[0.8125rem]">
-        <span className="text-[var(--site-ink-muted)]">Email or phone</span>
-        <input
-          name="value"
-          required
-          className="min-h-11 rounded-xl border border-[var(--site-border)] bg-[var(--site-surface)] px-3 text-[var(--site-ink)]"
-        />
-      </label>
-      <button
-        type="submit"
-        className="min-h-11 rounded-full bg-[var(--site-primary)] px-5 font-medium text-[var(--site-primary-ink)]"
-      >
-        Send
-      </button>
-    </form>
   );
 }
 
