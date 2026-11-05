@@ -39,6 +39,9 @@ export type CatalogueImportRow = {
   stock: number;
   marginPct: number;
   leadTimeDays: number;
+  /** As the file stated it; the server checks it against what it invoices in. */
+  currency?: string;
+  description?: string;
 };
 
 export async function createWorkspace(draft: WorkspaceDraft): Promise<{ workspace: Workspace; provisioned: Provisioned }> {

@@ -29,6 +29,8 @@ const importRowSchema = z.object({
   stock: z.number().int().min(0).max(1_000_000),
   marginPct: z.number().int().min(0).max(100).default(0),
   leadTimeDays: z.number().int().min(0).max(365).default(0),
+  currency: z.string().trim().regex(/^[A-Za-z]{3}$/).transform((v) => v.toUpperCase()).optional(),
+  description: z.string().trim().max(500).optional(),
 });
 
 export const importSchema = z.object({ rows: z.array(importRowSchema).min(1).max(5_000) });

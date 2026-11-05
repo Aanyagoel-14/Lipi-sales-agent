@@ -79,9 +79,16 @@ products, rejects inconsistent axes and duplicates, and writes the import in a
 single transaction.
 
 ```text
-product, category, axis_a_name, axis_a_value, axis_b_name, axis_b_value,
-price_inr, stock, margin_pct, lead_time_days
+product, category, size, colour, price_inr, currency, stock, margin_pct,
+lead_time_days, description
 ```
+
+The template is written by the server (`GET /v1/catalogue/import/template`),
+with `currency` filled in from `STRIPE_CURRENCY`. A file that states another
+currency is refused, not converted. `description` is optional, one per product,
+and goes to the salesperson model with the catalogue. Files in the older
+`axis_a_name, axis_a_value, axis_b_name, axis_b_value` format are still
+accepted, for products whose axes are not size and colour.
 
 This creates the initial product and inventory Twin. It is a snapshot: correct
 when taken, wrong as soon as anything sells.
