@@ -3,7 +3,7 @@ import type { Channel } from "@/generated/prisma/client";
 import { finishConnection } from "@/server/channels/connect";
 import { authConfigIdFor, specFor, type ChannelSpec } from "@/server/channels/registry";
 import { composio } from "@/server/lib/composio";
-import { body, HttpError, json, route } from "@/server/lib/http";
+import { body, HttpError, json, requestOrigin, route } from "@/server/lib/http";
 import { prisma } from "@/server/lib/prisma";
 import { resolveWorkspaceId } from "@/server/lib/workspace";
 import { publicView } from "../../view";
@@ -114,7 +114,7 @@ export const POST = route<{ channel: string }>(async (req, params) => {
   // warning page — and the connection never reported either way.
   const { redirectUrl, connectedAccountId } = await callComposio(() =>
     client.link(workspaceId, authConfigId, {
-      callbackUrl: `${new URL(req.url).origin}/v1/channels/callback`,
+      callbackUrl: `${requestOrigin(req)}/v1/channels/callback`,
       alias: channel,
     }));
 

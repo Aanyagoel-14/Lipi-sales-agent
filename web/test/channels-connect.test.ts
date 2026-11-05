@@ -138,6 +138,20 @@ describe("starting a connection", () => {
     expect(row?.composioAccountId).toBeTruthy();
   });
 
+  // Production: `next start --hostname 0.0.0.0` behind Cloud Run builds
+  // `req.url` from the bind address, so the origin it reports is
+  // https://0.0.0.0:8080. That went to Composio as the callback, the browser
+  // was sent somewhere unreachable after consent, and no channel finished.
+  it("sends the operator back to the host they used, not the address the server is bound to", async () => {
+    const app = await signedIn();
+    await app.post("/v1/channels/instagram/connect")
+      .set("Host", "sellora.lipiai.test")
+      .set("X-Forwarded-Proto", "https")
+      .expect(201);
+
+    expect(fakeComposio.calls.link[0]?.callbackUrl).toBe("https://sellora.lipiai.test/v1/channels/callback");
+  });
+
   it("never returns the connected account id in full", async () => {
     const app = await signedIn();
     const res = await app.post("/v1/channels/email/connect").expect(201);
@@ -288,13 +302,29 @@ describe("the callback", () => {
       id: accountId, status: "ACTIVE", statusReason: null, userId: "ws_someone_else", toolkit: "gmail",
     });
 
-    await app.get(`/v1/channels/callback?connected_account_id=${accountId}`).expect(404);
+    // A browser navigation, so the refusal is a page that says so, not JSON.
+    const res = await app.get(`/v1/channels/callback?connected_account_id=${accountId}`).expect(303);
+    expect(res.headers.location).toMatch(/^\/dashboard\/channels\?channel=email&error=That\+connection\+belongs\+to\+another\+workspace/);
     expect(await connection("email")).toMatchObject({ status: "pending" });
   });
 
-  it("404s on an account this workspace never started", async () => {
+  it("sends an account this workspace never started back with the reason", async () => {
     const app = await signedIn();
-    await app.get("/v1/channels/callback?connected_account_id=ca_nothing").expect(404);
+    const res = await app.get("/v1/channels/callback?connected_account_id=ca_nothing").expect(303);
+    expect(res.headers.location).toMatch(/^\/dashboard\/channels\?error=No\+connection\+in\+progress/);
+  });
+
+  // Connected from the setup wizard, the dashboard would only redirect them
+  // back to it, at the Catalogue step, with the result dropped.
+  it("returns to the wizard when setup is not finished", async () => {
+    const { app, accountId } = await start("email");
+    await prisma.workspace.update({ where: { id: workspaceId }, data: { onboardedAt: null } });
+    fakeComposio.accounts.set(accountId, {
+      id: accountId, status: "ACTIVE", statusReason: null, userId: workspaceId, toolkit: "gmail",
+    });
+
+    const res = await app.get(`/v1/channels/callback?connected_account_id=${accountId}`).expect(303);
+    expect(res.headers.location).toBe("/onboarding?channel=email");
   });
 
   it("leaves the row in error when a post-connect hook throws", async () => {
@@ -695,7 +725,8 @@ describe("tenancy", () => {
     await createWorkspace({ userId: user.id, name: "Outsider", withCatalogue: false });
     const outsider = await signedIn("outsider@test.local");
 
-    await outsider.get(`/v1/channels/callback?connected_account_id=${mine.composioAccountId}`).expect(404);
+    const res = await outsider.get(`/v1/channels/callback?connected_account_id=${mine.composioAccountId}`).expect(303);
+    expect(res.headers.location).toMatch(/error=No\+connection\+in\+progress/);
     await outsider.delete("/v1/channels/telegram").expect(404);
 
     expect(await connection("telegram")).toMatchObject({ status: "connected" });
@@ -704,7 +735,8 @@ describe("tenancy", () => {
   it("keeps the whole flow behind the session", async () => {
     await agent().get("/v1/channels").expect(401);
     await agent().post("/v1/channels/email/connect").expect(401);
-    await agent().get("/v1/channels/callback?connected_account_id=ca_1").expect(401);
+    const back = await agent().get("/v1/channels/callback?connected_account_id=ca_1").expect(303);
+    expect(back.headers.location).toBe("/login");
     await agent().get("/v1/channels/catalog").expect(401);
   });
 });
